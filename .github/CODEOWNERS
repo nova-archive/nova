@@ -1,0 +1,15 @@
+# Code owners
+# Format: pattern  @owner1 @owner2
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Specifications: changes here ripple through the implementation,
+# so they require a maintainer review.
+/docs/specs/  @maintainers
+
+# CI, tooling, and naming hygiene policy
+/.github/  @maintainers
+/internal/devtools/  @maintainers
+
+# License and legal
+/LICENSE  @maintainers
+/docs/legal/  @maintainers
