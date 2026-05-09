@@ -1,26 +1,30 @@
 # Roadmap
 
-## Phase 0 — Specifications (current)
+## Phase 0 — Specifications (complete)
 
 Lock the protocol and contracts as documents before any production
 code is written.
 
-- [x] Repository skeleton + naming hygiene CI
-- [ ] OpenAPI specification (`docs/specs/openapi.yaml`)
-- [ ] Federation protocol (`docs/specs/FEDERATION_PROTOCOL.md`)
-- [ ] Encryption envelope (`docs/specs/ENCRYPTION_ENVELOPE.md`)
-- [ ] Data model (`docs/specs/DATA_MODEL.sql`)
-- [ ] Signed URL format (`docs/specs/SIGNED_URL_FORMAT.md`)
-- [ ] IPFS daemon hardening (`docs/specs/KUBO_HARDENING.md`)
-- [ ] Product module interface (`docs/specs/PRODUCT_MODULE_INTERFACE.md`)
-- [ ] Threat model (`docs/THREAT_MODEL.md`)
-- [ ] Privacy audit (`docs/PRIVACY_AUDIT.md`)
-- [ ] Operator checklist (`docs/legal/OPERATOR_CHECKLIST.md`)
-- [ ] ToS template (`docs/legal/TOS_TEMPLATE.md`)
-- [ ] Takedown procedure (`docs/legal/DMCA_PROCEDURE.md`)
-- [ ] nginx reference config (`nginx/nova.conf.example`)
-- [ ] Phase 0 dependency-only `docker-compose.yml`
-- [ ] Cloudflare recipe (`docs/recipes/CLOUDFLARE.md`)
+- [x] Repository skeleton
+- [x] OpenAPI specification (`docs/specs/openapi.yaml`)
+- [x] Signed URL format (`docs/specs/SIGNED_URL_FORMAT.md`)
+- [x] Data model (`docs/specs/DATA_MODEL.sql`)
+- [x] Encryption envelope (`docs/specs/ENCRYPTION_ENVELOPE.md`)
+- [x] Federation protocol (`docs/specs/FEDERATION_PROTOCOL.md`)
+- [x] IPFS daemon hardening (`docs/specs/KUBO_HARDENING.md`)
+- [x] Product module interface (`docs/specs/PRODUCT_MODULE_INTERFACE.md`)
+- [x] Healing protocol (`docs/specs/HEALING_PROTOCOL.md`)
+- [x] Orchestrator resilience simulation (`simulations/orchestrator_resilience.py`)
+- [x] Threat model (`docs/THREAT_MODEL.md`)
+- [x] Privacy audit (`docs/PRIVACY_AUDIT.md`)
+- [x] Operator checklist (`docs/legal/OPERATOR_CHECKLIST.md`)
+- [x] ToS template (`docs/legal/TOS_TEMPLATE.md`)
+- [x] Takedown procedure (`docs/legal/DMCA_PROCEDURE.md`)
+- [x] Volunteer deployment guidance (`docs/VOLUNTEER_DEPLOYMENT_GUIDANCE.md`)
+- [x] nginx reference config (`nginx/nova.conf.example`)
+- [x] nginx walkthrough (`docs/recipes/NGINX_REFERENCE.md`)
+- [x] Phase 0 dependency-only `docker-compose.yml`
+- [x] Cloudflare recipe (`docs/recipes/CLOUDFLARE.md`)
 
 ## Phase 1 — Single-node MVP
 
