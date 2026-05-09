@@ -1,8 +1,15 @@
 # Signed URL Format
 
-Status: **Phase 0 — normative.** Implementations of `internal/auth`
+Status: **Phase 0 v2 — normative.** Implementations of `internal/auth`
 must conform exactly. Drift between this spec and the implementation
 is a bug in the implementation.
+
+> **v2 note.** The original revocation scheme (string-prefix match
+> against the canonical signed-URL string) was incorrect: the
+> canonical string starts with the URL path, so prefixes like
+> `cid:{cid}` or `aud:{aud}` could never match. v2 replaces it with
+> structured (kind, value) revocation entries against parsed fields.
+> See § "Revocation".
 
 ## Purpose
 
@@ -102,19 +109,27 @@ throughout, and uniform error response time).
 
 1. **Schema check.** All four query parameters present, well-formed.
    Failure code: `signature_missing_param`.
-2. **Key lookup.** `keys` row with `id = kid` exists and `state = 'active'`.
+2. **Key lookup.** `signing_keys` row where `kid = ?` exists and is
+   either `state='active'` or `state='retired'` with
+   `retire_after > now()`.
    Failure code: `signature_unknown_kid`.
-3. **Revocation check.** No row in `signed_url_revocations` with a
-   prefix that matches the canonical string. (Prefixes can be
-   `cid:{cid}`, `aud:{aud}`, `kid:{kid}`, or any operator-defined
-   string the canonical string starts with.)
+3. **Revocation check.** Parse the canonical string into its fields
+   (cid, aud, kid, path) and check each against
+   `signed_url_revocations`:
+   - any row with `kind='cid'` and `value={cid}` → revoked
+   - any row with `kind='aud'` and `value={aud}` → revoked
+   - any row with `kind='kid'` and `value={kid}` → revoked
+   - any row with `kind='path_prefix'` and `value` is a prefix of `{path}` → revoked
    Failure code: `signature_revoked`.
 4. **Expiry check.** `exp > now_unix_seconds()`. Servers must use a
    monotonic, NTP-synced clock; clock skew tolerance is **0 seconds**.
    Failure code: `signature_expired`.
-5. **Signature recomputation.** Compute `expected = HMAC-SHA256(key, canonical)`
-   and compare to the decoded `sig` bytes with a constant-time
-   comparator (`crypto/subtle.ConstantTimeCompare`).
+5. **Signature recomputation.** Unwrap the `wrapped_key` for the
+   referenced kid using the master key version recorded on the
+   `signing_keys` row. Compute
+   `expected = HMAC-SHA256(unwrapped_key, canonical)` and compare to
+   the decoded `sig` bytes with a constant-time comparator
+   (`crypto/subtle.ConstantTimeCompare`).
    Failure code: `signature_invalid`.
 6. **Audience check.** The request's `Origin` header (or `Referer`
    if `Origin` is absent) is parsed for its scheme + host + port,
@@ -131,34 +146,57 @@ The operator rotates the signing key by calling
 `POST /api/v1/admin/keys/rotate-signing`. The coordinator:
 
 1. Generates a new 256-bit secret.
-2. Inserts a new `keys` row with `state = 'active'` and a fresh `id`.
-3. Marks the previous active signing key `state = 'shredded'` after
-   a configurable grace window (default 24 h) so URLs minted with
-   the old key remain valid until natural expiry.
-4. Returns the new `kid` so the caller can update any
-   long-lived signed URLs they cache.
+2. Inserts a new `signing_keys` row with a fresh `kid`,
+   `state = 'active'`, `active_from = now()`,
+   `master_key_version_id = <current active master version>`.
+3. Marks the previous active signing key `state = 'retired'` and
+   sets `retire_after = now() + grace_window` (default 24 h). URLs
+   minted with the previous key remain verifiable until
+   `retire_after`.
+4. Returns the new `kid` so the caller can update any long-lived
+   signed URLs they cache.
 
 URLs minted between rotation and grace expiry are signed with the
-**previous** key but verified against any active key in the table —
-the verifier looks up the key by `kid`, not by current default.
+**previous** key but verified against any non-retired-past-grace key
+in the `signing_keys` table — the verifier looks up the key by
+`kid`, not by "currently default."
+
+After `retire_after` passes, a scheduled job transitions the
+retired row's `state = 'shredded'` and zeroes the wrapped key.
 
 ## Revocation
 
+v2 revocation is **structured**, not prefix-based. The original
+prefix-against-canonical-string scheme could not represent the
+documented `cid:` / `aud:` / `kid:` revocation forms because the
+canonical string starts with the URL path.
+
 `POST /api/v1/admin/signed-urls/revoke` writes a row into
-`signed_url_revocations` with a prefix string. Any canonical string
-that **starts with** that prefix fails verification.
+`signed_url_revocations` with a `(kind, value)` tuple. The verifier
+parses the canonical signed-URL string into its component fields
+and checks each against the revocation table:
 
-Common revocation prefixes:
+| `kind` | `value` | Effect |
+|---|---|---|
+| `cid` | a CID | Every signed URL for that CID fails verification |
+| `aud` | an origin (e.g., `https://example.com`) | Every URL bound to that origin fails |
+| `kid` | a signing key id | Every URL signed with that key fails (equivalent to instant key shred) |
+| `path_prefix` | a URL path prefix (e.g., `/i/bafy.../`) | Every URL whose path starts with this prefix fails |
 
-- `cid:{cid}` — revoke every signed URL for one CID (after takedown).
-- `aud:{aud}` — revoke every signed URL bound to an origin (after
-  the embedding site is compromised).
-- `kid:{kid}` — revoke every URL signed with one key (after a
-  suspected key leak; equivalent to instantly shredding the key).
+The schema is enforced by the `CHECK (kind IN (...))` constraint in
+`DATA_MODEL.sql`.
+
+Common operations:
+
+- After a takedown: insert `('cid', {cid})`. The
+  `crypto_shred(blob)` procedure does this automatically.
+- After an embedding site compromise: insert `('aud', {origin})`.
+- After a suspected signing-key leak: insert `('kid', {kid})` and
+  trigger `POST /api/v1/admin/keys/rotate-signing`.
 
 Revocations are immediate and cluster-wide; the verifier loads the
-revocation table at startup and refreshes it every N seconds (default
-30) plus on demand via an internal pubsub message.
+revocation table at startup and refreshes it every N seconds
+(default 30) plus on demand via an internal pubsub message.
 
 ## What the format does **not** do
 

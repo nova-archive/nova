@@ -102,12 +102,21 @@ paths:
         `public_archival: true`, the bytes are stored unencrypted and
         the gateway streams them directly.
 
-        Responses are content-addressed and immutable; cache them
-        aggressively. The gateway sets `Cache-Control: public,
-        max-age=31536000, immutable` on every successful response.
+        **Cache-Control varies by collection visibility and blob state**
+        (v2 stratified policy):
 
-        Range requests are supported; response status is 206 with
-        `Content-Range` when a range is satisfied.
+        | collection | state | request | Cache-Control |
+        |---|---|---|---|
+        | public | active | anonymous | `public, max-age=31536000, immutable` |
+        | public-archival | active | anonymous | `public, max-age=31536000, immutable` |
+        | private/unlisted | active | signed URL | `private, max-age=300, must-revalidate` |
+        | any | soft_deleted/quarantined/tombstoned | any | `no-store` |
+
+        **Range requests are supported only on public-archival
+        (plaintext) blobs.** A Range request against an encrypted
+        blob returns `416 Range Not Satisfiable`. Streaming AEAD
+        is a Phase 6+ deliverable; until then, single-shot decryption
+        cannot serve byte ranges.
       parameters:
         - $ref: '#/components/parameters/RangeHeader'
       responses:
@@ -350,12 +359,15 @@ paths:
 
               - `filename` — original filename (informational)
               - `mime_type` — declared content-type (validated server-side)
-              - `expected_cid` — if the client computed the CID locally,
-                the server short-circuits and returns the existing CID
-                without receiving any bytes.
               - `product` — `image`, `video`, `audio`, `archive`,
                 `document`, `raw` — selects the validation pipeline.
               - `collection_id` — UUID of the destination collection.
+
+            (v2: `expected_cid` was removed. Random-nonce envelope
+            encryption means the client cannot compute the envelope
+            CID, so the field had no meaningful semantics. Plaintext-
+            hash dedup, if reintroduced later, will use a different
+            field name to avoid confusion.)
           schema: { type: string }
       responses:
         '201':
@@ -1043,11 +1055,25 @@ paths:
                   kid: { type: string }
                   grace_expires_at: { type: string, format: date-time }
 
-  /api/v1/admin/signed-urls/revoke:
+  /api/v1/admin/keys/rotate-master:
     post:
       tags: [admin]
-      operationId: revokeSignedUrls
-      summary: Revoke signed URLs by canonical-string prefix.
+      operationId: rotateMasterKey
+      summary: Rotate the operator master key.
+      description: |
+        Walks every active per-blob and signing key, unwraps with the
+        retiring master-key version, re-wraps with the new version,
+        and updates the row's master_key_version_id. Rotation is
+        online (no read-path downtime). See
+        `docs/specs/ENCRYPTION_ENVELOPE.md` § "Rotation procedure".
+
+        The new master-key value MUST already be loaded into the
+        coordinator's environment as `NOVA_MASTER_KEY_<new_version>`
+        before this endpoint is called.
+
+        This is the Phase 1 deliverable promoted from Phase 5; a
+        deployment that cannot rotate the master key after suspected
+        compromise is not safe.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -1055,14 +1081,106 @@ paths:
           application/json:
             schema:
               type: object
-              required: [prefix]
+              required: [from_version, to_version]
               properties:
-                prefix:
+                from_version:
                   type: string
+                  description: Label of the master-key version to rotate away from.
+                to_version:
+                  type: string
+                  description: Label of the new master-key version (must already be loaded into env).
+      responses:
+        '202':
+          description: Rotation accepted; progress reported via webhook and metrics.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id, total_rows]
+                properties:
+                  job_id: { type: string, format: uuid }
+                  total_rows: { type: integer }
+
+  /api/v1/admin/audits/integrity:
+    get:
+      tags: [admin]
+      operationId: listIntegrityAudits
+      summary: List local integrity audit results.
+      description: |
+        Phase 1 local-fixity audits. See
+        `docs/specs/INTEGRITY_AUDIT.md`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: result
+          in: query
+          schema:
+            type: string
+            enum: [pass, fail, skip]
+        - name: audit_kind
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Integrity audit log entries.
+
+  /api/v1/admin/audits/possession:
+    get:
+      tags: [admin]
+      operationId: listPossessionAudits
+      summary: List donor possession spot-check results.
+      description: |
+        Phase 2 donor possession audits. See
+        `docs/specs/POSSESSION_AUDIT.md`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: result
+          in: query
+          schema:
+            type: string
+            enum: [pass, fail, skip]
+        - name: node_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Pin audit log entries.
+
+  /api/v1/admin/signed-urls/revoke:
+    post:
+      tags: [admin]
+      operationId: revokeSignedUrls
+      summary: Revoke signed URLs by structured (kind, value) tuple.
+      description: |
+        v2 revocation is structured, not prefix-based. See
+        `docs/specs/SIGNED_URL_FORMAT.md` § "Revocation".
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, value]
+              properties:
+                kind:
+                  type: string
+                  enum: [cid, aud, kid, path_prefix]
                   description: |
-                    Any canonical-string prefix. Common forms:
-                    `cid:{cid}`, `aud:{origin}`, `kid:{kid}`. See
-                    `docs/specs/SIGNED_URL_FORMAT.md`.
+                    Which canonical-string field this revocation matches.
+                    - `cid`: every signed URL for one CID.
+                    - `aud`: every signed URL bound to one origin.
+                    - `kid`: every signed URL signed with one signing key
+                      (equivalent to instant key shred).
+                    - `path_prefix`: every signed URL whose path starts
+                      with the value (e.g., `/i/bafy.../`).
+                value:
+                  type: string
+                  description: The CID, origin, kid, or path prefix.
       responses:
         '201':
           description: Revocation recorded.
@@ -1138,8 +1256,14 @@ components:
       bearerFormat: JWT
       description: |
         OIDC bearer token issued by the operator's Authelia instance
-        (or any compatible OIDC provider). Required for `/api/v1/*`
-        endpoints unless the operator runs in `auth: anonymous` mode.
+        (or any compatible OIDC provider). Required for **every**
+        `/api/v1/*` endpoint in any production build.
+
+        v2 note: the original `auth: anonymous` mode for management
+        endpoints was removed. It is available only in dev builds
+        (build tag `nova_dev`) and only when the coordinator binds
+        to loopback. Production builds refuse to start with anonymous
+        management auth regardless of operator config.
 
   parameters:
 
@@ -1379,16 +1503,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/Blob'
         - type: object
-          required: [width, height, perceptual_hash]
+          required: [width, height]
           properties:
             width: { type: integer, minimum: 1 }
             height: { type: integer, minimum: 1 }
-            perceptual_hash:
-              type: string
-              format: byte
-              description: 256-bit PDQ hash, base64-encoded.
             alt_text: { type: string, nullable: true }
             caption: { type: string, nullable: true }
+            parent_cid:
+              type: string
+              nullable: true
+              description: |
+                For derivative images, the CID of the parent original
+                from which this derivative was produced. NULL for
+                originals.
             urls:
               type: object
               required: [original, json]
@@ -1404,6 +1531,12 @@ components:
                   additionalProperties:
                     type: string
                     format: uri
+
+    # NOTE: perceptual_hash is intentionally NOT exposed on the public
+    # Image schema. Public exposure of perceptual hashes enables cross-
+    # site correlation and reverse-lookup attacks against known datasets.
+    # Operator-only endpoints (admin search, moderation) include the hash
+    # via the AdminImage schema.
 
     ImageUpdate:
       type: object
