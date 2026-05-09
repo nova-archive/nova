@@ -1,0 +1,1621 @@
+openapi: 3.1.0
+
+info:
+  title: Nova HTTP API
+  version: 0.0.1-phase0
+  summary: Federated content-addressed blob storage with image transforms.
+  description: |
+    The public-facing HTTP API surface of a Nova deployment.
+
+    This document is the source of truth for handler codegen
+    (`oapi-codegen` for Go), the drag-and-drop upload widget
+    (`openapi-typescript` for the TS client), and downstream language
+    SDKs. CI fails the build if handler signatures and this document
+    drift. See `docs/specs/PRODUCT_MODULE_INTERFACE.md` for how product
+    layers like `nova-image` plug into the storage core's URL surface.
+
+    Two distinct namespaces:
+
+      - **Content** routes (`/blob/{cid}`, `/i/{cid}/...`) are
+        unversioned, immutable, and aggressively CDN-cacheable. They
+        serve bytes; they do not change.
+      - **Management** routes (`/api/v1/...`) are versioned and require
+        authentication unless the operator runs in `auth: anonymous`
+        mode. Breaking changes go through a major version bump.
+
+    Federation routes (`/fed/v1/...`) are reachable only over the
+    operator's mesh VPN and use mutual TLS via Nebula certificates.
+    They are documented separately in
+    `docs/specs/FEDERATION_PROTOCOL.md`; they do not appear here
+    because no public consumer should reach them.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+
+servers:
+  - url: https://{host}
+    description: An operator's public Nova endpoint.
+    variables:
+      host:
+        default: img.example.com
+
+security:
+  - {}                # default: public read for content routes
+  - signedUrl: []     # private content via HMAC-signed URLs
+  - bearerAuth: []    # management endpoints
+
+tags:
+  - name: content-blob
+    description: Generic blob content routes (`nova-storage`).
+  - name: content-image
+    description: Image content with on-the-fly transforms (`nova-image`).
+  - name: upload
+    description: Resumable (tus) and non-resumable upload endpoints.
+  - name: metadata
+    description: Read and update blob/image metadata.
+  - name: collections
+    description: Curated collections of blobs and images.
+  - name: search
+    description: Search APIs (perceptual near-duplicate, etc.).
+  - name: admin
+    description: Operator and moderator endpoints (require role).
+  - name: legal
+    description: Public DMCA receipt and DSAR endpoints.
+  - name: health
+    description: Liveness probe.
+
+paths:
+
+  # =========================================================================
+  # Health
+  # =========================================================================
+
+  /health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness probe.
+      description: Always returns 200 if the coordinator is accepting traffic.
+      security: []
+      responses:
+        '200':
+          description: Healthy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  # =========================================================================
+  # Generic blob content
+  # =========================================================================
+
+  /blob/{cid}:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+    get:
+      tags: [content-blob]
+      operationId: getBlob
+      summary: Retrieve the bytes of a blob by CID.
+      description: |
+        Returns the bytes verbatim with the stored `Content-Type`. For
+        encrypted collections the bytes are plaintext (the gateway
+        decrypts on the way out). For collections the operator marked
+        `public_archival: true`, the bytes are stored unencrypted and
+        the gateway streams them directly.
+
+        Responses are content-addressed and immutable; cache them
+        aggressively. The gateway sets `Cache-Control: public,
+        max-age=31536000, immutable` on every successful response.
+
+        Range requests are supported; response status is 206 with
+        `Content-Range` when a range is satisfied.
+      parameters:
+        - $ref: '#/components/parameters/RangeHeader'
+      responses:
+        '200':
+          $ref: '#/components/responses/BlobBytes'
+        '206':
+          $ref: '#/components/responses/PartialBlobBytes'
+        '401':
+          $ref: '#/components/responses/SignedUrlRequired'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Tombstoned'
+        '416':
+          $ref: '#/components/responses/RangeNotSatisfiable'
+        '451':
+          $ref: '#/components/responses/Quarantined'
+    head:
+      tags: [content-blob]
+      operationId: headBlob
+      summary: Probe a blob's existence and metadata via headers.
+      responses:
+        '200':
+          description: Blob exists; metadata returned in headers.
+          headers:
+            Content-Type: { schema: { type: string } }
+            Content-Length: { schema: { type: integer, format: int64 } }
+            ETag: { schema: { type: string } }
+            X-Nova-Cid: { schema: { type: string } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Tombstoned' }
+
+  /blob/{cid}.json:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+    get:
+      tags: [content-blob, metadata]
+      operationId: getBlobJson
+      summary: Public JSON metadata for a blob.
+      responses:
+        '200':
+          description: Blob metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Blob' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Tombstoned' }
+
+  # =========================================================================
+  # Image content (nova-image product layer)
+  # =========================================================================
+
+  /i/{cid}:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+    get:
+      tags: [content-image]
+      operationId: getImageOriginal
+      summary: Retrieve an image at its original format.
+      description: |
+        Equivalent to `/blob/{cid}` but rejects with `415` if the
+        underlying blob is not an image. Same caching headers.
+      responses:
+        '200': { $ref: '#/components/responses/ImageBytes' }
+        '401': { $ref: '#/components/responses/SignedUrlRequired' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Tombstoned' }
+        '415':
+          description: The blob exists but is not an image.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '451': { $ref: '#/components/responses/Quarantined' }
+    head:
+      tags: [content-image]
+      operationId: headImage
+      summary: Probe an image's existence and metadata via headers.
+      responses:
+        '200':
+          description: Image exists.
+          headers:
+            Content-Type: { schema: { type: string } }
+            Content-Length: { schema: { type: integer, format: int64 } }
+            X-Nova-Width: { schema: { type: integer } }
+            X-Nova-Height: { schema: { type: integer } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /i/{cid}.{ext}:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+      - name: ext
+        in: path
+        required: true
+        description: Output format file extension. The gateway re-encodes if necessary.
+        schema:
+          type: string
+          enum: [jpg, jpeg, png, webp, avif, gif]
+    get:
+      tags: [content-image]
+      operationId: getImageAsFormat
+      summary: Retrieve the image, transcoded if necessary.
+      responses:
+        '200': { $ref: '#/components/responses/ImageBytes' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Tombstoned' }
+
+  /i/{cid}/{w}x{h}.{ext}:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+      - name: w
+        in: path
+        required: true
+        description: Target width in pixels (1..8192).
+        schema: { type: integer, minimum: 1, maximum: 8192 }
+      - name: h
+        in: path
+        required: true
+        description: Target height in pixels (1..8192).
+        schema: { type: integer, minimum: 1, maximum: 8192 }
+      - name: ext
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [jpg, jpeg, png, webp, avif]
+    get:
+      tags: [content-image]
+      operationId: getImageResizedBox
+      summary: Retrieve the image resized to fit a `w x h` box (cover crop).
+      responses:
+        '200': { $ref: '#/components/responses/ImageBytes' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /i/{cid}/w{w}.{ext}:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+      - name: w
+        in: path
+        required: true
+        description: Target width in pixels (height computed to preserve aspect).
+        schema: { type: integer, minimum: 1, maximum: 8192 }
+      - name: ext
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [jpg, jpeg, png, webp, avif]
+    get:
+      tags: [content-image]
+      operationId: getImageResizedWidth
+      summary: Retrieve the image resized to a target width, aspect preserved.
+      responses:
+        '200': { $ref: '#/components/responses/ImageBytes' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /i/{cid}/p/{preset}.{ext}:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+      - name: preset
+        in: path
+        required: true
+        description: Operator-defined preset name (e.g., `thumb`, `og`, `hero`).
+        schema: { type: string, pattern: '^[a-z][a-z0-9_-]{0,31}$' }
+      - name: ext
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [jpg, jpeg, png, webp, avif]
+    get:
+      tags: [content-image]
+      operationId: getImagePreset
+      summary: Retrieve the image rendered through a named operator preset.
+      responses:
+        '200': { $ref: '#/components/responses/ImageBytes' }
+        '404':
+          description: Either the CID does not exist or the preset is unknown.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /i/{cid}.json:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+    get:
+      tags: [content-image, metadata]
+      operationId: getImageJson
+      summary: Public JSON metadata for an image (incl. perceptual hash).
+      responses:
+        '200':
+          description: Image metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Image' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '415':
+          description: Blob exists but is not an image.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # =========================================================================
+  # Upload (tus.io resumable)
+  # =========================================================================
+
+  /api/v1/uploads:
+    post:
+      tags: [upload]
+      operationId: createUpload
+      summary: Create a resumable upload (tus).
+      description: |
+        Implements the [tus.io](https://tus.io) resumable upload
+        protocol v1.0.0. The response `Location` header points at the
+        upload-specific endpoint that subsequent `PATCH`, `HEAD`, and
+        `DELETE` requests target.
+
+        After the final `PATCH` completes, call `POST .../finalize` to
+        commit the upload, compute the CID, and write the metadata
+        row.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/offset+octet-stream:
+            schema: { type: string, format: binary }
+      parameters:
+        - in: header
+          name: Tus-Resumable
+          required: true
+          schema: { type: string, enum: ['1.0.0'] }
+        - in: header
+          name: Upload-Length
+          required: true
+          schema: { type: integer, format: int64, minimum: 0 }
+        - in: header
+          name: Upload-Metadata
+          required: false
+          description: |
+            tus metadata field. Nova recognizes:
+
+              - `filename` — original filename (informational)
+              - `mime_type` — declared content-type (validated server-side)
+              - `expected_cid` — if the client computed the CID locally,
+                the server short-circuits and returns the existing CID
+                without receiving any bytes.
+              - `product` — `image`, `video`, `audio`, `archive`,
+                `document`, `raw` — selects the validation pipeline.
+              - `collection_id` — UUID of the destination collection.
+          schema: { type: string }
+      responses:
+        '201':
+          description: Upload created.
+          headers:
+            Location:
+              required: true
+              schema: { type: string, format: uri }
+              description: The upload-specific URL for subsequent calls.
+            Tus-Resumable: { schema: { type: string } }
+            Upload-Offset: { schema: { type: integer, format: int64 } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413':
+          description: Upload exceeds operator's `max_upload_size`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/uploads/{id}:
+    parameters:
+      - $ref: '#/components/parameters/UploadIdParam'
+    head:
+      tags: [upload]
+      operationId: getUploadOffset
+      summary: Probe the current offset of an in-progress upload.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Offset and metadata returned in headers.
+          headers:
+            Upload-Offset: { schema: { type: integer, format: int64 } }
+            Upload-Length: { schema: { type: integer, format: int64 } }
+            Tus-Resumable: { schema: { type: string } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [upload]
+      operationId: appendUploadChunk
+      summary: Append a chunk to an in-progress upload (tus PATCH).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: header
+          name: Upload-Offset
+          required: true
+          schema: { type: integer, format: int64 }
+        - in: header
+          name: Tus-Resumable
+          required: true
+          schema: { type: string, enum: ['1.0.0'] }
+        - in: header
+          name: Content-Type
+          required: true
+          schema: { type: string, enum: ['application/offset+octet-stream'] }
+      requestBody:
+        required: true
+        content:
+          application/offset+octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '204':
+          description: Chunk accepted.
+          headers:
+            Upload-Offset: { schema: { type: integer, format: int64 } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Offset mismatch.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [upload]
+      operationId: abandonUpload
+      summary: Abandon an in-progress upload.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Upload deleted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/uploads/{id}/finalize:
+    parameters:
+      - $ref: '#/components/parameters/UploadIdParam'
+    post:
+      tags: [upload]
+      operationId: finalizeUpload
+      summary: Finalize an upload, compute its CID, and persist metadata.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Upload finalized.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Upload not yet complete (offset != length).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # =========================================================================
+  # Non-resumable upload fallbacks
+  # =========================================================================
+
+  /api/v1/blobs:
+    post:
+      tags: [upload]
+      operationId: uploadBlobMultipart
+      summary: Upload a generic blob via multipart/form-data.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                product:
+                  type: string
+                  enum: [image, video, audio, archive, document, raw]
+                  default: raw
+                collection_id:
+                  type: string
+                  format: uuid
+                alt_text: { type: string }
+                caption: { type: string }
+      responses:
+        '201':
+          description: Blob created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413':
+          description: Upload exceeds operator's `max_upload_size`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/images:
+    post:
+      tags: [upload]
+      operationId: uploadImageMultipart
+      summary: Upload an image with image-specific validation.
+      description: |
+        Identical to `POST /api/v1/blobs` with `product=image`, but
+        rejects non-image MIME types early and runs the perceptual-
+        hash blocklist scan synchronously so the caller learns
+        immediately if the upload was rejected on moderation grounds.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                collection_id:
+                  type: string
+                  format: uuid
+                alt_text: { type: string }
+                caption: { type: string }
+      responses:
+        '201':
+          description: Image created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415':
+          description: File MIME type is not an accepted image format.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Upload rejected by the moderation blocklist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # =========================================================================
+  # Metadata management
+  # =========================================================================
+
+  /api/v1/blobs/{cid}:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+    get:
+      tags: [metadata]
+      operationId: getBlobMeta
+      summary: Authenticated metadata read for a blob.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Blob metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Blob' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [metadata]
+      operationId: updateBlobMeta
+      summary: Update mutable owner-controlled fields on a blob.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlobUpdate' }
+      responses:
+        '200':
+          description: Blob metadata updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Blob' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [metadata]
+      operationId: deleteBlob
+      summary: Soft-delete a blob (initiates crypto-shred and unpin broadcast).
+      description: |
+        The blob row enters `state = 'soft_deleted'` for the operator's
+        configured grace window, then transitions to `tombstoned`. On
+        tombstone the per-blob encryption key is zeroed and an unpin
+        broadcast is sent across the federation. Bytes on volunteer
+        disks may persist as unrecoverable ciphertext.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Deletion accepted. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/images/{cid}:
+    parameters:
+      - $ref: '#/components/parameters/CidParam'
+    get:
+      tags: [metadata]
+      operationId: getImageMeta
+      summary: Authenticated metadata read for an image.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Image metadata.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Image' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [metadata]
+      operationId: updateImageMeta
+      summary: Update mutable owner-controlled fields on an image.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImageUpdate' }
+      responses:
+        '200':
+          description: Image metadata updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Image' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [metadata]
+      operationId: deleteImage
+      summary: Soft-delete an image (alias for `DELETE /api/v1/blobs/{cid}`).
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Deletion accepted. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # =========================================================================
+  # Collections
+  # =========================================================================
+
+  /api/v1/collections:
+    get:
+      tags: [collections]
+      operationId: listCollections
+      summary: List collections owned by the caller (or public ones).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: visibility
+          in: query
+          schema:
+            type: string
+            enum: [public, unlisted, private]
+      responses:
+        '200':
+          description: Collection list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCollections'
+    post:
+      tags: [collections]
+      operationId: createCollection
+      summary: Create a collection.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CollectionCreate' }
+      responses:
+        '201':
+          description: Collection created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Collection' }
+
+  /api/v1/collections/{id}:
+    parameters:
+      - $ref: '#/components/parameters/CollectionIdParam'
+    get:
+      tags: [collections]
+      operationId: getCollection
+      summary: Read a collection.
+      responses:
+        '200':
+          description: Collection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Collection' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [collections]
+      operationId: updateCollection
+      summary: Update collection metadata.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CollectionUpdate' }
+      responses:
+        '200':
+          description: Updated collection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Collection' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [collections]
+      operationId: deleteCollection
+      summary: Delete a collection (does not delete its items).
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Collection deleted. }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/collections/{id}/items:
+    parameters:
+      - $ref: '#/components/parameters/CollectionIdParam'
+    post:
+      tags: [collections]
+      operationId: addCollectionItem
+      summary: Add a blob to a collection.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cid]
+              properties:
+                cid: { $ref: '#/components/schemas/Cid' }
+                position: { type: integer }
+      responses:
+        '201':
+          description: Item added.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CollectionItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/collections/{id}/items/{cid}:
+    parameters:
+      - $ref: '#/components/parameters/CollectionIdParam'
+      - $ref: '#/components/parameters/CidParam'
+    delete:
+      tags: [collections]
+      operationId: removeCollectionItem
+      summary: Remove a blob from a collection.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Item removed. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # =========================================================================
+  # Users
+  # =========================================================================
+
+  /api/v1/users/me:
+    get:
+      tags: [metadata]
+      operationId: getCurrentUser
+      summary: Return the authenticated user's profile.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Current user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # =========================================================================
+  # Search (perceptual)
+  # =========================================================================
+
+  /api/v1/search/perceptual:
+    get:
+      tags: [search]
+      operationId: searchPerceptual
+      summary: Find images perceptually similar to a given CID.
+      description: |
+        Uses the in-memory BK-tree index over PDQ hashes. By default
+        operator-only (deduplication tooling); operators may flip a
+        config to expose to authenticated users.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: cid
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Cid' }
+        - name: max_distance
+          in: query
+          description: Maximum Hamming distance over the 256-bit hash.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 64
+            default: 5
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Near-duplicate matches.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [matches]
+                properties:
+                  matches:
+                    type: array
+                    items:
+                      type: object
+                      required: [cid, distance]
+                      properties:
+                        cid: { $ref: '#/components/schemas/Cid' }
+                        distance: { type: integer, minimum: 0 }
+
+  # =========================================================================
+  # Admin (operator + moderator)
+  # =========================================================================
+
+  /api/v1/admin/nodes:
+    get:
+      tags: [admin]
+      operationId: listNodes
+      summary: List federated pinning nodes.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Node list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes]
+                properties:
+                  nodes:
+                    type: array
+                    items: { $ref: '#/components/schemas/Node' }
+
+  /api/v1/admin/nodes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/NodeIdParam'
+    get:
+      tags: [admin]
+      operationId: getNode
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Node detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Node' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/nodes/{id}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/NodeIdParam'
+    post:
+      tags: [admin]
+      operationId: revokeNode
+      summary: Mark a node compromised; revoke its cert and re-replicate its pins.
+      description: |
+        The poison-pill protocol from `FEDERATION_PROTOCOL.md`.
+
+        On revocation the coordinator (a) revokes the node's Nebula
+        certificate, (b) tombstones the node's pin assignments,
+        (c) emits the `federation.node_revoked` webhook, and
+        (d) enqueues re-replication for any CIDs whose factor
+        dropped below target.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '202':
+          description: Revocation accepted; healing dispatched asynchronously.
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/pins:
+    get:
+      tags: [admin]
+      operationId: listPins
+      summary: List pin assignments (filterable).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [pending, acked, failed, unpinning]
+        - name: node_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: cid
+          in: query
+          schema: { $ref: '#/components/schemas/Cid' }
+      responses:
+        '200':
+          description: Pin assignments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPinAssignments'
+
+  /api/v1/admin/moderation/blocklist:
+    post:
+      tags: [admin]
+      operationId: addBlocklistHash
+      summary: Add a perceptual-hash entry to the moderation blocklist.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [perceptual_hash, source]
+              properties:
+                perceptual_hash:
+                  type: string
+                  format: byte
+                  description: 256-bit PDQ hash, base64-encoded.
+                source:
+                  type: string
+                  description: Provenance label (e.g., `stop_ncii`, `operator_manual`).
+                notes: { type: string }
+      responses:
+        '201':
+          description: Hash added.
+
+  /api/v1/admin/moderation/queue:
+    get:
+      tags: [admin]
+      operationId: listModerationQueue
+      summary: List pending moderation decisions.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+      responses:
+        '200':
+          description: Moderation queue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedModerationDecisions'
+
+  /api/v1/admin/moderation/{id}/takedown:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [admin]
+      operationId: executeModerationTakedown
+      summary: Execute a takedown (tombstone + crypto-shred + unpin broadcast).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+      responses:
+        '202':
+          description: Takedown dispatched; cluster-wide unpin broadcast in progress.
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/dmca:
+    get:
+      tags: [admin]
+      operationId: listDmcaCases
+      summary: List DMCA cases.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [received, investigating, actioned, rejected]
+      responses:
+        '200':
+          description: DMCA cases.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedDmcaCases'
+
+  /api/v1/admin/keys/rotate-signing:
+    post:
+      tags: [admin]
+      operationId: rotateSigningKey
+      summary: Rotate the HMAC signing key used for signed URLs.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grace_seconds:
+                  type: integer
+                  description: Window during which the previous key remains valid (default 86400).
+                  minimum: 0
+                  default: 86400
+      responses:
+        '201':
+          description: Key rotated; previous key remains valid until `grace_expires_at`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kid, grace_expires_at]
+                properties:
+                  kid: { type: string }
+                  grace_expires_at: { type: string, format: date-time }
+
+  /api/v1/admin/signed-urls/revoke:
+    post:
+      tags: [admin]
+      operationId: revokeSignedUrls
+      summary: Revoke signed URLs by canonical-string prefix.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prefix]
+              properties:
+                prefix:
+                  type: string
+                  description: |
+                    Any canonical-string prefix. Common forms:
+                    `cid:{cid}`, `aud:{origin}`, `kid:{kid}`. See
+                    `docs/specs/SIGNED_URL_FORMAT.md`.
+      responses:
+        '201':
+          description: Revocation recorded.
+
+  # =========================================================================
+  # Public legal endpoints
+  # =========================================================================
+
+  /legal/dmca:
+    post:
+      tags: [legal]
+      operationId: submitDmcaNotice
+      summary: Submit a DMCA takedown notice.
+      description: |
+        The receipt endpoint for DMCA Section 512 notices. Notices are
+        recorded in `dmca_cases` for the operator to review; this
+        endpoint does not auto-action. See `docs/legal/DMCA_PROCEDURE.md`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DmcaSubmission' }
+      responses:
+        '201':
+          description: Notice received.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [case_id]
+                properties:
+                  case_id: { type: string, format: uuid }
+
+  /legal/dsar:
+    get:
+      tags: [legal]
+      operationId: getDsarInfo
+      summary: Public information about how to submit a data-subject access request.
+      security: []
+      responses:
+        '200':
+          description: DSAR information.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contact, instructions]
+                properties:
+                  contact: { type: string, format: email }
+                  instructions: { type: string }
+
+# =========================================================================
+# Components
+# =========================================================================
+
+components:
+
+  securitySchemes:
+
+    signedUrl:
+      type: apiKey
+      in: query
+      name: sig
+      description: |
+        HMAC-SHA256 signature, base64url-encoded. Always accompanied by
+        `exp`, `aud`, and `kid` query parameters. See
+        `docs/specs/SIGNED_URL_FORMAT.md`.
+
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        OIDC bearer token issued by the operator's Authelia instance
+        (or any compatible OIDC provider). Required for `/api/v1/*`
+        endpoints unless the operator runs in `auth: anonymous` mode.
+
+  parameters:
+
+    CidParam:
+      name: cid
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Cid' }
+
+    UploadIdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+
+    CollectionIdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+    NodeIdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+    PageParam:
+      name: page
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, default: 1 }
+
+    PerPageParam:
+      name: per_page
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+    RangeHeader:
+      name: Range
+      in: header
+      required: false
+      description: HTTP/1.1 byte range, e.g., `bytes=0-1023`.
+      schema: { type: string }
+
+  responses:
+
+    BlobBytes:
+      description: Blob bytes.
+      headers:
+        Content-Type: { schema: { type: string } }
+        Content-Length: { schema: { type: integer, format: int64 } }
+        ETag: { schema: { type: string } }
+        Cache-Control:
+          schema: { type: string }
+          description: Always `public, max-age=31536000, immutable`.
+      content:
+        application/octet-stream:
+          schema: { type: string, format: binary }
+
+    PartialBlobBytes:
+      description: Partial blob bytes (Range request).
+      headers:
+        Content-Type: { schema: { type: string } }
+        Content-Length: { schema: { type: integer, format: int64 } }
+        Content-Range: { schema: { type: string } }
+        Cache-Control: { schema: { type: string } }
+      content:
+        application/octet-stream:
+          schema: { type: string, format: binary }
+
+    ImageBytes:
+      description: Image bytes.
+      headers:
+        Content-Type: { schema: { type: string } }
+        Content-Length: { schema: { type: integer, format: int64 } }
+        ETag: { schema: { type: string } }
+        Cache-Control: { schema: { type: string } }
+      content:
+        image/jpeg:
+          schema: { type: string, format: binary }
+        image/png:
+          schema: { type: string, format: binary }
+        image/webp:
+          schema: { type: string, format: binary }
+        image/avif:
+          schema: { type: string, format: binary }
+
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Unauthorized:
+      description: Authentication required.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Forbidden:
+      description: Authenticated but not authorized for this action.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Tombstoned:
+      description: |
+        The CID was deleted; the per-blob encryption key has been
+        shredded and the gateway can no longer decrypt the bytes
+        (which may still exist as ciphertext on volunteer disks).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    Quarantined:
+      description: |
+        The CID is under moderation hold. Reads are suspended pending
+        operator review.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    SignedUrlRequired:
+      description: |
+        The blob belongs to a private collection; provide a valid
+        signed URL or a bearer token for an authorized user.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+    RangeNotSatisfiable:
+      description: The Range header could not be satisfied.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+
+    Cid:
+      type: string
+      pattern: '^bafy[a-z0-9]{55,}$'
+      description: |
+        IPFS CID v1 in base32 multibase. When operator-level encryption
+        is enabled (the default), this is the CID of the **ciphertext**
+        blob, not of the plaintext.
+      example: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status: { type: string, enum: [ok] }
+        version: { type: string }
+        time: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Machine-readable code, snake_case.
+          example: not_found
+        message:
+          type: string
+          description: Human-readable explanation.
+        request_id:
+          type: string
+          format: uuid
+        details:
+          type: object
+          additionalProperties: true
+
+    User:
+      type: object
+      required: [id, email, role, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role:
+          type: string
+          enum: [viewer, uploader, moderator, operator]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Blob:
+      type: object
+      required: [cid, mime_type, byte_size, uploaded_at, state, product, urls]
+      properties:
+        cid: { $ref: '#/components/schemas/Cid' }
+        mime_type:
+          type: string
+          example: image/jpeg
+        byte_size:
+          type: integer
+          format: int64
+          minimum: 0
+        uploaded_at: { type: string, format: date-time }
+        state:
+          type: string
+          enum: [active, soft_deleted, quarantined, tombstoned]
+        product:
+          type: string
+          enum: [image, video, audio, archive, document, raw]
+        owner_id:
+          type: string
+          format: uuid
+          nullable: true
+        urls:
+          type: object
+          required: [bytes, json]
+          properties:
+            bytes:
+              type: string
+              format: uri
+              description: Direct content URL (`/blob/{cid}`).
+            json:
+              type: string
+              format: uri
+              description: Public metadata URL (`/blob/{cid}.json`).
+
+    BlobUpdate:
+      type: object
+      properties:
+        alt_text: { type: string, nullable: true }
+        caption: { type: string, nullable: true }
+
+    Image:
+      allOf:
+        - $ref: '#/components/schemas/Blob'
+        - type: object
+          required: [width, height, perceptual_hash]
+          properties:
+            width: { type: integer, minimum: 1 }
+            height: { type: integer, minimum: 1 }
+            perceptual_hash:
+              type: string
+              format: byte
+              description: 256-bit PDQ hash, base64-encoded.
+            alt_text: { type: string, nullable: true }
+            caption: { type: string, nullable: true }
+            urls:
+              type: object
+              required: [original, json]
+              properties:
+                original:
+                  type: string
+                  format: uri
+                json:
+                  type: string
+                  format: uri
+                presets:
+                  type: object
+                  additionalProperties:
+                    type: string
+                    format: uri
+
+    ImageUpdate:
+      type: object
+      properties:
+        alt_text: { type: string, nullable: true }
+        caption: { type: string, nullable: true }
+
+    Collection:
+      type: object
+      required: [id, owner_id, name, slug, visibility, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        owner_id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        visibility:
+          type: string
+          enum: [public, unlisted, private]
+        created_at: { type: string, format: date-time }
+        item_count: { type: integer, minimum: 0 }
+
+    CollectionCreate:
+      type: object
+      required: [name, slug, visibility]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        slug:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,63}$'
+        visibility:
+          type: string
+          enum: [public, unlisted, private]
+
+    CollectionUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        visibility:
+          type: string
+          enum: [public, unlisted, private]
+
+    CollectionItem:
+      type: object
+      required: [collection_id, cid, position, added_at]
+      properties:
+        collection_id: { type: string, format: uuid }
+        cid: { $ref: '#/components/schemas/Cid' }
+        position: { type: integer }
+        added_at: { type: string, format: date-time }
+
+    Node:
+      type: object
+      required:
+        - id
+        - nebula_cert_fingerprint
+        - capacity_bytes
+        - bandwidth_budget_bytes_per_day
+        - status
+        - joined_at
+      properties:
+        id: { type: string, format: uuid }
+        nebula_cert_fingerprint: { type: string }
+        display_name: { type: string, nullable: true }
+        geo_declared:
+          type: string
+          nullable: true
+          description: Self-declared geographic hint; not verified.
+        capacity_bytes: { type: integer, format: int64, minimum: 0 }
+        bandwidth_budget_bytes_per_day:
+          type: integer
+          format: int64
+          minimum: 0
+        policy_filters:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [active, degraded, offline, revoked]
+        joined_at: { type: string, format: date-time }
+        last_seen_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    PinAssignment:
+      type: object
+      required: [cid, node_id, state, assigned_at]
+      properties:
+        cid: { $ref: '#/components/schemas/Cid' }
+        node_id: { type: string, format: uuid }
+        state:
+          type: string
+          enum: [pending, acked, failed, unpinning]
+        assigned_at: { type: string, format: date-time }
+        acked_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    ModerationDecision:
+      type: object
+      required: [id, cid, rule, action, decided_at]
+      properties:
+        id: { type: string, format: uuid }
+        cid: { $ref: '#/components/schemas/Cid' }
+        rule:
+          type: string
+          enum: [pdq_match, dmca, operator_manual, user_report]
+        rule_ref: { type: string, nullable: true }
+        action:
+          type: string
+          enum: [quarantine, tombstone, allow]
+        decided_by:
+          type: string
+          format: uuid
+          nullable: true
+        decided_at: { type: string, format: date-time }
+        notes: { type: string, nullable: true }
+
+    DmcaSubmission:
+      type: object
+      required:
+        - claimant_name
+        - claimant_email
+        - sworn_statement
+        - target_cid
+      properties:
+        claimant_name: { type: string }
+        claimant_email: { type: string, format: email }
+        sworn_statement:
+          type: string
+          description: |
+            The good-faith statement required by 17 U.S.C. § 512(c)(3),
+            including identification of the work, the location of the
+            allegedly infringing material, and the claimant's
+            authorization.
+        target_cid: { $ref: '#/components/schemas/Cid' }
+
+    DmcaCase:
+      type: object
+      required: [id, claimant_name, claimant_email, target_cid, received_at, status]
+      properties:
+        id: { type: string, format: uuid }
+        claimant_name: { type: string }
+        claimant_email: { type: string, format: email }
+        target_cid: { $ref: '#/components/schemas/Cid' }
+        received_at: { type: string, format: date-time }
+        actioned_at: { type: string, format: date-time, nullable: true }
+        status:
+          type: string
+          enum: [received, investigating, actioned, rejected]
+
+    UploadResult:
+      type: object
+      required: [cid, byte_size, mime_type, urls]
+      properties:
+        cid: { $ref: '#/components/schemas/Cid' }
+        byte_size: { type: integer, format: int64 }
+        mime_type: { type: string }
+        product:
+          type: string
+          enum: [image, video, audio, archive, document, raw]
+        urls:
+          type: object
+          required: [original, json]
+          properties:
+            original: { type: string, format: uri }
+            json: { type: string, format: uri }
+            presets:
+              type: object
+              additionalProperties: { type: string, format: uri }
+
+    Pagination:
+      type: object
+      required: [page, per_page, total]
+      properties:
+        page: { type: integer, minimum: 1 }
+        per_page: { type: integer, minimum: 1 }
+        total: { type: integer, minimum: 0 }
+
+    PaginatedCollections:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Collection' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    PaginatedPinAssignments:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/PinAssignment' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    PaginatedModerationDecisions:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/ModerationDecision' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    PaginatedDmcaCases:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/DmcaCase' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
