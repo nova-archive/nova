@@ -1,6 +1,6 @@
 # Product Module Interface
 
-Status: **Phase 0 — normative.** Defines how content-type-specific
+Status: **Phase 0 v2 — normative.** Defines how content-type-specific
 product layers (`nova-image` first, future `nova-video`,
 `nova-audio`, `nova-archive`, `nova-document`) plug into the
 storage core (`nova-storage`).
@@ -21,11 +21,58 @@ coordinator at boot and contributes:
    against StopNCII for images).
 4. **URL routes** (e.g., `/i/{cid}/...` for image transforms).
 5. **Optional read-time transforms** (e.g., govips-driven resize).
+6. **Optional automatic format conversion** at upload (e.g., PNG →
+   WebP for the spectral-bloat use case described in
+   `nova-image`'s docs).
 
 The interface is part of `pkg/coordinator`'s public API and follows
 its semver discipline. Adding methods is a major-version change.
 Adding non-required hooks via wrapper interfaces is a minor-version
 change.
+
+## Upload pipeline (v2 — single canonical ordering)
+
+The original Phase 0 spec contradicted itself on whether `OnUpload`
+ran before or after CID computation. The contradiction was real: with
+random-nonce envelope encryption, the envelope CID does not exist
+until after encryption. v2 resolves this with a single canonical
+sequence and two distinct hooks.
+
+```
+1.  Receive upload into temp storage (tus chunks accumulate).
+2.  Storage core: validate declared MIME / declared size / collection.
+3.  Storage core: route to the product based on declared product
+    type or matched MIME type.
+4.  Product hook AnalyzeUpload(ctx, plaintext) → (Metadata, ScanResult, error)
+       - product extracts metadata (e.g., width/height/perceptual hash)
+       - product runs synchronous moderation scanners
+       - product MAY return a transformed plaintext (e.g., PNG → WebP
+         for nova-image's spectral-bloat mitigation) — see § "Format
+         conversion"
+       - moderation tombstone/quarantine short-circuits the pipeline
+5.  Storage core: encrypt (transformed) plaintext into envelope
+    using deterministic Kubo settings (see IPFS_IMPORT_RULES.md).
+6.  Storage core: import envelope into local Kubo, obtain envelope CID.
+7.  Storage core: write blob_manifests + blob_blocks rows for proof-readiness.
+8.  DB transaction:
+       INSERT blobs row (with metadata fields)
+       INSERT product side-table row (keyed by CID)
+       COMMIT
+9.  Storage core: pin to local Kubo cluster.
+10. Storage core: enqueue replication via the orchestrator.
+11. Product hook OnCommitted(ctx, blob, metadata) (best-effort, async-ok)
+       - generate derivatives, side-write thumbs, emit webhooks
+       - any failure here does NOT roll back the upload
+```
+
+Step 4's `AnalyzeUpload` is the moderation/metadata gate. Step 11's
+`OnCommitted` is the post-commit hook for asynchronous follow-on
+work.
+
+The plaintext stream passed to `AnalyzeUpload` is provided for the
+duration of that call only. Products MUST NOT retain it. After
+`AnalyzeUpload` returns, the storage core takes ownership of the
+(possibly transformed) plaintext for encryption.
 
 ## Go interface
 
@@ -36,6 +83,7 @@ package product
 import (
     "context"
     "io"
+    "io/fs"
 
     "github.com/go-chi/chi/v5"
     "github.com/nova-archive/nova/pkg/coordinator/storage"
@@ -52,21 +100,35 @@ type Product interface {
     // accepts at upload. Empty slice means "any MIME type".
     AcceptedMimeTypes() []string
 
-    // OnUpload is called after the storage core has computed the
-    // CID, encrypted the bytes, and persisted the blobs row. The
-    // product MUST NOT mutate the blob; it MAY persist side-table
-    // metadata and run moderation. Returning an error fails the
-    // upload and the storage core rolls back.
+    // AnalyzeUpload runs on plaintext before encryption. The product
+    // extracts metadata, runs moderation scanners, and optionally
+    // returns a transformed plaintext (e.g., re-encoded format) for
+    // the storage core to encrypt and store.
     //
     // plaintext is provided for the lifetime of this call only;
     // the product MUST NOT retain it.
-    OnUpload(ctx context.Context, blob *storage.Blob, plaintext io.Reader) error
+    //
+    // If transformedPlaintext is non-nil, the storage core encrypts
+    // and stores the transformed bytes. The original is discarded.
+    //
+    // If ScanResult.Action != "allow", the upload is rejected and
+    // the storage core does not commit any state.
+    AnalyzeUpload(
+        ctx context.Context,
+        upload *UploadContext,
+        plaintext io.Reader,
+    ) (metadata Metadata, scan *storage.ScanResult, transformedPlaintext io.Reader, err error)
+
+    // OnCommitted is called after the storage core has committed the
+    // blob and product side-table rows. Best-effort; errors here are
+    // logged and metric-counted but do not roll back the upload.
+    // Use this for async derivative generation, webhook emission,
+    // and similar follow-on work.
+    OnCommitted(ctx context.Context, blob *storage.Blob, metadata Metadata) error
 
     // OnDelete is called as part of the tombstone flow, before the
     // crypto-shred and unpin broadcast. The product cleans up
-    // side-table rows. Errors are logged and metric-counted but
-    // do not block the deletion (the storage core's audit and
-    // shred steps are authoritative).
+    // side-table rows and cascades to its own derivatives.
     OnDelete(ctx context.Context, blob *storage.Blob) error
 
     // RegisterRoutes mounts the product's read routes on the chi
@@ -84,24 +146,46 @@ type Product interface {
     Migrations() (fs.FS, string) // (embedFS, subdir)
 }
 
-// Optional interface: products that ship a moderation scanner
-// implement this. The coordinator's moderation pipeline iterates
-// every registered scanner; an action of "tombstone" or
-// "quarantine" from any scanner short-circuits.
-type ModerationScanner interface {
-    Scan(ctx context.Context, blob *storage.Blob, plaintext io.Reader) (*ScanResult, error)
+// UploadContext carries declared metadata from the upload request:
+// declared MIME type, declared filename, target collection, owner.
+type UploadContext struct {
+    DeclaredMimeType string
+    Filename         string
+    CollectionID     *string
+    OwnerID          *string
+    SourceIP         string
 }
 
-type ScanResult struct {
-    Action   storage.ModerationAction // allow | quarantine | tombstone
-    Rule     string                   // matches moderation_decisions.rule_ref
-    Distance int                      // optional similarity distance
-    Notes    string
+// Metadata is product-specific. nova-image returns ImageMetadata
+// (width, height, perceptual_hash). The storage core opaquely passes
+// it to OnCommitted.
+type Metadata interface {
+    ProductName() string
 }
 ```
 
-The full Go signatures (including parameter docs) live in
-`pkg/coordinator/product/product.go` once Phase 1 begins.
+## Format conversion (nova-image)
+
+`nova-image`'s `AnalyzeUpload` MAY transform incoming PNG/BMP/TIFF
+uploads into WebP before encryption. The motivation is the
+"spectral-bloat" use case: high-resolution screenshots and
+spectrograms commonly arrive as 30+ MB PNGs but lossless WebP
+encoding reduces them to 5-7 MB without visual loss.
+
+Behaviour:
+
+- Configured via `nova-image.format_conversion` in operator config.
+  Default off in Phase 1; recommend on for deployments expecting
+  large screenshot/spectral uploads.
+- When on, `AnalyzeUpload` re-encodes the plaintext to WebP
+  (lossless for screenshots, configurable quality for photos)
+  before returning it to the storage core for encryption.
+- The transformation happens before the envelope CID is computed,
+  so the stored CID is the CID of the transformed bytes. The
+  original is not retained.
+- Per-collection override: `collection.policy.preserve_original_format=true`
+  disables conversion for collections that need byte-perfect retention
+  (e.g., scientific imaging archives).
 
 ## Registration
 
@@ -117,7 +201,11 @@ coord, err := coordinator.New(coordinator.Config{
 if err != nil { ... }
 
 // Register products. Order matters for migrations only.
-coord.RegisterProduct(image.New(image.Config{...}))
+coord.RegisterProduct(image.New(image.Config{
+    FormatConversion: cfg.Image.FormatConversion,
+    PerceptualHash: cfg.Image.PerceptualHash,
+    // ...
+}))
 // future: coord.RegisterProduct(video.New(...))
 
 if err := coord.Run(ctx); err != nil { ... }
@@ -133,20 +221,21 @@ or WASM-based runtime loading; that complexity is not justified now.
 
 ## URL prefix conventions
 
-| Prefix       | Owned by         | Notes                                 |
-|--------------|------------------|---------------------------------------|
-| `/blob/...`  | storage core     | Generic content addressing.           |
-| `/api/v1/...`| storage core     | Management API.                       |
-| `/fed/v1/...`| storage core     | Federation (Nebula-only).             |
-| `/health`, `/legal/...` | storage core | Public meta-endpoints.        |
-| `/i/...`     | `nova-image`     | Image content + transforms.           |
-| `/v/...`     | future `nova-video` (reserved) |                          |
-| `/a/...`     | future `nova-audio` (reserved) |                          |
-| `/d/...`     | future `nova-document` (reserved) |                       |
-| `/r/...`     | future `nova-archive` (reserved; "raw archive") |        |
+| Prefix       | Owned by         | Notes |
+|--------------|------------------|---|
+| `/blob/...`  | storage core     | Generic content addressing. |
+| `/api/v1/...`| storage core     | Management API. |
+| `/fed/v1/...`| storage core     | Federation (Nebula-only). |
+| `/health`, `/legal/...` | storage core | Public meta-endpoints. |
+| `/i/...`     | `nova-image`     | Image content + transforms. |
+| `/v/...`     | future `nova-video` (reserved) | |
+| `/a/...`     | future `nova-audio` (reserved) | |
+| `/d/...`     | future `nova-document` (reserved) | |
+| `/r/...`     | future `nova-archive` (reserved; "raw archive") | |
 
 Products MUST NOT mount routes under any storage-core prefix. The
-coordinator's chi router enforces this with a registration-time check.
+coordinator's chi router enforces this with a registration-time
+check.
 
 ## Database conventions
 
@@ -171,28 +260,44 @@ metadata follows these conventions:
    "format" enum they each define their own. Sharing causes coupled
    migrations and breaks the modular contract.
 
-## Upload pipeline
+## Derivatives (v2 — first-class blobs)
 
-The storage core's upload handler executes this sequence per request:
+In v1 derivatives lived in a separate `derivatives` table. In v2 they
+are full first-class `blobs` rows with `parent_cid`,
+`derivative_preset`, and `derivative_format` columns. This means:
 
-1. Stream incoming bytes to a temp area (tus chunks accumulate, or
-   multipart parts buffer).
-2. On finalize: compute the plaintext hash; route to the chosen
-   product based on declared MIME type or `Upload-Metadata.product`.
-3. Call `product.OnUpload(ctx, blob, plaintext)` **before** the
-   transaction commits. If it returns an error, abort the entire
-   upload (no `blobs` row, no envelope written, no IPFS pin).
-4. Call any `ModerationScanner.Scan(...)` registered by any product
-   (cross-product moderation is fine; an image's PDQ scanner sees
-   image uploads, etc.). Any `tombstone` or `quarantine` result
-   short-circuits the upload and records a `moderation_decisions`
-   row.
-5. Encrypt the plaintext per `ENCRYPTION_ENVELOPE.md`, compute the
-   envelope CID, write to local Kubo, insert the `blobs` row, and
-   enqueue replication.
+- Every derivative has its own `data_encryption_keys` row.
+- Every derivative has its own `state` (lifecycle independent of
+  the parent's, but cascaded on parent state changes).
+- Every derivative has its own `pin_assignments` rows (replicated
+  across the federation per its content class — `normal` for image
+  derivatives, default `R=3`).
+- Tombstoning a parent cascades to tombstone all derivatives. The
+  product's `OnDelete` hook is responsible for this cascade.
+- Quarantining or legal-holding a parent cascades to derivatives
+  the same way.
 
-`OnUpload` is the place to write the side-table row (e.g., for
-images: decode dimensions and PDQ hash, insert `image_metadata`).
+The lookup `(parent_cid, preset, format) → derivative_cid` is served
+by the unique partial index `blobs_derivative_lookup_idx` on
+`blobs (parent_cid, derivative_preset, derivative_format) WHERE parent_cid IS NOT NULL`.
+
+When `nova-image` generates a derivative on cache miss:
+
+1. Read parent envelope from local Kubo, decrypt.
+2. Apply transform (resize, format-convert, etc.) to plaintext.
+3. Encrypt result with a fresh per-blob key under
+   `data_encryption_keys`.
+4. Import envelope into local Kubo, obtain derivative CID.
+5. INSERT `blobs` row with `parent_cid`, `derivative_preset`,
+   `derivative_format`, `product = 'image'`, fresh
+   `encryption_key_id`.
+6. INSERT `image_metadata` row (width/height; perceptual_hash NULL,
+   parent's hash is canonical).
+7. Commit transaction.
+8. Pin locally and enqueue replication (default `R=3` for `normal`
+   class).
+9. Stream the derivative bytes to the original requester (with the
+   correct `Cache-Control` per the openapi.yaml stratification).
 
 ## Read pipeline
 
@@ -201,14 +306,14 @@ The product handler:
 
 1. Resolves the CID and (optional) preset/format from the URL.
 2. Looks up the cached derivative if the URL implies a transform
-   (e.g., `/i/{cid}/w512.webp`). Derivative CIDs are tracked in
-   the storage core's `derivatives` table.
-3. On cache miss: fetches the original CID from local Kubo,
-   decrypts via the storage core, transforms (e.g., govips), inserts
-   the derivative row, encrypts the derivative, pins it locally,
-   enqueues replication.
-4. Sets the `Cache-Control: public, max-age=31536000, immutable`
-   header.
+   (e.g., `/i/{cid}/w512.webp`). The lookup is a partial-index scan
+   on `blobs (parent_cid, derivative_preset, derivative_format)`.
+3. On cache miss: fetches the parent CID from local Kubo, decrypts
+   via the storage core, transforms (e.g., govips), creates the
+   derivative row per the procedure above.
+4. Sets `Cache-Control` per the stratified policy in `openapi.yaml`
+   (immutable for public; private/no-store for signed/quarantined/
+   tombstoned).
 5. Streams the bytes to the response writer.
 
 The storage core provides helpers (`storage.Get`, `storage.Decrypt`,
@@ -231,17 +336,44 @@ period during which v1 and v2 are both supported.
 
 ## Reference: nova-image
 
-`nova-image` is the canonical implementation. Its module layout under
-the monorepo:
+`nova-image` is the canonical implementation. Its module layout
+under the monorepo:
 
 ```
 internal/transform/         govips wrapper, transform pipeline
 internal/perceptualhash/    PDQ + BK-tree
 internal/imageapi/          /i/* route handlers
-internal/imagemoderation/   ModerationScanner that scans against StopNCII
+internal/imagemoderation/   ModerationScanner (PDQ vs StopNCII, severe-content escalation)
 nova-image/migrations/      Side-table migrations (image_metadata)
 web/widget/                 Drag-and-drop uploader
 ```
 
+`AnalyzeUpload` for `nova-image`:
+1. Verify MIME is one of `image/jpeg`, `image/png`, `image/webp`,
+   `image/avif`, `image/tiff`, `image/bmp`, `image/gif`.
+2. Decode to raw pixels, extract width/height.
+3. Compute PDQ perceptual hash.
+4. Run `ImageModeration.Scan(plaintext, perceptual_hash)`:
+   - PDQ blocklist match → return `ScanResult{Action: 'tombstone',
+     Rule: 'pdq_match'}` (severe content) or `'quarantine'` (operator
+     blocklist).
+5. If `format_conversion` enabled, re-encode to WebP (lossless for
+   screenshots/spectrograms; configurable quality otherwise).
+6. Return `ImageMetadata{width, height, perceptual_hash}` and the
+   (possibly transformed) plaintext.
+
+`OnCommitted` for `nova-image`:
+1. Pre-warm the most common derivative presets (`thumb`, `og`)
+   asynchronously, so the first user-visible read is fast.
+2. Emit `image.created` webhook.
+
 Phase 1 ships `nova-image`. The interface above is the contract it
 honors and the contract any future product must honor.
+
+## Cross-references
+
+- Schema: `docs/specs/DATA_MODEL.sql` (`blobs`, `image_metadata`)
+- Encryption: `docs/specs/ENCRYPTION_ENVELOPE.md`
+- Deterministic CIDs: `docs/specs/IPFS_IMPORT_RULES.md`
+- Moderation: `docs/legal/DMCA_PROCEDURE.md`,
+  `docs/legal/SEVERE_CONTENT_PROCEDURE.md`
