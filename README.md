@@ -38,14 +38,26 @@ Future product layers (`nova-video`, `nova-audio`, `nova-archive`,
    or coerce its behavior.
 2. **Donor-blind storage.** Federated nodes pin opaque ciphertext, not
    plaintext. Encryption keys are held only by the coordinator.
-3. **Framework-agnostic integration.** Any system that accepts an HTTP
+3. **No third-party traffic intermediation by default.** A default
+   Nova deployment serves all reads from the coordinator; donor
+   nodes replicate over an encrypted mesh; no CDN is in the request
+   path. Optional CDN fronting is documented as a deliberate
+   tradeoff (CDN edges see plaintext); see `docs/recipes/CLOUDFLARE.md`.
+4. **Framework-agnostic integration.** Any system that accepts an HTTP
    URL can integrate Nova by pointing URLs at it. No deep integration
    required.
-4. **Privacy-paranoid by default.** No phone-home, no analytics, no
+5. **Privacy-paranoid by default.** No phone-home, no analytics, no
    third-party assets. A `paranoid: true` switch hardens further for
    adversarial environments.
-5. **Permissive licensing.** Apache-2.0 throughout the core, with no
+6. **Permissive licensing.** Apache-2.0 throughout the core, with no
    copyleft dependencies.
+
+> **Trust-model note.** Nova is donor-blind, not operator-blind.
+> The coordinator decrypts content on every read and on transform;
+> the operator's master key is process-resident. Nova is the right
+> architecture for "pick an operator you trust, or run your own."
+> It is not end-to-end encrypted from the operator. See
+> `docs/THREAT_MODEL.md` for the full framing.
 
 ## Architecture at a glance
 

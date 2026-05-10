@@ -11,7 +11,28 @@ satisfies your legal obligations depends on your jurisdiction and
 your counsel's advice. Names of statutes (DMCA, EUCD, etc.) are
 referenced for context only.
 
-## Lifecycle overview
+## Overview: quarantine-first by default
+
+v2 ships **quarantine-first** as the default takedown action. The
+key is preserved under the operator's control during the counter-
+notification window, public reads are blocked, and the bytes are
+unrecoverable to viewers but reversible by the operator. After the
+window expires with no counter-notice, a scheduled job tombstones
+and crypto-shreds.
+
+Operators who prefer the immediate-tombstone-and-shred flow (faster,
+irreversible, more aggressive) can opt in via:
+
+```yaml
+moderation:
+  takedown_default_action: tombstone   # default: 'quarantine'
+```
+
+Severe-content takedowns (CSAM-class) follow a separate procedure
+and are NEVER auto-shredded. See
+`docs/legal/SEVERE_CONTENT_PROCEDURE.md`.
+
+## Lifecycle (quarantine-first default)
 
 ```
   Notice received
@@ -25,16 +46,22 @@ referenced for context only.
         │
         ├── No  → Close; record with status='rejected'
         ▼
-  Action: tombstone the CID, crypto-shred the key, broadcast unpin
-        │
+  Action: state='quarantined', signed-URL revocation, schedule tombstone
+        │   (key NOT yet shredded; legal_hold remains false)
         ▼
   Notify the uploader; advance their repeat-infringer counter
         │
         ▼
-  Counter-notification window (10 days, US DMCA)
+  Counter-notification window (10-14 business days, US DMCA)
         │
-        ├── Counter received → Forward to claimant; restore content if no
-        │                       suit filed within 10–14 business days
+        ├── Counter received → forward to claimant; pause scheduled tombstone
+        │     │
+        │     ├── Claimant files suit within 10-14 days → keep quarantined
+        │     ├── No suit → restore (state='active'), record outcome
+        │     └── Operator restores manually after review
+        ▼
+  No counter received before scheduled_tombstone_at → tombstone + crypto-shred
+        │
         ▼
   Close case; record with status='actioned'
         │
@@ -106,13 +133,63 @@ Once a notice qualifies, the moderator:
       misuse of the takedown system) are documented and either
       rejected or escalated to counsel.
 
-Most notices are routine. Spending 20 minutes investigating each is
-the right SLA target; faster than that risks bad-faith takedowns;
+Most notices are routine. Spending 15-20 minutes investigating each
+is the right SLA target; faster than that risks bad-faith takedowns;
 slower than that risks safe-harbor problems.
 
-## Action
+## Action (quarantine-first default)
 
-To execute a takedown:
+To execute a quarantine-first takedown:
+
+```sh
+novactl moderation quarantine <cid> \
+    --case <dmca_case_id> \
+    --reason "DMCA notice from {{claimant}}" \
+    --tombstone-after 14d
+```
+
+This command, in a single transaction:
+
+1. INSERT `moderation_decisions(cid, rule='dmca', rule_ref=<case_id>,
+   action='quarantine', scheduled_tombstone_at=now()+14d,
+   legal_hold=false)`.
+2. UPDATE `blobs` SET `state='quarantined'`. Cascade to all child
+   derivatives via the product's `OnDelete` hook (which for
+   quarantine cascades the state without shredding keys).
+3. INSERT `signed_url_revocations (kind='cid', value=<cid>)` so
+   outstanding signed URLs immediately fail verification.
+4. INSERT audit log entries.
+5. UPDATE `dmca_cases.status='actioned'`, `actioned_at=now()`.
+6. Increment `takedown_repeat_infringers.strikes` for the uploader
+   (created if not present).
+
+The encryption key is **not** shredded. It remains in
+`data_encryption_keys` with `state='active'`. The blob's bytes
+remain on donor disks until either the scheduled tombstone fires
+or the operator restores.
+
+A scheduled job runs every minute and tombstones overdue rows:
+
+```sql
+SELECT md.cid
+  FROM moderation_decisions md
+  JOIN data_encryption_keys dek
+    ON dek.id = (SELECT encryption_key_id FROM blobs WHERE cid = md.cid)
+ WHERE md.scheduled_tombstone_at < now()
+   AND md.scheduled_tombstone_at IS NOT NULL
+   AND dek.legal_hold = false;
+```
+
+For each result, the job runs the tombstone procedure (state
+transition, crypto-shred, federation unpin broadcast). Because
+`legal_hold` is checked, severe-content rows whose `legal_hold=true`
+will never be tombstoned by this job, even if a malformed schedule
+were ever set.
+
+## Action (immediate-tombstone, opt-in)
+
+Operators who set `moderation.takedown_default_action: tombstone`
+get an immediate-shred flow. The CLI command is the same:
 
 ```sh
 novactl moderation takedown <cid> \
@@ -120,43 +197,36 @@ novactl moderation takedown <cid> \
     --reason "DMCA notice from {{claimant}}"
 ```
 
-This command:
+The transaction:
 
-1. Inserts a row in `moderation_decisions` with
-   `rule = 'dmca'`, `rule_ref = <case_id>`, `action = 'tombstone'`.
-2. Updates `blobs.state` to `tombstoned`.
-3. Crypto-shreds the per-blob key:
-   `UPDATE keys SET state='shredded', shredded_at=now(),
-    wrapped_key=zeroes WHERE id = <key_id>`.
-4. Removes corresponding rows from `pin_assignments`. The donors'
-   next poll of `/fed/v1/pins/assigned` will not include the CID;
-   donors then `ipfs pin rm` and IPFS GC reclaims storage.
-5. Inserts a `signed_url_revocations` row with prefix `cid:<cid>`
-   so any outstanding signed URLs are immediately invalid.
-6. Updates `dmca_cases.actioned_at = now()`,
-   `status = 'actioned'`.
-7. Increments the uploader's `takedown_repeat_infringers.strikes`
-   row (created if not present).
-8. Writes an `audit_log` entry naming the moderator and the case.
+1. INSERT `moderation_decisions(... action='tombstone', legal_hold=false)`.
+2. UPDATE `blobs.state='tombstoned'`.
+3. UPDATE `data_encryption_keys.state='shredded'`,
+   `wrapped_key=zeroes(72)`, `shredded_at=now()`. Refused if
+   `legal_hold=true` (which never holds for routine DMCA).
+4. INSERT `signed_url_revocations (kind='cid', value=<cid>)`.
+5. Cascade to all child derivatives (state, key shred).
+6. INSERT pin-broadcast unpin entries for the federation.
+7. UPDATE `dmca_cases.status='actioned'`.
+8. Increment repeat-infringer strikes.
+9. Audit-log every step.
 
-Equivalently, a moderator may execute the takedown through the
-admin UI; the underlying calls are the same.
+This is irreversible. Counter-notification cannot restore the bytes;
+the user must re-upload, which produces a different envelope CID
+(fresh nonce). Operators choosing this mode trade reversibility
+for simpler operational state.
 
-The action is deliberate and ordered: the audit log is written
-**after** the destructive operations, so a partial failure leaves
-investigatory traces. The crypto-shred is the point of no return —
-once the key is zeroed, the bytes are unrecoverable, and counter-
-notification cannot restore them. Operators must therefore verify
-the action is correct **before** running `novactl moderation
-takedown`. The CLI prompts for confirmation.
+The CLI prompts for confirmation before running the destructive
+operations. `--no-confirm` skips the prompt for automation.
 
 ## Notification of the uploader
 
 After action, notify the uploader:
 
 - [ ] Compose a clear notice describing what was taken down (CID,
-      filename if available), why (DMCA notice from {claimant}),
-      and how to submit a counter-notification.
+      filename if available), why (DMCA notice from `{claimant}`),
+      whether the action is reversible (quarantine) or final
+      (tombstone), and how to submit a counter-notification.
 - [ ] Send via the user's registered email.
 - [ ] Record the notification in the `audit_log`.
 
@@ -180,19 +250,21 @@ On receipt of a valid counter-notification:
 
 - [ ] Forward to the claimant within the time required by your
       jurisdiction.
-- [ ] If the claimant does not file suit within 10–14 business
-      days, restore the content **only if** the bytes are still
-      retrievable. Crypto-shred is final — restoration requires
-      either re-uploading or, if the user kept a copy, re-uploading
-      to the same CID (the underlying bytes will be different
-      because the new envelope has a fresh nonce; functionally
-      it's a fresh blob).
+- [ ] **For quarantine-first actions:** clear
+      `scheduled_tombstone_at` so the tombstone job will not fire.
+      The blob remains quarantined until either the claimant files
+      suit (extend the hold) or the operator decides to restore
+      (UPDATE `blobs.state='active'`).
+- [ ] **For immediate-tombstone actions:** the bytes are gone.
+      Restoration requires the user to re-upload. Document this
+      explicitly in your TOS.
 - [ ] Record outcome in `dmca_cases.notes`.
 
-The architectural choice to crypto-shred immediately on action
-trades reversibility for speed and certainty. Document this in
-your TOS so users understand a counter-notified restoration may
-require re-uploading.
+The architectural choice in v2's quarantine-first default is to
+preserve reversibility through the entire counter-notification
+window. This trades operational complexity (extra state to manage)
+for user-fairness and reduced legal exposure if takedowns turn out
+to be mistaken.
 
 ## Repeat-infringer accounting
 
@@ -215,11 +287,12 @@ takedown rules); the user simply loses upload privileges.
 | `dmca_cases` row | At least 3 years (US safe-harbor norms) | Required for repeat-infringer accounting and litigation discovery |
 | `moderation_decisions` row | Same as `dmca_cases` | Forensic trail of the action |
 | `audit_log` entries | Operator-defined; recommended ≥ 7 years | Litigation discovery |
-| Encrypted bytes | Until tombstone-shred + donor unpin propagation (≤ `max_offline_window`, default 30 days) | After shred, bytes are unrecoverable; retention is moot |
+| Encrypted bytes (quarantine) | Until `scheduled_tombstone_at` fires (default 14 days) | Reversibility window |
+| Encrypted bytes (tombstone) | Until donor unpin propagation (≤ `evicted_after_seconds`) | After shred, bytes are unrecoverable; retention is moot |
 | Plaintext content | **Never persisted post-decrypt** | Defense-in-depth |
 | Notification emails | Operator-defined; recommended ≥ 1 year | Proof of compliance with § 512(g)(2)(A) |
 
-We retain **case files**, not content. After a takedown, the
+We retain **case files**, not content. After a tombstone, the
 `dmca_cases` row is sufficient to demonstrate the action; the bytes
 are gone by design.
 
@@ -242,11 +315,13 @@ business and legal one.
 Every step above writes to `audit_log` with:
 
 - `actor_id` — the moderator's user UUID.
-- `action` — `dmca.received`, `dmca.investigated`, `dmca.actioned`,
-  `dmca.rejected`, `dmca.counter_received`, `dmca.restored`, etc.
+- `action` — `dmca.received`, `dmca.investigated`, `dmca.quarantined`,
+  `dmca.tombstoned`, `dmca.rejected`, `dmca.counter_received`,
+  `dmca.restored`, etc.
 - `target_type` — `cid` or `dmca_case_id`.
 - `target_id` — the actual CID or case UUID.
-- `payload` — JSON with relevant context (claimant, notes, case id).
+- `payload` — JSON with relevant context (claimant, notes, case id,
+  scheduled_tombstone_at).
 
 The audit log is append-only at the application layer; revoke
 `UPDATE` and `DELETE` on `audit_log` for the application database
@@ -256,6 +331,10 @@ role in production.
 
 - Statutory mechanics: `TOS_TEMPLATE.md` § 6 ("DMCA / Takedown procedure")
 - Crypto-shred mechanics: `docs/specs/ENCRYPTION_ENVELOPE.md` § "Crypto-shredding"
-- Pin propagation: `docs/specs/FEDERATION_PROTOCOL.md` § "Sequence: Tombstone propagation"
+- Schema: `docs/specs/DATA_MODEL.sql` (`dmca_cases`,
+  `moderation_decisions`, `data_encryption_keys`,
+  `signed_url_revocations`)
+- Pin propagation: `docs/specs/FEDERATION_PROTOCOL.md` § "Tombstone propagation"
 - Signed-URL revocation: `docs/specs/SIGNED_URL_FORMAT.md` § "Revocation"
+- Severe content (CSAM-class): `docs/legal/SEVERE_CONTENT_PROCEDURE.md`
 - Operator launch readiness: `OPERATOR_CHECKLIST.md`
