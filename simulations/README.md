@@ -7,6 +7,13 @@ and re-run by anyone.
 
 ## Files
 
+| File | Phase 0 spec it validates | What it answers |
+|---|---|---|
+| `orchestrator_resilience.py` | `HEALING_PROTOCOL.md` § "Empirical thresholds" | How big does the network need to be to clear Tier 1 within target windows? |
+| `sybil_concentration.py` | `THREAT_MODEL.md` § A, `POSSESSION_AUDIT.md` | At what sybil ratio does coordinated withdrawal cause data loss? |
+| `long_tail_churn.py` | `HEALING_PROTOCOL.md` § "Slow-attrition detection" | Does the `federation.shrinking` webhook provide useful warning lead? |
+| `key_rotation_load.py` | `ENCRYPTION_ENVELOPE.md` § "Master key versioning" | How long does `novactl keys rotate-master` take under realistic load? |
+
 ### `orchestrator_resilience.py`
 
 Models a federation under a mass-casualty event (a hosting provider
@@ -117,3 +124,128 @@ rows; the uniform-failure rows are a best-case lower bound.**
 These thresholds inform the orchestrator implementation in
 `internal/orchestrator/` (Phase 2) and are referenced from the plan's
 "Mass-casualty resilience" section.
+
+### `sybil_concentration.py`
+
+Models an adversary that controls a coordinated subset of donor nodes
+and tries to absorb enough shards of the target corpus to cause data
+loss when they simultaneously withdraw. The simulation answers: for
+a given sybil ratio and replication factor, what fraction of CIDs
+lose all their replicas?
+
+#### Architectural rule encoded
+
+Reputation-weighted placement does **not** defend against
+honest-during-acquisition adversaries — sybils that respond truthfully
+to possession audits during the acquisition phase maintain the
+default reputation. The defense is the replication factor itself:
+loss probability scales as `sybil_ratio ^ R`.
+
+#### Usage
+
+```sh
+# Default scenario: 100 nodes, 10 % sybil, R=3, 50K CIDs.
+python3 sybil_concentration.py
+
+# How loss scales with sybil_ratio at a fixed R.
+python3 sybil_concentration.py --mode sweep-ratio
+
+# How loss scales with R at a fixed sybil_ratio.
+python3 sybil_concentration.py --mode sweep-r --sybil-ratio 0.20
+```
+
+#### Architectural takeaways
+
+1. **Loss is bounded by `sybil_ratio ^ R`.** An adversary controlling
+   10 % of the network can cause ~0.1 % loss at R=3, ~0.01 % loss at
+   R=4. Raising R for irreplaceable content is the right defense.
+2. **Reputation isn't an early-warning signal.** Sybils playing the
+   long game pass audits during acquisition. The audit subsystem
+   catches *lying* donors, not *patient* ones.
+3. **The Tier 1 fraction is roughly `3 * sybil_ratio² * (1 - sybil_ratio)`
+   at R=3.** Even when total loss is small, the post-withdrawal Tier 1
+   queue is meaningfully larger; operators should plan for the
+   recovery payload to exceed the lost-CID count by orders of magnitude.
+
+### `long_tail_churn.py`
+
+Models slow-but-steady donor attrition without a single failure event
+that would trigger mass-casualty detection. Tracks per-week network
+size, aggregate daily budget, corpus growth, capacity runway, and
+whether the `federation.shrinking` webhook should fire.
+
+#### Architectural rule encoded
+
+"Bandwidth budgets are inviolable" extends to the slow-attrition
+case. The orchestrator does not paper over a structurally
+insufficient federation by overdrawing donors. The webhook is the
+correct response: notify the operator to recruit, not silently
+overdraw.
+
+#### Usage
+
+```sh
+# Default scenario: 100 initial nodes, 2 % weekly departure, 0.5 % weekly
+# recruitment, 1 TB corpus, 0.5 % weekly corpus growth, R=3, 104 weeks.
+python3 long_tail_churn.py
+
+# Faster attrition.
+python3 long_tail_churn.py --departure-rate 0.05
+
+# Sweep attrition rates against recruitment rates.
+python3 long_tail_churn.py --mode sweep
+```
+
+#### Architectural takeaways
+
+1. **The `federation.shrinking` webhook provides weeks-to-months of
+   lead time** before sustained Tier 1 healing becomes infeasible at
+   typical attrition rates. Operators with active recruitment
+   pipelines have time to respond.
+2. **At small federation sizes (<100 active donors), recruitment must
+   keep pace with departures** because the int-truncated recruitment
+   floor effectively stops at very small N. Federations that fall
+   below the recruitment-viable size enter a slow death spiral.
+3. **Lower R magnifies the slow-attrition impact** disproportionately
+   because the Tier 1 recovery payload scales nonlinearly with
+   attrition rate.
+
+### `key_rotation_load.py`
+
+Estimates `novactl keys rotate-master` wall time and read-path
+latency impact under realistic load. First-order model: the
+bottleneck is Postgres' UPDATE-commit throughput, not AEAD CPU.
+
+#### Architectural rule encoded
+
+Rotation is online; readers see the old master-key version until
+each row commits the rewrap, then transparently move to the new
+version. There is no read-path downtime, only a measurable p99
+latency increase during the rotation window.
+
+#### Usage
+
+```sh
+# Default scenario: 1 M keys, 1 K reads/sec, pooled DB.
+python3 key_rotation_load.py
+
+# Larger corpus.
+python3 key_rotation_load.py --keys 50_000_000
+
+# Sweep corpus sizes.
+python3 key_rotation_load.py --mode sweep-corpus
+
+# Sweep concurrent read load.
+python3 key_rotation_load.py --mode sweep-reads
+```
+
+#### Architectural takeaways
+
+1. **For 1 M keys: ~30 seconds** with a 16-connection pool and modest
+   read load. Within the noise of normal operations.
+2. **For 100 M keys: tens of minutes.** Operators with very large
+   deployments should run rotations during low-traffic windows.
+3. **Read-path p99 increases ~2-3×** during rotation. Detectable in
+   metrics but not user-visible.
+4. **AEAD CPU is not the bottleneck.** Even at 100 M keys, total AEAD
+   CPU is ~200 seconds across 16 cores; Postgres dominates.
