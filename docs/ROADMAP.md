@@ -1,12 +1,13 @@
 # Roadmap
 
-## Phase 0 v2 — Specifications (complete after design audit pass)
+## Phase 0 v3 — Specifications (current)
 
 Lock the protocol and contracts as documents before any production
-code is written. The original Phase 0 was completed and then revised
-in a v2 consistency pass after design audits identified
-contradictions and gaps; see `docs/REVIEW_2026_05_09.md` for the
-summary of changes.
+code is written. The original Phase 0 was completed, then revised in
+a v2 consistency pass after design audits identified contradictions
+and gaps (see `docs/REVIEW_2026_05_09.md`), then revised again in v3
+after a second round of architectural review identified document
+drift and missing classification (see `docs/REVIEW_2026_05_19.md`).
 
 Original Phase 0 deliverables (still complete, now updated to v2):
 - [x] Repository skeleton
@@ -36,6 +37,14 @@ v2 additions (new specs from the design audit):
 - [x] Possession audit (`docs/specs/POSSESSION_AUDIT.md`) — Phase 2 donor spot-checks
 - [x] Severe content procedure (`docs/legal/SEVERE_CONTENT_PROCEDURE.md`) — Phase 4 implementation
 - [x] Review summary (`docs/REVIEW_2026_05_09.md`) — what changed and why
+
+v3 additions (architectural classification and slow-attrition handling):
+- [x] Architecture decisions (`docs/specs/ARCHITECTURE_DECISIONS.md`) — three-tier classification (protocol-enforced / operator-tunable / operator freedom)
+- [x] `THREAT_MODEL.md` boundary ⑤ corrected (HTTPS-over-Nebula, not libp2p); explicit out-of-scope rationale for threshold cryptography, end-to-end encryption, PSI moderation, S3 API, and multi-master HA; new residual-risk entry for slow attrition
+- [x] `HEALING_PROTOCOL.md` slow-attrition detection (`federation.shrinking` webhook + `capacity_runway_floor_days`)
+- [x] Operator recipes (`docs/recipes/AUTOMATED_ONBOARDING.md`, `KEY_ESCROW.md`, `COLD_STANDBY.md`) — patterns operators build on top of the protocol
+- [x] Simulations: `sybil_concentration.py`, `long_tail_churn.py`, `key_rotation_load.py`
+- [x] Review summary (`docs/REVIEW_2026_05_19.md`) — what changed and why
 
 ## Phase 1 — Single-node MVP
 
@@ -103,4 +112,8 @@ Chaos testing, security audit, documentation polish, public 1.0.
 Speculative directions: end-user client direct integration, browser-
 resident pinning via WASM, FFI bindings for non-Go embedding,
 additional product modules (`nova-video`, `nova-audio`, `nova-archive`,
-`nova-document`).
+`nova-document`), read-only secondary coordinator for read-availability
+during primary failover, streaming-AEAD envelope variant for blobs
+that exceed memory, formal Provable Data Possession / Proof of
+Retrievability, hot-tier / cold-tier auto-migration, optional S3
+read-only adapter product layer.
