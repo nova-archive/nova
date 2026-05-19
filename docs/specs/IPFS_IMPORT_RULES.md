@@ -29,7 +29,7 @@ collections, the plaintext bytes) into the local Kubo daemon,
 | Chunker               | `size-262144` (256 KiB fixed)      | Deterministic; no Rabin/Buzhash/content-defined chunking |
 | Raw leaves            | `true`                             | Leaf blocks are raw codec, parent is dag-pb (only when codec = dag-pb) |
 | Layout                | `balanced`                         | Trickle layout produces different CIDs for the same bytes |
-| Maximum link count    | 174 (libp2p default for UnixFS-1)  | Match Kubo's default to avoid divergent DAG shapes |
+| Maximum link count    | 174 (Kubo's UnixFS-1 default)      | Match Kubo's default to avoid divergent DAG shapes |
 
 Threshold: **1 MiB** (1,048,576 bytes). At or below threshold the
 envelope is stored as a single raw block (codec = `raw`); above
@@ -116,7 +116,8 @@ X with nonce Z" and verify the response against the stored
   Kubo guarantees CID stability for these parameters across
   minor versions.
 - The transport-level details of how blocks are pushed to other
-  nodes (this is libp2p's domain, not IPFS import's).
+  nodes (this is the federation protocol's domain, not IPFS
+  import's; see `FEDERATION_PROTOCOL.md` § "Repair transport").
 - Future versions of this spec may relax the threshold or
   introduce streaming-AEAD codecs; such changes get a new
   envelope `version` byte and migration tooling.

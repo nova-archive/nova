@@ -45,11 +45,11 @@ The assets Nova protects, ranked by harm if exposed:
         │  │  └────────── Postgres (local, trusted)
         │  └─────────── Kubo (local IPC, hardened)
         │
-   ─────┴────  ④ Nebula mTLS + private swarm key
+   ─────┴────  ④ Nebula overlay + HTTPS/mTLS (federation cert)
         │
    donor pinning nodes
         │
-   ─────┴────  ⑤ libp2p inside private swarm
+   ─────┴────  ⑤ controlled HTTPS over Nebula + repair tokens
         │
    donor ↔ donor traffic
 ```
@@ -59,8 +59,8 @@ The assets Nova protects, ranked by harm if exposed:
 | ① | Internet ↔ nginx | nginx terminates TLS; everything inside the box is trusted by the operator |
 | ② | nginx ↔ coordinator | loopback / unix socket; trusted by colocation |
 | ③ | coordinator ↔ master key | environment variable; never written to disk by Nova |
-| ④ | coordinator ↔ donor | Nebula mTLS; cert fingerprint is durable identity |
-| ⑤ | donor ↔ donor | private libp2p swarm; private swarm key gates participation |
+| ④ | coordinator ↔ donor | Nebula overlay + HTTPS/mTLS; the Nebula cert authorizes mesh membership, the federation client cert authorizes HTTP API calls |
+| ⑤ | donor ↔ donor | HTTPS/mTLS inside Nebula; donor-to-donor fetches require a coordinator-issued, source-and-destination-pinned HMAC repair token. The private IPFS swarm key gates Kubo's daemon-level peering as defense in depth, but no donor-to-donor data exchange occurs over Bitswap |
 
 The trust boundary the project most cares about is **④**. The
 volunteer-blind storage argument lives there: across that boundary,
@@ -74,9 +74,13 @@ gain, and what stops them.
 
 ### A. Malicious donor node
 
-**Capabilities.** Has a valid Nebula cert (registered legitimately or
-via stolen credentials). Can poll `/fed/v1/pins/assigned`, ack pins,
-fail pins, and receive ciphertext blobs through the libp2p swarm.
+**Capabilities.** Has a valid Nebula cert and a valid federation
+client cert (registered legitimately or via stolen credentials).
+Can poll `/fed/v1/pins/changes`, ack pins, fail pins, and fetch
+ciphertext blobs over the controlled HTTPS-over-Nebula repair
+transport when issued a valid repair token. Cannot mint repair
+tokens of its own and cannot ad-hoc fetch blocks from other donors
+without a coordinator-signed grant.
 
 **Goal.** Read user content; identify other donors; serve modified
 content; enumerate the federation's CIDs.
@@ -87,12 +91,17 @@ content; enumerate the federation's CIDs.
   (see `docs/specs/ENCRYPTION_ENVELOPE.md`). They cannot decrypt;
   the per-blob keys exist only inside the coordinator's process.
 - **CID self-validation.** Modifying a byte changes the CID. A
-  donor that serves tampered bytes is detected immediately by the
-  IPFS resolver, which checks the hash. The donor has no way to
-  serve garbage and have it accepted.
+  donor that serves tampered bytes is detected immediately when the
+  destination donor (or the coordinator) re-hashes the envelope on
+  receipt. The donor has no way to serve garbage and have it accepted.
 - **Bounded enumeration.** A donor learns only the CIDs assigned to
   it. They cannot enumerate the full federation set without
   compromising the coordinator.
+- **No ad-hoc peering.** Donor-to-donor fetches are gated by
+  coordinator-issued repair tokens bound to a specific source, a
+  specific destination, a specific CID, and a short TTL. A donor
+  cannot fetch a block of its choosing from a peer of its choosing;
+  the orchestrator dictates the route.
 - **No upload privilege.** A donor's Nebula cert grants federation
   participation, not blob upload. Uploads require a bearer token
   from Authelia; donors do not have one.
@@ -285,8 +294,109 @@ declines to defend against them.
 | Hardware side channels (Spectre, etc.) | Mitigation belongs at the OS / microcode layer. |
 | Operator who deliberately misconfigures security floors | The first-run wizard surfaces unsafe configurations and the coordinator refuses some combinations; bad-faith operators can still do harm. |
 | Donor copying ciphertext to a hostile party | It remains ciphertext. The hostile party gains nothing the donor did not already have, and the donor cannot decrypt. |
-| Multi-coordinator high availability | Single-coordinator deployments are the explicit target; HA is not a Phase 1–5 goal. Operators tolerate coordinator downtime by recovering from backups. |
+| Multi-master high availability (consensus-replicated coordinators accepting concurrent writes) | Forever out of scope. Requires Raft/Paxos, leader election, split-brain prevention, and reintroduces the consensus complexity the project deliberately avoided. Operators needing this trust model should use a different product. |
+| Cold-standby failover for the coordinator | Not shipped, but compatible with the architecture. An operator may run a hot-spare host with Postgres streaming replication and the same `NOVA_MASTER_KEY` versions loaded; failover is manual. See `docs/recipes/COLD_STANDBY.md`. |
 | Cross-jurisdiction legal compulsion | Engineering cannot answer "what if a US court compels disclosure of a German-hosted operator's data?" Operators consult counsel. |
+
+## Trust-model choices not implemented
+
+The threats above are things Nova *cannot* defend against. The
+items below are things Nova *could* implement but deliberately
+does not, because doing so would change the trust model into a
+different product. Each is recorded with explicit rationale so the
+question "have you considered X?" has a written answer.
+
+### Threshold cryptography for the master key (Shamir / DKG / TKMS)
+
+Some federated systems shard the master decryption key across an
+N-of-M committee of trusted parties so that no single host's
+compromise exposes the corpus. Tahoe-LAFS approximates this with
+its provider-blind grid model.
+
+Nova's design principle is **operator sovereignty**: "you run the
+coordinator on your own infrastructure; the project author cannot
+turn it off, observe it, or coerce its behavior." Threshold
+cryptography replaces that principle with "you trust N of M
+committee members," which is fundamentally a different trust model
+than "I trust this one operator (or I run my own)."
+
+The mitigations Nova does ship for the silent-compromise residual
+risk are master-key rotation (`ENCRYPTION_ENVELOPE.md` § "Master
+key versioning"), audit-log shipping (host-level operator
+responsibility), and off-box rehearsed backups. Operators whose
+threat model genuinely requires N-of-M consensus over key access
+should use Tahoe-LAFS or a similar grid-trust storage system rather
+than asking Nova to become one.
+
+A future opt-in mode that wraps `NOVA_MASTER_KEY` at backup time
+under a Shamir scheme (so the operator's recovery committee shares
+the secret, but the running coordinator still holds the unwrapped
+key) is compatible with the architecture and documented as an
+operator-side pattern in `docs/recipes/KEY_ESCROW.md`. That pattern
+preserves operator sovereignty for the read path while reducing
+the blast radius of catastrophic key loss; it does not change the
+running trust model.
+
+### End-to-end encryption / operator-blindness
+
+Nova is donor-blind, not operator-blind. The coordinator decrypts
+plaintext on every read and on every transform; the operator's
+master key is process-resident. This is intentional, not a defect.
+
+End-to-end encryption would require client-side keys, would
+prevent the on-the-fly image transforms that make `nova-image`
+useful at all, and would make content moderation impossible for
+the operator. The audiences Nova targets — federated social
+servers, FOSS forums, archival projects, ML dataset hosts — need
+the operator to be able to inspect content for moderation,
+generate derivatives at read time, and serve transformed bytes to
+the gateway. These are read-path features, not bugs.
+
+Deployments whose threat model requires operator-blindness should
+use a fully end-to-end-encrypted file-sharing system. Nova is the
+right tool for "pick an operator you trust, or run your own"; it
+is not the right tool for "even the operator can't see my files."
+
+### Private Set Intersection / Zero-Knowledge moderation
+
+Some end-to-end-encrypted platforms moderate against known-bad
+hash lists by running PSI between the client's perceptual hash and
+the operator's encrypted blocklist, so the operator learns only a
+match/no-match boolean and never the client's hash. This is the
+right design for E2EE systems.
+
+It is not the right design for Nova. The coordinator already sees
+plaintext (per the E2EE rationale above) and runs PDQ directly on
+the plaintext at upload (see `PRODUCT_MODULE_INTERFACE.md` step 4,
+`AnalyzeUpload`). Adding PSI on top would impose massive
+computational overhead on every upload, would add a hash-list
+distribution problem (clients must hold the full blocklist), and
+would buy nothing the existing pipeline does not already provide.
+PSI exists to bridge the gap between privacy and moderation in
+systems that cannot decrypt; Nova decrypts.
+
+### S3 API compatibility
+
+Nova exposes HTTP URLs and content-addressed CIDs; S3 exposes
+buckets, keys, IAM policies, presigned URLs, object versioning,
+and lifecycle policies. The naming model (hierarchical mutable
+keys) and the authorization model (pre-shared SigV4 credentials
+with bucket-level scope) do not translate cleanly to Nova's
+per-blob HMAC token model.
+
+A full S3 API is forever out of scope. A read-only adapter that
+maps `GET /s3/bucket/key` → operator-maintained key→CID lookup →
+`GET /blob/{cid}` is conceptually possible as a Phase 6+
+adapter product layer, but low priority: deployments wanting an
+S3 interface are better served by Garage or MinIO. Nova is the
+right tool when the integration target is "anything that takes an
+HTTP image URL"; it is not the right tool when the target is "any
+S3 SDK call I have already written."
+
+Operators may still use S3 alongside Nova — as a ciphertext backup
+destination, as an origin for public-archival collection bytes, or
+as a Kubo blockstore backend. None of these patterns require Nova
+to speak S3 itself.
 
 ## Acknowledged residual risks
 
@@ -310,6 +420,17 @@ prominently so operators can plan for them.
    guidance documents the VPS recommendation.
 6. **PDQ false negatives.** Novel infringing content evades the
    blocklist until human review. The DMCA workflow is the backstop.
+7. **Federation slow-attrition.** A federation that gradually loses
+   donors over months can cross the mathematical threshold at which
+   the surviving network's aggregate daily budget is insufficient to
+   maintain target replication, even if no single failure event
+   triggers mass-casualty detection. The `federation.shrinking`
+   webhook (see `HEALING_PROTOCOL.md` § "Slow-attrition detection")
+   is the early-warning signal. The recovery action — recruiting more
+   donors — is a social action the project cannot take on the
+   operator's behalf. Operators whose federation crosses this
+   threshold should treat it with the same seriousness as a
+   mass-casualty event, even though it accumulates quietly.
 
 ## Disclaimer
 

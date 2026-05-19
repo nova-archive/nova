@@ -241,6 +241,76 @@ and respect budgets. The webhook lets the operator publicly post-
 mortem the event, steer donors away from the responsible provider,
 and update the supporters page (if the deployment runs one).
 
+## Slow-attrition detection
+
+Mass-casualty detection catches the burst failure mode: a hosting
+provider purge, a regional outage, an angry operator revoking
+several donors at once. It does not catch the slow failure mode: a
+federation that loses one donor per week for six months and quietly
+crosses the threshold below which the surviving network's aggregate
+daily budget is insufficient to maintain the target replication
+factor across the corpus.
+
+The orchestrator emits a `federation.shrinking` webhook when this
+slow-failure threshold approaches. The metric backing it is the
+**capacity runway**: how many days of full corpus re-replication
+the surviving network's daily budget could sustain.
+
+### Computation
+
+Per content class `c` with replication factor `R_c`:
+
+```
+corpus_bytes_c       = SUM(blobs.byte_size WHERE content_class = c
+                                              AND blobs.state IN ('active','quarantined'))
+desired_replicated_c = corpus_bytes_c * R_c
+surviving_daily_budget = SUM(nodes.bandwidth_budget_bytes_per_day - nodes.bytes_uploaded_today
+                              WHERE nodes.status IN ('active','suspect'))
+runway_days_c        = surviving_daily_budget / desired_replicated_c
+```
+
+The federation's overall runway is `min(runway_days_c)` across all
+classes with non-zero corpus. The minimum-runway class is the
+limiting factor and is identified in the webhook payload.
+
+### Webhook semantics
+
+```json
+{
+  "event": "federation.shrinking",
+  "limiting_class": "important",
+  "runway_days": 4.2,
+  "floor_days": 7,
+  "active_nodes": 18,
+  "active_nodes_trailing_28d_p50": 27,
+  "emitted_at": "2026-05-19T14:00:00Z"
+}
+```
+
+Suppression: the webhook fires at most once per 24-hour window. If
+the runway recovers above the floor (donors recruited, budgets
+expanded), the next dip below re-arms the webhook. This prevents
+alert storms when budgets oscillate near the boundary.
+
+The webhook does not change orchestrator behavior. It is a
+notification so the operator can recruit, expand budgets, or
+accept the longer recovery window. The orchestrator continues
+processing Tier 1 strictly first, respecting budgets — slow
+attrition does not justify a doomsday override any more than mass
+casualty does. The corrective action is human, not algorithmic.
+
+### Metric
+
+```
+nova_federation_capacity_runway_days{content_class="important|normal|cache"}
+```
+
+Operators graph this against `capacity_runway_floor_days` for a
+visual sense of headroom over time. A federation in healthy
+steady state shows runway figures comfortably in the
+double-digit days; a federation approaching attrition collapse
+shows the runway sliding toward the floor.
+
 ## Reputation and audit-aware placement
 
 `reputation_score` (0.0 to 1.0) is updated by Phase 2 possession
@@ -299,6 +369,8 @@ Operator-tunable in `operator.yaml` under `orchestrator`:
 | `replication.classifier`              | `default`     | Reserved for future custom classifiers |
 | `mass_casualty_threshold_ratio`       | 0.20          | 0.05..0.50 |
 | `mass_casualty_window_seconds`        | 3600          | 60..86400 |
+| `capacity_runway_floor_days`          | 7             | 1..90 — slow-attrition webhook threshold |
+| `capacity_runway_check_interval_seconds` | 3600       | 60..86400 — how often runway is recomputed |
 | `priority_queue`                      | `strict`      | `strict` only; non-strict is rejected |
 | `source_selection`                    | `weighted_capacity_reputation` | also accepted: `random_holder` (debug only) |
 | `destination_selection`               | `random_non_holder` | also accepted: `weighted_remaining_budget` (Phase 2+ experiment) |
