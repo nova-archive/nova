@@ -104,6 +104,25 @@ nginx/          reference reverse-proxy configuration
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full plan. Phase 0 is
 specifications only — every subsequent phase implements them faithfully.
 
+## Development MCP servers
+
+Phase 1 onwards, this project ships a `.claude/settings.local.json` that
+configures a Postgres MCP server (`nova-dev-postgres`). When the dev
+Postgres container is up (`docker compose -f docker/docker-compose.yml up
+-d postgres`), Claude Code sessions with this project loaded can query
+the dev database directly via MCP.
+
+The MCP connection string reads `POSTGRES_PASSWORD` from your shell env;
+set it from `docker/.env` before running Claude Code:
+
+```sh
+set -a; source docker/.env; set +a
+```
+
+If you do not want the MCP server, delete or comment out the
+`mcpServers.nova-dev-postgres` entry in `.claude/settings.local.json`.
+The MCP is dev-only; production deployments do not use it.
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). Project naming hygiene is

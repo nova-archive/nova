@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "nova-dev-postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgres://nova:${POSTGRES_PASSWORD}@127.0.0.1:5432/nova"
+      ],
+      "env": {
+        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD}"
+      }
+    }
+  },
+  "permissions": {
+    "allow": [
+      "Bash(docker compose:*)",
+      "Bash(make:*)",
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(./bin/migrate:*)",
+      "Bash(./scripts/smoke.sh)"
+    ]
+  }
+}
