@@ -1,0 +1,53 @@
+# Phase 1 M1 docker-compose: postgres only.
+#
+# Subsequent milestones add coordinator, nginx, certbot services.
+# Compose profiles will gate the wizard port (--profile setup) and
+# the certbot service (--profile prod).
+#
+# Bring it up:
+#   cd docker && cp .env.example .env && $EDITOR .env  # set POSTGRES_PASSWORD
+#   docker compose up -d
+#
+# Verify:
+#   docker compose exec postgres pg_isready -U nova
+#
+# Tear down (data preserved):
+#   docker compose down
+#
+# Tear down + wipe data:
+#   docker compose down -v
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: nova-postgres
+    environment:
+      POSTGRES_DB: nova
+      POSTGRES_USER: nova
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      # Force C locale for deterministic collation across hosts.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Loopback only. Operators who must expose for remote tooling
+      # should adjust to a private interface; never bind to 0.0.0.0.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nova -d nova"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run/postgresql
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres-data:
+    driver: local

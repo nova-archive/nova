@@ -1,0 +1,15 @@
+# Optional operator-local overrides. Copy to docker-compose.override.yml
+# (gitignored). docker-compose auto-merges override.yml on top of the
+# base compose.
+#
+# Examples:
+#   - Bind postgres to a private RFC 1918 interface for remote tooling
+#   - Pin a specific Kubo image version
+#   - Add a host-bind volume for backups
+
+services:
+  postgres:
+    ports:
+      # Bind postgres to your local management network. Replace 10.0.0.5
+      # with your management host's IP. NEVER bind to 0.0.0.0.
+      - "10.0.0.5:5432:5432"
