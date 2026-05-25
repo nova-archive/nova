@@ -1,54 +1,29 @@
-# Go
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-*.prof
+# Build artifacts
 /bin/
 /dist/
 /build/
-/vendor/
 coverage.out
 coverage.html
 
-# Node / web
-node_modules/
-.pnpm-store/
-.npm/
-.cache/
-.turbo/
-*.tsbuildinfo
-/web/widget/dist/
-/web/admin/dist/
+# Generated code (sqlc, oapi-codegen — committed in later M but ignored locally)
+internal/db/gen/
+internal/api/codegen/
 
-# Editor / OS
+# Node
+node_modules/
+
+# Local environment
+.env
+docker/.env
+docker/docker-compose.override.yml
+nova-config/
+nova-secrets/
+nova-postgres-data/
+nova-kubo-data/
+nova-tmp-uploads/
+
+# Editor/OS
 .DS_Store
-Thumbs.db
 .idea/
 .vscode/
 *.swp
-*.swo
-*~
-.aider*
-
-# Local env / secrets
-.env
-.env.*
-!.env.example
-!.env.sample
-*.pem
-*.key
-!**/testdata/**/*.key
-!**/testdata/**/*.pem
-
-# Runtime / data directories
-/data/
-/runtime/
-/var/
-
-# Generated docs
-/docs/_build/
-/site/
