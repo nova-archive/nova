@@ -1122,9 +1122,21 @@ paths:
           in: query
           schema:
             type: string
+            enum:
+              - envelope_decode
+              - key_unwrap
+              - sample_decrypt
+              - kubo_pin_present
+              - derivative_state_consistent
+              - block_hash_valid
+              - manifest_consistent
       responses:
         '200':
           description: Integrity audit log entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedIntegrityAudits'
 
   /api/v1/admin/audits/possession:
     get:
@@ -1149,6 +1161,10 @@ paths:
       responses:
         '200':
           description: Pin audit log entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPossessionAudits'
 
   /api/v1/admin/signed-urls/revoke:
     post:
@@ -1592,13 +1608,22 @@ components:
       required:
         - id
         - nebula_cert_fingerprint
+        - federation_cert_fingerprint
         - capacity_bytes
         - bandwidth_budget_bytes_per_day
         - status
+        - reputation_score
         - joined_at
+        - last_status_change_at
       properties:
         id: { type: string, format: uuid }
         nebula_cert_fingerprint: { type: string }
+        federation_cert_fingerprint:
+          type: string
+          description: |
+            The HTTP-application-layer mTLS cert fingerprint (v2).
+            Distinct from `nebula_cert_fingerprint`. See
+            `FEDERATION_PROTOCOL.md` § "Authentication (v2)".
         display_name: { type: string, nullable: true }
         geo_declared:
           type: string
@@ -1614,12 +1639,27 @@ components:
           additionalProperties: true
         status:
           type: string
-          enum: [active, degraded, offline, revoked]
+          enum: [active, suspect, unreachable, evicted, revoked]
+          description: |
+            v2 five-state liveness model. See `FEDERATION_PROTOCOL.md`
+            § "Liveness state machine (v2)" and `DATA_MODEL.sql`.
+        reputation_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: |
+            Phase 2 possession audits update this. The orchestrator
+            uses it for source selection and initial placement.
         joined_at: { type: string, format: date-time }
         last_seen_at:
           type: string
           format: date-time
           nullable: true
+        last_status_change_at:
+          type: string
+          format: date-time
+          description: When the current `status` value was entered.
 
     PinAssignment:
       type: object
@@ -1638,13 +1678,17 @@ components:
 
     ModerationDecision:
       type: object
-      required: [id, cid, rule, action, decided_at]
+      required: [id, cid, rule, action, decided_at, legal_hold]
       properties:
         id: { type: string, format: uuid }
         cid: { $ref: '#/components/schemas/Cid' }
         rule:
           type: string
-          enum: [pdq_match, dmca, operator_manual, user_report]
+          enum: [pdq_match, dmca, severe_content, operator_manual, user_report]
+          description: |
+            v2 adds `severe_content` for CSAM-class material handled
+            under the legal-hold preservation flow. See
+            `SEVERE_CONTENT_PROCEDURE.md`.
         rule_ref: { type: string, nullable: true }
         action:
           type: string
@@ -1654,6 +1698,25 @@ components:
           format: uuid
           nullable: true
         decided_at: { type: string, format: date-time }
+        scheduled_tombstone_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            v2 quarantine-first DMCA: when set and `legal_hold` is
+            false, the scheduled-tombstone job transitions the blob
+            to `tombstoned` at this time. NULL for severe-content
+            rows, which require manual legal-hold clearance via
+            `novactl moderation clear-legal-hold`.
+        legal_hold:
+          type: boolean
+          description: |
+            v2: when true, the linked `data_encryption_keys` row's
+            crypto-shred procedure refuses to run. Set automatically
+            by severe-content quarantines; cleared by the operator
+            after the statutory preservation window via
+            `novactl moderation clear-legal-hold`. See
+            `SEVERE_CONTENT_PROCEDURE.md`.
         notes: { type: string, nullable: true }
 
     DmcaSubmission:
@@ -1709,6 +1772,62 @@ components:
               type: object
               additionalProperties: { type: string, format: uri }
 
+    IntegrityAudit:
+      type: object
+      required: [id, cid, audit_kind, result, audited_at]
+      description: |
+        One row from the `integrity_audits` table. See
+        `docs/specs/INTEGRITY_AUDIT.md`.
+      properties:
+        id: { type: integer, format: int64 }
+        cid: { $ref: '#/components/schemas/Cid' }
+        audit_kind:
+          type: string
+          enum:
+            - envelope_decode
+            - key_unwrap
+            - sample_decrypt
+            - kubo_pin_present
+            - derivative_state_consistent
+            - block_hash_valid
+            - manifest_consistent
+        result:
+          type: string
+          enum: [pass, fail, skip]
+        error: { type: string, nullable: true }
+        audited_at: { type: string, format: date-time }
+
+    PossessionAudit:
+      type: object
+      required: [id, blob_cid, node_id, challenge_kind, challenged_at]
+      description: |
+        Phase 2: one row from the `pin_audits` table. See
+        `docs/specs/POSSESSION_AUDIT.md`.
+      properties:
+        id: { type: string, format: uuid }
+        blob_cid: { $ref: '#/components/schemas/Cid' }
+        node_id: { type: string, format: uuid }
+        challenge_kind:
+          type: string
+          enum: [block_hash, envelope_round_trip]
+        nonce: { type: string }
+        deadline: { type: string, format: date-time }
+        result:
+          type: string
+          enum: [pass, fail, skip]
+          nullable: true
+        latency_ms: { type: integer, nullable: true }
+        bytes_verified:
+          type: integer
+          format: int64
+          nullable: true
+        error: { type: string, nullable: true }
+        challenged_at: { type: string, format: date-time }
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+
     Pagination:
       type: object
       required: [page, per_page, total]
@@ -1716,6 +1835,24 @@ components:
         page: { type: integer, minimum: 1 }
         per_page: { type: integer, minimum: 1 }
         total: { type: integer, minimum: 0 }
+
+    PaginatedIntegrityAudits:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/IntegrityAudit' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    PaginatedPossessionAudits:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/PossessionAudit' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
 
     PaginatedCollections:
       type: object

@@ -290,25 +290,151 @@ v2 splits them:
 
 See `docs/specs/SIGNED_URL_FORMAT.md` for the signing-key lifecycle.
 
-## What this spec deliberately does not specify
+## What this spec deliberately does not specify (for v1)
 
-- **AAD / additional authenticated data.** The envelope reserves no
-  AAD field. If a future version needs to bind metadata into the
-  authenticated section (e.g., to commit to MIME type), bump
-  `version` and reserve part of the header for it.
-- **Streaming AEAD.** All encryption and decryption is single-shot.
-  Multi-gigabyte blobs that exceed memory limits are not in scope
-  for Phase 1; Phase 6+ may introduce a streaming variant with a
-  separate `algorithm` ID. **HTTP `Range` requests are therefore
-  unsupported on encrypted blobs**: the gateway returns `416` to a
-  Range request unless the blob is in a `public_archival` collection
-  (in which case the bytes are plaintext and Range works normally).
-  See `openapi.yaml` for the response contract.
+- **AAD / additional authenticated data on v1.** The v1 envelope
+  reserves no AAD field. v2 (see below) reintroduces per-chunk AAD
+  binding `chunk_index || total_chunks || cid` for streaming.
+- **Streaming AEAD in v1.** v1 is single-shot; multi-gigabyte blobs
+  that exceed memory limits are not in scope for v1. **HTTP `Range`
+  requests on v1 envelopes return `416`** unless the blob is in a
+  `public_archival` collection. v3.1 amendment: streaming AEAD is
+  planned for Phase 2 alongside federation (was previously Phase 6+);
+  see § "Planned v2: Streaming-AEAD" below.
 - **Hardware key storage.** HSMs and KMS integration are out of scope.
   Operators with such requirements can wrap `NOVA_MASTER_KEY`
   loading to fetch from their KMS at boot.
 - **Key derivation from CID.** Tempting (no key table) but kills
   per-blob crypto-shredding. Out of scope.
+
+## Planned v2: Streaming-AEAD (Phase 2 deliverable)
+
+The v1 envelope above is single-shot: the gateway must AEAD-verify
+the entire ciphertext before any plaintext byte streams to the
+caller. This blocks Range requests, defeats CDN partial-object
+caching, and produces unacceptable TTFB for large objects (audio,
+video, large image archives). v2 fixes this with chunk-authenticated
+streaming AEAD while preserving every Tier 1 commitment (donor-
+blindness, deterministic CIDs, master-key wrapping, per-blob
+crypto-shredding).
+
+Status: **planned design sketch.** The authoritative v2 spec lands
+when Phase 2 begins. This section reserves the wire-format slots
+and constrains Phase 1 implementations to leave v2 room.
+
+### Goals
+
+- **Range-serveable encrypted blobs.** HTTP 206 with the correct
+  `Content-Range` for any byte range, decrypting only the chunks
+  that cover the range.
+- **CDN-compatible partial-object caching.** Edges can store and
+  serve individual ciphertext chunks without coordinating with the
+  origin per byte range.
+- **First-byte latency independent of object size.** The gateway
+  decrypts the first relevant chunk and starts streaming
+  immediately; subsequent chunks decrypt in parallel with delivery.
+- **Federation reuse.** Streaming chunks align with IPFS block
+  boundaries (256 KiB, the chunker we already mandate). Chunk N ==
+  block N. Donors fetch and serve whole IPFS blocks as today;
+  donor-to-donor repair, possession audits, and partial-read
+  serving all share the same per-block infrastructure.
+
+### Wire format (sketch)
+
+| Offset       | Length  | Field            | Notes |
+|-------------:|--------:|------------------|-------|
+|         0    |    4    | `magic`          | ASCII `NOVE` |
+|         4    |    1    | `version`        | `0x02` (v2) |
+|         5    |    1    | `algorithm`      | `0x02` = XChaCha20-Poly1305-Streaming |
+|         6    |    1    | `chunk_size_log2`| Log-base-2 of chunk size in bytes; `18` = 256 KiB |
+|         7    |    1    | `flags`          | bit 0 = "last chunk has final-chunk marker"; reserved otherwise |
+|         8    |    8    | `total_chunks`   | uint64 big-endian; number of chunks |
+|        16    |   24    | `base_nonce`     | 192-bit random base; chunk nonces derive from this + counter |
+|        40    |    n_1  | `chunk_1_ct`     | First chunk ciphertext |
+|   40 + n_1   |    16   | `chunk_1_tag`    | Poly1305 tag for chunk 1 |
+|       ...    |    ...  | ...              | repeat per chunk |
+|             |    1    | `final_marker`   | for the last chunk, before its tag: `0xFF` |
+
+Header is 40 bytes (vs. 32 in v1). Per-chunk overhead is the
+16-byte Poly1305 tag plus an optional final-chunk byte. The CID is
+still the CID of the entire envelope — bit-identical determinism
+preserved.
+
+### Chunk encryption
+
+For chunk index `i` in `[0, total_chunks)`:
+
+```
+nonce_i := XOR(base_nonce, big_endian_uint192(i))   # XChaCha 192-bit nonce
+aad_i   := chunk_index || total_chunks || cid_v1_prefix
+ct_i || tag_i := XChaCha20-Poly1305-Encrypt(per_blob_key, nonce_i, aad_i, plaintext_chunk_i)
+```
+
+The chunk's nonce never collides because each chunk has a distinct
+counter, and the base_nonce is per-blob random. The AAD binds the
+chunk to its position and to the eventual CID, so a tampered
+envelope that swaps two chunks fails authentication on at least one.
+
+Note: the `cid_v1_prefix` in AAD is the CID's multihash bytes (not
+the human-readable CID string), computed and committed *before* the
+last chunk's tag is finalized. The CID itself is computed over the
+envelope bytes after encryption; the prefix used in AAD comes from
+an intermediate commitment scheme. The full spec works this out in
+Phase 2.
+
+### Range read path
+
+1. Receive `GET /blob/{cid}` with `Range: bytes=A-B`.
+2. Look up `blob_manifests` and `blob_blocks` for the CID; compute
+   which block indices cover `[A, B]`.
+3. Fetch only those blocks from local Kubo (one block put-get per
+   chunk). Per-block fetch latency is bounded by Kubo's blockstore
+   read; no full-envelope load.
+4. Decrypt each chunk: derive `nonce_i`, verify `tag_i`, recover
+   plaintext_chunk_i. If any chunk fails, abort with `502`.
+5. Stream plaintext for the requested byte range, trimming the
+   first and last chunks to the exact `[A, B]` boundaries.
+
+### Phase 1 implementation constraints
+
+To make v2 a drop-in addition rather than a refactor, Phase 1
+ships:
+
+- A `Codec` interface in `internal/envelope` with `Encrypt(plaintext,
+  key) → envelope` and a streaming-aware `Decrypter(envelope, key)
+  → io.ReadSeeker` (single-shot for v1; partial-decrypt for v2).
+- A version-dispatching decoder that reads the envelope's `version`
+  byte at offset 4 and routes to the appropriate codec.
+- An `envelope_version` field on the JSON `Blob` schema and an
+  `X-Nova-Envelope-Version` response header on `/blob/{cid}` and
+  `/i/{cid}` so CDNs and clients learn the format from the
+  response.
+- `blob_manifests.codec` stays free-form text so v2 can record
+  `"chunked-aead-v1"` without DDL changes.
+
+### What v2 does not change
+
+- The CID is still the CID of the entire envelope. Bit-identical
+  determinism.
+- Donor-held bytes remain opaque ciphertext.
+- Per-blob keys, master-key wrapping, master-key rotation
+  semantics, and crypto-shredding are unchanged.
+- v1 envelopes remain decryptable forever. The version byte at the
+  envelope header dispatches.
+- Tier 1 commitments (donor-blind, single-coordinator, deterministic
+  CIDs) are unchanged.
+
+### What requires deliberation before Phase 2 implementation
+
+- Authoritative test vectors covering chunk-boundary edge cases,
+  final-chunk marker presence/absence, and AAD substitution attacks.
+- The exact AAD CID-commitment scheme (the chicken-and-egg between
+  computing the CID and using it as AAD).
+- Whether to support a chunk size other than 256 KiB. Lock to 256
+  KiB initially; broaden only if a real consumer needs it.
+- Range-request error semantics for partially-corrupt envelopes:
+  return a partial response with the verified prefix, or always
+  fail closed.
 
 ## Test vectors
 

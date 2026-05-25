@@ -64,12 +64,13 @@ cannot opt out.
 | # | Decision | Where enforced |
 |---|---|---|
 | T1.1 | Per-blob symmetric encryption (XChaCha20-Poly1305) for all stored blobs except `public_archival` collections | `ENCRYPTION_ENVELOPE.md` § "Envelope wire format" |
-| T1.2 | The envelope wire format (NOVE magic, version, algo, reserved, nonce, ciphertext, tag) | `ENCRYPTION_ENVELOPE.md` § "Envelope wire format" |
+| T1.2 | The envelope wire format starts with NOVE magic + 1-byte version + 1-byte algorithm; readers dispatch on `version` byte. v1 (Phase 1) is single-shot; v2 (Phase 2) is chunked streaming AEAD. Both formats remain decryptable forever. | `ENCRYPTION_ENVELOPE.md` § "Envelope wire format" + § "Planned v2: Streaming-AEAD" |
 | T1.3 | Per-blob keys are 256-bit CSPRNG-generated; never derived from CIDs; never persisted plaintext | `ENCRYPTION_ENVELOPE.md` § "Per-blob key generation" |
 | T1.4 | Master-key wrapping with XChaCha20-Poly1305; per-row `master_key_version_id` tracks which master key wrapped each entry | `ENCRYPTION_ENVELOPE.md` § "Master key versioning" |
 | T1.5 | Crypto-shred refuses when `data_encryption_keys.legal_hold = true` | `ENCRYPTION_ENVELOPE.md` § "Pre-conditions" |
-| T1.6 | The CID stored in `blobs.cid` is the CID of the entire envelope (header, ciphertext, tag) | `ENCRYPTION_ENVELOPE.md` § "Envelope wire format" |
-| T1.7 | Deterministic IPFS import (CID v1, sha2-256, base32, fixed chunker, balanced layout) | `IPFS_IMPORT_RULES.md` |
+| T1.6 | The CID stored in `blobs.cid` is the CID of the entire envelope (header, ciphertext, tag) — true for both v1 and v2 | `ENCRYPTION_ENVELOPE.md` § "Envelope wire format" |
+| T1.7 | Deterministic IPFS import (CID v1, sha2-256, base32, fixed 256 KiB chunker, balanced layout). v2 streaming-AEAD chunk boundaries align with IPFS block boundaries — chunk N == block N. | `IPFS_IMPORT_RULES.md` |
+| T1.7a | (Phase 2) v2 streaming-AEAD envelope: per-chunk XChaCha20-Poly1305 with chunk-counter-derived nonces; AAD binds `chunk_index || total_chunks || cid`. Range reads supported on v2 encrypted blobs. | `ENCRYPTION_ENVELOPE.md` § "Planned v2: Streaming-AEAD" |
 
 ### Transport and federation
 

@@ -51,7 +51,9 @@ v3 additions (architectural classification and slow-attrition handling):
 Standalone coordinator with embedded hardened IPFS daemon, Postgres,
 nginx + certbot, signed-URL HMAC, per-blob encryption on by default,
 on-the-fly image transforms, drag-and-drop upload widget. Exports
-`pkg/coordinator` and `pkg/node` as semver-stable Go library packages.
+`pkg/coordinator` as a public Go library package (with the
+`pkg/coordinator/product` subpackage at v0.x.y until external adapter
+authors are real consumers in Phase 4).
 
 v2 promotions into Phase 1:
 - Master-key rotation tooling (`novactl keys rotate-master`),
@@ -64,10 +66,26 @@ v2 promotions into Phase 1:
 - Manual operator path for severe-content quarantine + legal-hold
   via `novactl moderation quarantine ... --legal-hold`.
 
-## Phase 2 — Federation
+v3.1 amendment:
+- `pkg/node` is **not exported in Phase 1**. The donor binary ships
+  in Phase 2; freezing a public Go interface before any caller
+  exercises it would produce immediate semver churn at Phase 2.
+  Phase 1 keeps node-side types under `internal/node/` and promotes
+  to `pkg/node` in Phase 2 alongside `cmd/node`. See
+  `docs/REVIEW_2026_05_25.md`.
+- The envelope codec ships v1 (single-shot XChaCha20-Poly1305), but
+  the implementation uses a versioned `Codec` interface so v2
+  (streaming-AEAD, see Phase 2) drops in without disturbing v1
+  paths. Blob metadata exposes `envelope_version` so consumers can
+  branch.
+
+## Phase 2 — Federation + streaming-AEAD envelope
 
 Split coordinator from pinning-node binary. Mesh-VPN-authenticated
 federation, replication-factor enforcement, donor-operated nodes.
+Streaming-AEAD envelope (v2 wire format) so encrypted blobs support
+HTTP Range requests, CDN partial-object caching, and modern web
+media playback expectations.
 
 v2 additions:
 - HTTPS+mTLS auth inside Nebula with separate federation client
@@ -83,6 +101,23 @@ v2 additions:
   spot-checks, donor reputation tracking, audit-aware placement.
 - Incremental change-log endpoint (`/fed/v1/pins/changes`) plus
   snapshot recovery path with snapshot_epoch consistency.
+- `pkg/node` graduates to a public, semver-stable Go library
+  alongside `cmd/node`.
+
+v3.1 promotions into Phase 2:
+- Streaming-AEAD envelope (v2 wire format). Chunk size aligned to
+  the existing 256 KiB IPFS block boundary so chunk N == block N;
+  per-chunk XChaCha20-Poly1305 with chunk-counter-derived nonces;
+  AAD binds `chunk_index || total_chunks || cid` to defeat
+  reordering and substitution. Encrypted blobs become Range-
+  serveable. See `docs/specs/ENCRYPTION_ENVELOPE.md` § "Planned v2:
+  Streaming-AEAD".
+  This was previously listed as Phase 6+ research; pulled forward
+  because single-shot AEAD restricts `nova-video`, `nova-audio`,
+  large `nova-archive` objects, and modern web media patterns to
+  full-object fetch. Federation is the right pairing because the
+  per-block crypto semantics share infrastructure with possession
+  audits and donor-to-donor repair.
 
 ## Phase 3 — Dedup and moderation
 
@@ -113,7 +148,9 @@ Speculative directions: end-user client direct integration, browser-
 resident pinning via WASM, FFI bindings for non-Go embedding,
 additional product modules (`nova-video`, `nova-audio`, `nova-archive`,
 `nova-document`), read-only secondary coordinator for read-availability
-during primary failover, streaming-AEAD envelope variant for blobs
-that exceed memory, formal Provable Data Possession / Proof of
+during primary failover, formal Provable Data Possession / Proof of
 Retrievability, hot-tier / cold-tier auto-migration, optional S3
 read-only adapter product layer.
+
+(v3.1: streaming-AEAD envelope was promoted from Phase 6+ research
+to a Phase 2 deliverable. See above.)

@@ -9,3 +9,4 @@
 - [`VOLUNTEER_DEPLOYMENT_GUIDANCE.md`](VOLUNTEER_DEPLOYMENT_GUIDANCE.md) — what a volunteer running a donor node should know
 - [`REVIEW_2026_05_09.md`](REVIEW_2026_05_09.md) — Phase 0 v2 design review
 - [`REVIEW_2026_05_19.md`](REVIEW_2026_05_19.md) — Phase 0 v3 design review
+- [`REVIEW_2026_05_25.md`](REVIEW_2026_05_25.md) — Phase 0 v3.1 architectural review (`pkg/node` deferral, streaming-AEAD pulled to Phase 2, OpenAPI drift fixes)

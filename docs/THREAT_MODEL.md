@@ -56,9 +56,10 @@ The assets Nova protects, ranked by harm if exposed:
 
 | # | Boundary | Trust direction |
 |---|---|---|
-| ① | Internet ↔ nginx | nginx terminates TLS; everything inside the box is trusted by the operator |
+| ① | Internet ↔ nginx | nginx terminates TLS; everything inside the box is trusted by the operator. The public-content origin (`/blob/*`, `/i/*`, `/legal/*`, `/health`, `/api/v1/uploads/*`) and the admin/setup origin (`/admin`, `/api/v1/admin/*`, `/api/v1/auth/*`, ephemeral `/setup`) live on **distinct virtual hosts** so that an XSS or cache-poisoning at the public origin does not become administrative trust. The admin host can be IP-restricted or mTLS-fronted independently. v3.1 amendment. |
+| ① a | First-run setup wizard | Binds loopback-only inside the coordinator container; reachable from the host only when the operator publishes the setup port (`docker compose --profile setup up`). Self-disables permanently after the first successful bootstrap writes `.bootstrap-complete` to the secrets volume. v3.1 amendment. |
 | ② | nginx ↔ coordinator | loopback / unix socket; trusted by colocation |
-| ③ | coordinator ↔ master key | environment variable; never written to disk by Nova |
+| ③ | coordinator ↔ master key | environment variable OR file-mount (e.g., Docker secret at `/run/secrets/master-key`); never written to disk by Nova. v3.1 amendment broadens beyond env-var-only. |
 | ④ | coordinator ↔ donor | Nebula overlay + HTTPS/mTLS; the Nebula cert authorizes mesh membership, the federation client cert authorizes HTTP API calls |
 | ⑤ | donor ↔ donor | HTTPS/mTLS inside Nebula; donor-to-donor fetches require a coordinator-issued, source-and-destination-pinned HMAC repair token. The private IPFS swarm key gates Kubo's daemon-level peering as defense in depth, but no donor-to-donor data exchange occurs over Bitswap |
 
