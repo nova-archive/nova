@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: make test-unit
+
+      - name: Integration tests
+        run: make test-integration
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  schema-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check 0001_init.sql matches DATA_MODEL.sql
+        run: |
+          extracted="$(sed -n '/^-- +goose Up$/,/^-- +goose StatementEnd$/{
+            /^-- +goose Up$/d
+            /^-- +goose StatementBegin$/d
+            /^-- +goose StatementEnd$/d
+            /^-- This migration MUST/d
+            /^-- Forward-only/d
+            /^-- Drift fails CI/d
+            p
+          }' internal/db/migrations/0001_init.sql)"
+          diff <(echo "$extracted") docs/specs/DATA_MODEL.sql
