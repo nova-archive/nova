@@ -25,6 +25,7 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	if err := validate(&cfg); err != nil {
 		return nil, err
 	}
+	ApplyParanoid(&cfg)
 	return &cfg, nil
 }
 
