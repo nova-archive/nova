@@ -61,7 +61,7 @@ clean:
 .PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
 
 sqlc-generate:
-	cd internal/db && go run github.com/sqlc-dev/sqlc/cmd/sqlc generate
+	cd internal/db && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
 
 codegen-check: sqlc-generate
 	git diff --exit-code -- internal/db/gen || (echo "sqlc drift: run 'make sqlc-generate' and commit" && exit 1)
