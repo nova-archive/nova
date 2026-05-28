@@ -17,7 +17,7 @@ This master plan summarizes all 14 milestones with their goals and exit criteria
 | Milestone | Theme | Status | Plan |
 |---|---|---|---|
 | M1 | Foundation: repo, migrations, postgres dev env | **completed** | this document, § M1 |
-| M2 | Envelope + IPFS round-trip | pending | tbd |
+| M2 | Envelope + IPFS round-trip | **completed** | [m2 plan](2026-05-25-phase1-m2-envelope-ipfs.md) |
 | M3 | Storage core API (read path) | pending | tbd |
 | M4 | Upload pipeline (write path) | pending | tbd |
 | M5 | Image transforms (nova-image) | pending | tbd |
