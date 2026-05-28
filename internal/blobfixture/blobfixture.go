@@ -24,10 +24,12 @@ type Deps struct {
 
 // Spec describes the blob to create.
 type Spec struct {
-	Plaintext  []byte
-	MIME       string
-	Visibility string // "public" | "unlisted" | "private" | "" (no membership)
-	State      string // blob_state; defaults to "active"
+	Plaintext   []byte
+	MIME        string
+	Visibility  string // "public" | "unlisted" | "private" | "" (no membership)
+	State       string // blob_state; defaults to "active"
+	Unencrypted bool   // Unencrypted seeds a public_archival blob: raw plaintext imported to Kubo,
+	// encryption_key_id NULL, forced into a public collection. Keystore is not used.
 }
 
 // Result reports what was created.
@@ -46,19 +48,32 @@ func Seed(ctx context.Context, d Deps, s Spec) (Result, error) {
 		s.State = "active"
 	}
 
-	pbk := make([]byte, envelope.KeySize)
-	if _, err := rand.Read(pbk); err != nil {
-		return Result{}, fmt.Errorf("blobfixture: rand key: %w", err)
+	var (
+		stored  []byte
+		pbk     []byte
+		wrapped []byte
+		mkvID   uuid.UUID
+	)
+	if s.Unencrypted {
+		stored = s.Plaintext
+	} else {
+		pbk = make([]byte, envelope.KeySize)
+		if _, err := rand.Read(pbk); err != nil {
+			return Result{}, fmt.Errorf("blobfixture: rand key: %w", err)
+		}
+		var err error
+		wrapped, mkvID, err = d.Keystore.Wrap(pbk)
+		if err != nil {
+			return Result{}, fmt.Errorf("blobfixture: wrap: %w", err)
+		}
+		env, err := envelope.V1().Encrypt(s.Plaintext, pbk)
+		if err != nil {
+			return Result{}, fmt.Errorf("blobfixture: encrypt: %w", err)
+		}
+		stored = env
 	}
-	wrapped, mkvID, err := d.Keystore.Wrap(pbk)
-	if err != nil {
-		return Result{}, fmt.Errorf("blobfixture: wrap: %w", err)
-	}
-	env, err := envelope.V1().Encrypt(s.Plaintext, pbk)
-	if err != nil {
-		return Result{}, fmt.Errorf("blobfixture: encrypt: %w", err)
-	}
-	add, err := d.Backend.AddDeterministic(ctx, env)
+
+	add, err := d.Backend.AddDeterministic(ctx, stored)
 	if err != nil {
 		return Result{}, fmt.Errorf("blobfixture: import: %w", err)
 	}
@@ -71,12 +86,16 @@ func Seed(ctx context.Context, d Deps, s Spec) (Result, error) {
 		return Result{}, fmt.Errorf("blobfixture: insert user: %w", err)
 	}
 
-	var keyID uuid.UUID
-	if err := d.Pool.QueryRow(ctx,
-		`INSERT INTO data_encryption_keys (algorithm, wrapped_key, master_key_version_id, state)
-		 VALUES ('XChaCha20-Poly1305', $1, $2, 'active') RETURNING id`,
-		wrapped, mkvID).Scan(&keyID); err != nil {
-		return Result{}, fmt.Errorf("blobfixture: insert dek: %w", err)
+	var keyID *uuid.UUID
+	if !s.Unencrypted {
+		var k uuid.UUID
+		if err := d.Pool.QueryRow(ctx,
+			`INSERT INTO data_encryption_keys (algorithm, wrapped_key, master_key_version_id, state)
+			 VALUES ('XChaCha20-Poly1305', $1, $2, 'active') RETURNING id`,
+			wrapped, mkvID).Scan(&k); err != nil {
+			return Result{}, fmt.Errorf("blobfixture: insert dek: %w", err)
+		}
+		keyID = &k
 	}
 
 	if _, err := d.Pool.Exec(ctx,
@@ -100,12 +119,20 @@ func Seed(ctx context.Context, d Deps, s Spec) (Result, error) {
 		}
 	}
 
-	if s.Visibility != "" {
+	if s.Visibility != "" || s.Unencrypted {
+		visibility := s.Visibility
+		publicArchival := false
+		if s.Unencrypted {
+			// public_archival blobs must live in a public collection (DB CHECK
+			// public_archival_requires_public_visibility).
+			visibility = "public"
+			publicArchival = true
+		}
 		var col uuid.UUID
 		if err := d.Pool.QueryRow(ctx,
 			`INSERT INTO collections (owner_id, name, slug, visibility, public_archival)
-			 VALUES ($1,$2,$2,$3,false) RETURNING id`,
-			ownerID, "col-"+cidStr[:12], s.Visibility).Scan(&col); err != nil {
+			 VALUES ($1,$2,$2,$3,$4) RETURNING id`,
+			ownerID, "col-"+cidStr[:12], visibility, publicArchival).Scan(&col); err != nil {
 			return Result{}, fmt.Errorf("blobfixture: insert collection: %w", err)
 		}
 		if _, err := d.Pool.Exec(ctx,

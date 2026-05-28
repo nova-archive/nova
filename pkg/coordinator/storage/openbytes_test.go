@@ -35,6 +35,35 @@ func newKuboBackend(t *testing.T, ctx context.Context) ipfs.Backend {
 	return be
 }
 
+func TestOpenBytesPlaintext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires postgres + kubo")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pool := dbtest.New(t, ctx)
+
+	be := newKuboBackend(t, ctx)
+	svc := storage.NewService(pool, be, nil) // keystore unused for plaintext
+
+	plaintext := []byte("public archival plaintext, no envelope")
+	res, err := blobfixture.Seed(ctx, blobfixture.Deps{Pool: pool, Backend: be},
+		blobfixture.Spec{Plaintext: plaintext, MIME: "text/plain", Unencrypted: true})
+	require.NoError(t, err)
+
+	view, err := svc.Resolve(ctx, res.CID)
+	require.NoError(t, err)
+	require.False(t, view.Encrypted, "public_archival blob must resolve as unencrypted")
+	require.Equal(t, storage.VisibilityPublic, view.Visibility)
+
+	rc, err := svc.OpenBytes(ctx, view)
+	require.NoError(t, err)
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	require.Equal(t, plaintext, got)
+}
+
 func TestOpenBytesEncrypted(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires postgres + kubo")

@@ -113,6 +113,10 @@ func (h *BlobHandler) serveBytes(w http.ResponseWriter, r *http.Request, cidStr 
 	h.setBytesHeaders(w, v)
 
 	if hasRange && !v.Encrypted {
+		// M3 buffers the whole plaintext object to satisfy a Range request
+		// (the ipfs.Backend.Get reader is not seekable through the interface).
+		// Acceptable for Phase 1; a seekable backend reader would let us
+		// stream ranges. TODO(post-M3): expose a ReadSeeker for plaintext.
 		buf, err := io.ReadAll(body)
 		if err != nil {
 			httputil.WriteError(w, http.StatusInternalServerError, "internal", "internal server error", rid)

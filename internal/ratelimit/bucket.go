@@ -21,6 +21,15 @@ type bucket struct {
 }
 
 // Limiter is a concurrency-safe keyed token-bucket limiter.
+//
+// M3 limitations (acceptable because nginx is the primary limiter and the
+// coordinator is not directly internet-exposed in the Phase 1 topology):
+//   - The per-key map is never evicted; distinct keys accumulate for the
+//     process lifetime. TODO(post-M3): bound it (LRU or periodic sweep).
+//   - Callers pass the client key; the middleware derives it from the
+//     X-Forwarded-For header, which is only trustworthy behind a trusted
+//     proxy. Do not rely on this limiter when the coordinator is reachable
+//     directly. TODO(post-M3): honor XFF only from a trusted proxy set.
 type Limiter struct {
 	cfg  Config
 	now  func() time.Time

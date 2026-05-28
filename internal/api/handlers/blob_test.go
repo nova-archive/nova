@@ -115,6 +115,20 @@ func TestBlobStatusMapping(t *testing.T) {
 	}
 }
 
+func TestBlobPlaintextRange206(t *testing.T) {
+	t.Parallel()
+	view := &storage.BlobView{CID: "bafyP", MIME: "text/plain", PlaintextSize: 5,
+		EnvelopeVersion: 1, Visibility: storage.VisibilityPublic, Encrypted: false, UploadedAt: time.Now()}
+	h := handlers.NewBlobHandler(fakeReader{view: view, body: "hello"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/blob/bafyP", nil)
+	req.Header.Set("Range", "bytes=0-1")
+	route(h).ServeHTTP(rec, req)
+	require.Equal(t, 206, rec.Code)
+	require.Equal(t, "he", rec.Body.String())
+	require.Equal(t, "bytes 0-1/5", rec.Header().Get("Content-Range"))
+}
+
 func TestBlobJSONPublic(t *testing.T) {
 	t.Parallel()
 	owner := "11111111-1111-1111-1111-111111111111"

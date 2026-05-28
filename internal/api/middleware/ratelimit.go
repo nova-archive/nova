@@ -25,6 +25,9 @@ func RateLimit(l *ratelimit.Limiter) func(http.Handler) http.Handler {
 	}
 }
 
+// clientIP derives the rate-limit key from X-Forwarded-For (set by the
+// trusted nginx front) and falls back to RemoteAddr. XFF is attacker-
+// controlled if the coordinator is reachable directly; see Limiter docs.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		if i := strings.IndexByte(xff, ','); i >= 0 {
