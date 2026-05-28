@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/ipfs/boxo/files"
@@ -121,6 +123,23 @@ func NewEmbedded(ctx context.Context, opts EmbeddedOptions) (*EmbeddedBackend, e
 		return nil, err
 	}
 
+	// In ModePrivate, install the operator's swarm key into the repo so
+	// libp2p's private-network protector loads the PSK. Kubo reads the
+	// PSK *only* from <repo>/swarm.key; if it is absent, an online node
+	// silently joins the PUBLIC libp2p network, defeating the central
+	// donor-blind/private-federation guarantee. ValidateConfig has
+	// already confirmed the source file exists and is non-empty.
+	//
+	// TODO(M3): when Online mode is wired in the coordinator, also set
+	// LIBP2P_FORCE_PNET=1 as defense-in-depth so libp2p refuses to dial
+	// if the PSK ever goes missing at runtime.
+	if opts.Mode == ModePrivate {
+		if err := installSwarmKey(opts.RepoPath, opts.SwarmKeyPath); err != nil {
+			_ = repo.Close()
+			return nil, fmt.Errorf("ipfs embedded: %w", err)
+		}
+	}
+
 	node, err := core.NewNode(ctx, &core.BuildCfg{
 		Repo:   repo,
 		Online: opts.Online,
@@ -137,6 +156,23 @@ func NewEmbedded(ctx context.Context, opts EmbeddedOptions) (*EmbeddedBackend, e
 	}
 
 	return &EmbeddedBackend{node: node, api: api, repoDir: opts.RepoPath}, nil
+}
+
+// installSwarmKey copies the operator's swarm key into the Kubo repo at
+// <repoPath>/swarm.key, where libp2p's private-network protector reads
+// it. It overwrites any existing key so operator key rotation takes
+// effect on restart. The file is written 0600 — it gates federation
+// membership and must not be world-readable.
+func installSwarmKey(repoPath, swarmKeyPath string) error {
+	data, err := os.ReadFile(swarmKeyPath)
+	if err != nil {
+		return fmt.Errorf("read swarm key %s: %w", swarmKeyPath, err)
+	}
+	dst := filepath.Join(repoPath, "swarm.key")
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return fmt.Errorf("write swarm key %s: %w", dst, err)
+	}
+	return nil
 }
 
 // applyHardeningDefaults mutates a fresh Kubo config to satisfy

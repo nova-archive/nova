@@ -26,6 +26,12 @@ func NewQueue(pool *pgxpool.Pool) *Queue {
 // Enqueue inserts a pending row and returns the new job id (string form
 // of the row's UUID).
 //
+// Payload MUST be valid UTF-8 (typically JSON). It is stored in the
+// jsonb payload column via to_jsonb(text), which rejects non-UTF-8
+// byte sequences with a Postgres encoding error. Job kinds carry
+// metadata (CIDs, sizes, preset names), not raw blob bytes — encode
+// any binary fields (e.g. base64) before enqueuing.
+//
 // Default max_attempts is 5; override via WithMaxAttempts.
 // Default not_before is now(); override via WithNotBefore.
 func (q *Queue) Enqueue(ctx context.Context, kind string, payload []byte, opts ...EnqueueOpt) (string, error) {

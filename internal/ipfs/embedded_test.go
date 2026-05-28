@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -148,6 +149,41 @@ func TestIntegrationEmbeddedBlockGet(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, envelope, bytesGot,
 		"raw block bytes == envelope bytes (no UnixFS wrapping)")
+}
+
+func TestIntegrationEmbeddedInstallsSwarmKeyIntoRepo(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	repo := t.TempDir()
+	swarmKey := filepath.Join(t.TempDir(), "swarm.key")
+	const content = "/key/swarm/psk/1.0.0/\n/base16/\n" +
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+	require.NoError(t, ipfs.WriteFileForTest(swarmKey, []byte(content)))
+
+	be, err := ipfs.NewEmbedded(ctx, ipfs.EmbeddedOptions{
+		RepoPath:     repo,
+		Mode:         ipfs.ModePrivate,
+		SwarmKeyPath: swarmKey,
+		Online:       false,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		shutdownCtx, c := context.WithTimeout(context.Background(), 10*time.Second)
+		defer c()
+		_ = be.Close(shutdownCtx)
+	})
+
+	// The swarm key MUST be installed into the repo so libp2p loads the
+	// PSK when the node runs online (M3). Without this, an online private
+	// node silently joins the public libp2p network.
+	installed, err := os.ReadFile(filepath.Join(repo, "swarm.key"))
+	require.NoError(t, err)
+	require.Equal(t, content, string(installed),
+		"NewEmbedded must copy the operator swarm key into <repo>/swarm.key")
 }
 
 func TestIntegrationEmbeddedRefusesOpenOnHardeningViolation(t *testing.T) {
