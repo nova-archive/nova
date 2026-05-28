@@ -57,3 +57,17 @@ migrate-status: build
 
 clean:
 	rm -rf bin dist build coverage.out coverage.html
+
+.PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
+
+sqlc-generate:
+	cd internal/db && go run github.com/sqlc-dev/sqlc/cmd/sqlc generate
+
+codegen-check: sqlc-generate
+	git diff --exit-code -- internal/db/gen || (echo "sqlc drift: run 'make sqlc-generate' and commit" && exit 1)
+
+build-coordinator:
+	go build -o bin/coordinator ./cmd/coordinator
+
+run-coordinator:
+	go run ./cmd/coordinator

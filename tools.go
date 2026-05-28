@@ -16,6 +16,7 @@
 package tools
 
 import (
+	_ "github.com/go-chi/chi/v5"
 	_ "github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/pressly/goose/v3"
