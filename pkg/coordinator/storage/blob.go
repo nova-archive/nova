@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
@@ -108,4 +110,45 @@ func (s *Service) Resolve(ctx context.Context, cidStr string) (*BlobView, error)
 	}
 
 	return view, nil
+}
+
+// OpenBytes returns a reader over the blob's plaintext. For public_archival
+// (unencrypted) blobs it streams directly from the backend (Range-friendly
+// upstream). For encrypted blobs it fetches the whole envelope, unwraps the
+// per-blob key, and decrypts in memory (v1 is single-shot; Phase 2 streaming
+// AEAD removes the whole-object buffering). The caller MUST Close the reader.
+func (s *Service) OpenBytes(ctx context.Context, v *BlobView) (io.ReadCloser, error) {
+	c, err := cid.Decode(v.CID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: decode cid: %w", err)
+	}
+	rc, err := s.backend.Get(ctx, c)
+	if err != nil {
+		return nil, fmt.Errorf("storage: backend get: %w", err)
+	}
+	if !v.Encrypted {
+		return rc, nil
+	}
+	defer rc.Close()
+
+	env, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("storage: read envelope: %w", err)
+	}
+	if v.masterKeyVersionID == nil {
+		return nil, fmt.Errorf("storage: encrypted view missing key material")
+	}
+	perBlobKey, err := s.ks.Unwrap(v.wrappedKey, *v.masterKeyVersionID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: unwrap per-blob key: %w", err)
+	}
+	_, codec, err := envelope.Decode(env)
+	if err != nil {
+		return nil, fmt.Errorf("storage: decode envelope: %w", err)
+	}
+	plain, err := codec.Decrypt(env, perBlobKey)
+	if err != nil {
+		return nil, fmt.Errorf("storage: decrypt: %w", err)
+	}
+	return io.NopCloser(bytes.NewReader(plain)), nil
 }
