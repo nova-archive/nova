@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/nova-archive/nova/internal/api"
+	"github.com/nova-archive/nova/internal/api/httputil"
 	"github.com/nova-archive/nova/internal/ratelimit"
 )
 
@@ -16,7 +16,7 @@ func RateLimit(l *ratelimit.Limiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !l.Allow(clientIP(r)) {
-				api.WriteError(w, http.StatusTooManyRequests, "rate_limited",
+				httputil.WriteError(w, http.StatusTooManyRequests, "rate_limited",
 					"too many requests", RequestIDFromContext(r.Context()))
 				return
 			}

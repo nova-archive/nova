@@ -4,22 +4,14 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
+
+	"github.com/nova-archive/nova/internal/api/httputil"
 )
 
-// errorBody is the openapi #/components/schemas/Error shape.
-type errorBody struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id,omitempty"`
-}
-
 // WriteError writes a JSON Error with the given status. Error responses are
-// never cacheable.
+// never cacheable. It delegates to httputil.WriteError so that sub-packages
+// (handlers, middleware) can import httputil without creating an import cycle.
 func WriteError(w http.ResponseWriter, status int, code, message, requestID string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(errorBody{Code: code, Message: message, RequestID: requestID})
+	httputil.WriteError(w, status, code, message, requestID)
 }

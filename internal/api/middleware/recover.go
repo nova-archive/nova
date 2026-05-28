@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/nova-archive/nova/internal/api"
+	"github.com/nova-archive/nova/internal/api/httputil"
 )
 
 // Recover converts a panic in a downstream handler into a 500 JSON Error,
@@ -15,7 +15,7 @@ func Recover(next http.Handler) http.Handler {
 			if rec := recover(); rec != nil {
 				rid := RequestIDFromContext(r.Context())
 				slog.Error("panic in handler", "request_id", rid, "panic", rec, "path", r.URL.Path)
-				api.WriteError(w, http.StatusInternalServerError, "internal", "internal server error", rid)
+				httputil.WriteError(w, http.StatusInternalServerError, "internal", "internal server error", rid)
 			}
 		}()
 		next.ServeHTTP(w, r)
