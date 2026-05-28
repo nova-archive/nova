@@ -5,8 +5,9 @@
 coverage.out
 coverage.html
 
-# Generated code (sqlc, oapi-codegen — committed in later M but ignored locally)
-internal/db/gen/
+# Generated code: sqlc output (internal/db/gen) is committed as of M3 so the
+# build works without sqlc installed and the codegen-check gate detects drift.
+# oapi-codegen output stays generated-and-ignored until M4 adopts it.
 internal/api/codegen/
 
 # Node
