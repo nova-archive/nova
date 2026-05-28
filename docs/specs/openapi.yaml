@@ -109,13 +109,14 @@ paths:
         |---|---|---|---|
         | public | active | anonymous | `public, max-age=31536000, immutable` |
         | public-archival | active | anonymous | `public, max-age=31536000, immutable` |
-        | private/unlisted | active | signed URL | `private, max-age=300, must-revalidate` |
+        | unlisted | active | anonymous (CID is the capability) | `private, max-age=300, must-revalidate` |
+        | private | active | signed URL / bearer | `private, max-age=300, must-revalidate` |
         | any | soft_deleted/quarantined/tombstoned | any | `no-store` |
 
         **Range requests are supported only on public-archival
         (plaintext) blobs.** A Range request against an encrypted
         blob returns `416 Range Not Satisfiable`. Streaming AEAD
-        is a Phase 6+ deliverable; until then, single-shot decryption
+        is a Phase 2 deliverable; until then, single-shot decryption
         cannot serve byte ranges.
       parameters:
         - $ref: '#/components/parameters/RangeHeader'
