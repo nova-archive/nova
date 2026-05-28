@@ -2,6 +2,7 @@
 /bin/
 /dist/
 /build/
+/coordinator
 coverage.out
 coverage.html
 
