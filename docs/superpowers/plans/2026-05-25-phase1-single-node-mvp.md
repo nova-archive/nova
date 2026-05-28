@@ -18,7 +18,7 @@ This master plan summarizes all 14 milestones with their goals and exit criteria
 |---|---|---|---|
 | M1 | Foundation: repo, migrations, postgres dev env | **completed** | this document, § M1 |
 | M2 | Envelope + IPFS round-trip | **completed** | [m2 plan](2026-05-25-phase1-m2-envelope-ipfs.md) |
-| M3 | Storage core API (read path) | pending | tbd |
+| M3 | Storage core API (read path) | in progress | [m3 plan](2026-05-28-phase1-m3-storage-read-api.md) |
 | M4 | Upload pipeline (write path) | pending | tbd |
 | M5 | Image transforms (nova-image) | pending | tbd |
 | M6 | Local JWT issuer + bearer auth | pending | tbd |
@@ -54,7 +54,7 @@ After M14: Phase 1 release-candidate tag, then Phase 2 planning.
 ### M3 — Storage core API (read path)
 **Goal:** `curl http://localhost:8443/blob/{cid}` returns the decrypted bytes; `/health` returns 200; coordinator binds correctly inside the container.
 
-**Deliverables:** `pkg/coordinator` lifecycle (`New`, `Run`, `Shutdown`), `cmd/coordinator/main.go` wiring, chi router + middleware (request-id, recover, rate-limit, audit-log), `/health` + `/blob/{cid}` (GET, HEAD) + `/blob/{cid}.json` handlers, ports (coordinator :9000 internal), nginx proxying, the dev-only `nova_dev` build tag for anonymous management auth bypass.
+**Deliverables:** `pkg/coordinator` lifecycle (`New`, `Run`, `Shutdown`), `cmd/coordinator/main.go` wiring, chi router + middleware (request-id, recover, rate-limit; `audit_log` deferred to M6 — it records privileged actions, and M3 has only anonymous public reads), sqlc adoption for the read query surface (committed `internal/db/gen`), `/health` + `/blob/{cid}` (GET, HEAD) + `/blob/{cid}.json` handlers, ports (coordinator :9000 internal), a minimal dev nginx proxy, the dev-only `nova_dev` build tag for the anonymous-mode startup floor.
 
 **Exit:** integration test: upload a blob via direct DB + Kubo, fetch via HTTP through nginx, byte-match.
 

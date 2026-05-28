@@ -24,6 +24,9 @@ jobs:
       - name: Go vet
         run: go vet ./...
 
+      - name: sqlc codegen drift
+        run: make codegen-check
+
       - name: Unit tests
         run: make test-unit
 
