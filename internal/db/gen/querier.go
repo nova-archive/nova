@@ -6,12 +6,27 @@ package gen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
+	AbortUploadSession(ctx context.Context, id pgtype.UUID) error
+	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
+	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
+	DeleteUploadSession(ctx context.Context, id pgtype.UUID) error
+	FinalizeUploadSession(ctx context.Context, arg FinalizeUploadSessionParams) error
 	GetBlobCore(ctx context.Context, cid string) (GetBlobCoreRow, error)
+	GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (GetCollectionForWriteRow, error)
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
+	GetUploadSession(ctx context.Context, id pgtype.UUID) (GetUploadSessionRow, error)
+	InsertBlob(ctx context.Context, arg InsertBlobParams) error
+	InsertBlock(ctx context.Context, arg InsertBlockParams) error
+	InsertCollectionItem(ctx context.Context, arg InsertCollectionItemParams) error
+	InsertDEK(ctx context.Context, arg InsertDEKParams) (pgtype.UUID, error)
+	InsertManifest(ctx context.Context, arg InsertManifestParams) error
+	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
 	ResolveBlobVisibility(ctx context.Context, blobCid string) ([]string, error)
 }
 

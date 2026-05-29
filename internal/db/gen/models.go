@@ -546,6 +546,49 @@ func (ns NullPinState) Value() (driver.Value, error) {
 	return string(ns.PinState), nil
 }
 
+type UploadSessionState string
+
+const (
+	UploadSessionStateInProgress UploadSessionState = "in_progress"
+	UploadSessionStateFinalized  UploadSessionState = "finalized"
+	UploadSessionStateAborted    UploadSessionState = "aborted"
+)
+
+func (e *UploadSessionState) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = UploadSessionState(s)
+	case string:
+		*e = UploadSessionState(s)
+	default:
+		return fmt.Errorf("unsupported scan type for UploadSessionState: %T", src)
+	}
+	return nil
+}
+
+type NullUploadSessionState struct {
+	UploadSessionState UploadSessionState
+	Valid              bool // Valid is true if UploadSessionState is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullUploadSessionState) Scan(value interface{}) error {
+	if value == nil {
+		ns.UploadSessionState, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.UploadSessionState.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullUploadSessionState) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.UploadSessionState), nil
+}
+
 type UserRole string
 
 const (
@@ -855,6 +898,21 @@ type TakedownRepeatInfringer struct {
 	UserID       pgtype.UUID
 	Strikes      int32
 	LastStrikeAt time.Time
+}
+
+type UploadSession struct {
+	ID             pgtype.UUID
+	OwnerID        pgtype.UUID
+	DeclaredLength int64
+	OffsetBytes    int64
+	MimeType       pgtype.Text
+	Product        BlobProduct
+	CollectionID   pgtype.UUID
+	State          UploadSessionState
+	BlobCid        pgtype.Text
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	ExpiresAt      time.Time
 }
 
 type User struct {
