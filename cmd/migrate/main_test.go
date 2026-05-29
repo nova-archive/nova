@@ -70,7 +70,7 @@ func TestIntegrationMigrateUpProducesExpectedTables(t *testing.T) {
 		"nodes", "pin_assignments", "pin_audits",
 		"integrity_audits", "moderation_decisions", "dmca_cases",
 		"takedown_repeat_infringers", "signed_url_revocations",
-		"audit_log", "jobs",
+		"audit_log", "jobs", "upload_sessions",
 	}
 	for _, table := range expectedTables {
 		var exists bool
