@@ -16,17 +16,55 @@ import (
 	"github.com/nova-archive/nova/internal/ipfs"
 )
 
-// Service is the read core. It is safe for concurrent use.
+// Service is the storage core (read + write). It is safe for concurrent use.
 type Service struct {
-	q       *gen.Queries
-	backend ipfs.Backend
-	ks      *envelope.Keystore
+	q             *gen.Queries
+	pool          *pgxpool.Pool
+	backend       ipfs.Backend
+	ks            *envelope.Keystore
+	maxUploadSize int64
+	assembly      chan struct{} // buffered semaphore bounding in-memory assembly
 }
 
-// NewService builds a read service over the given pool, IPFS backend, and
+// Option configures a Service. Read-only callers pass none.
+type Option func(*svcOpts)
+
+type svcOpts struct {
+	maxUploadSize int64
+	assemblySize  int
+}
+
+// WithWriteLimits sets the upload size ceiling (bytes) and the maximum number
+// of concurrent in-memory assembly operations (the V1-envelope RAM bound).
+// Non-positive values keep the defaults (100 MiB / 8).
+func WithWriteLimits(maxUploadSize int64, maxConcurrentAssembly int) Option {
+	return func(o *svcOpts) {
+		if maxUploadSize > 0 {
+			o.maxUploadSize = maxUploadSize
+		}
+		if maxConcurrentAssembly > 0 {
+			o.assemblySize = maxConcurrentAssembly
+		}
+	}
+}
+
+// NewService builds a storage service over the given pool, IPFS backend, and
 // keystore. backend and ks may be nil in tests that exercise Resolve only.
-func NewService(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore) *Service {
-	return &Service{q: gen.New(pool), backend: backend, ks: ks}
+// Write limits default to 100 MiB / 8 concurrent assemblies; override via
+// WithWriteLimits. Existing read-only call sites pass no options.
+func NewService(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, opts ...Option) *Service {
+	o := svcOpts{maxUploadSize: 104857600, assemblySize: 8}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	return &Service{
+		q:             gen.New(pool),
+		pool:          pool,
+		backend:       backend,
+		ks:            ks,
+		maxUploadSize: o.maxUploadSize,
+		assembly:      make(chan struct{}, o.assemblySize),
+	}
 }
 
 // Resolve loads and authorizes a blob for anonymous read. It performs no
