@@ -29,3 +29,19 @@ var (
 	// ErrKeyShredded: encrypted blob whose DEK has been crypto-shredded.
 	ErrKeyShredded = errors.New("storage: encryption key shredded")
 )
+
+// Write-path domain errors (M4). The internal/api layer maps these to status
+// codes (413 / 400 / 404 / 503 respectively).
+var (
+	// ErrUploadTooLarge: declared size exceeds the configured ceiling.
+	ErrUploadTooLarge = errors.New("storage: upload exceeds max size")
+
+	// ErrMimeRejected: the declared MIME contradicts the sniffed content.
+	ErrMimeRejected = errors.New("storage: declared mime contradicts content")
+
+	// ErrCollectionNotFound: the upload targets a nonexistent collection.
+	ErrCollectionNotFound = errors.New("storage: collection not found")
+
+	// ErrServerBusy: the in-memory assembly semaphore is saturated.
+	ErrServerBusy = errors.New("storage: assembly capacity saturated")
+)

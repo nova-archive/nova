@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,4 +61,22 @@ func resolveVisibility(visibilities []string) Visibility {
 		}
 	}
 	return best
+}
+
+// PutContext carries validated, product-agnostic write metadata for Service.Put.
+type PutContext struct {
+	MIME         string
+	Product      string // blob_product; M4 always "raw"
+	CollectionID *uuid.UUID
+	OwnerID      *uuid.UUID
+	SourceIP     netip.Addr // zero value ⟹ not recorded (paranoid / anonymous)
+}
+
+// PutResult reports the committed blob.
+type PutResult struct {
+	CID       string
+	ByteSize  int64
+	MIME      string
+	Product   string
+	Encrypted bool
 }
