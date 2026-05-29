@@ -12,6 +12,11 @@
 //	IPFS_SWARM_KEY_FILE       swarm key path (required in private mode)
 //	NOVA_AUTH_ANONYMOUS       "true" to request anonymous mode (refused in prod builds)
 //	NOVA_VERSION              version string for /health (default "dev")
+//	NOVA_UPLOAD_TMP_DIR       tus chunk dir (default <tmpdir>/nova-uploads)
+//	NOVA_MAX_UPLOAD_SIZE_BYTES   max upload size (default 100 MiB)
+//	NOVA_MAX_CONCURRENT_ASSEMBLY concurrent in-memory encrypts (default 8)
+//	NOVA_UPLOAD_SESSION_TTL_SECONDS  tus session TTL (default 86400)
+//	NOVA_PARANOID             "true" suppresses source-IP recording
 package main
 
 import (
@@ -20,10 +25,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/nova-archive/nova/internal/auth"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
@@ -67,6 +75,18 @@ func run() error {
 		version = "dev"
 	}
 
+	tmpDir := os.Getenv("NOVA_UPLOAD_TMP_DIR")
+	if tmpDir == "" {
+		tmpDir = filepath.Join(os.TempDir(), "nova-uploads")
+	}
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		return fmt.Errorf("create upload tmp dir: %w", err)
+	}
+	maxUpload := envInt64("NOVA_MAX_UPLOAD_SIZE_BYTES", config.DefaultMaxUploadSizeBytes)
+	maxAssembly := envInt("NOVA_MAX_CONCURRENT_ASSEMBLY", config.DefaultMaxConcurrentAssembly)
+	sessionTTL := time.Duration(envInt("NOVA_UPLOAD_SESSION_TTL_SECONDS", config.DefaultUploadSessionTTLSecs)) * time.Second
+	recordIP := os.Getenv("NOVA_PARANOID") != "true"
+
 	pool, err := db.Open(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
@@ -97,9 +117,15 @@ func run() error {
 	}()
 
 	c, err := coordinator.New(pool, backend, ks, coordinator.Config{
-		ListenAddr: listen,
-		Version:    version,
-		RateLimit:  coordinator.RateLimitConfig{RatePerSec: 50, Burst: 200},
+		ListenAddr:            listen,
+		Version:               version,
+		RateLimit:             coordinator.RateLimitConfig{RatePerSec: 50, Burst: 200},
+		MaxUploadSizeBytes:    maxUpload,
+		MaxConcurrentAssembly: maxAssembly,
+		SessionTTL:            sessionTTL,
+		UploadTmpDir:          tmpDir,
+		UploadGCInterval:      time.Hour,
+		RecordSourceIP:        recordIP,
 	})
 	if err != nil {
 		return fmt.Errorf("coordinator: %w", err)
@@ -107,4 +133,22 @@ func run() error {
 
 	fmt.Fprintf(os.Stderr, "coordinator: listening on %s\n", listen)
 	return c.Run(ctx)
+}
+
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
 }

@@ -13,6 +13,7 @@ import (
 type ServerConfig struct {
 	Version string
 	Blob    *handlers.BlobHandler
+	Upload  *handlers.UploadHandler
 	Limiter *ratelimit.Limiter
 }
 
@@ -33,6 +34,20 @@ func NewServer(cfg ServerConfig) http.Handler {
 	if cfg.Blob != nil {
 		r.Get("/blob/{cid}", cfg.Blob.Serve)
 		r.Head("/blob/{cid}", cfg.Blob.Head)
+	}
+
+	// M4 write path. The rest of /api/v1/* stays 404 until M6.
+	if cfg.Upload != nil {
+		r.Route("/api/v1/uploads", func(r chi.Router) {
+			r.Post("/", cfg.Upload.CreateTus)
+			r.Route("/{id}", func(r chi.Router) {
+				r.Head("/", cfg.Upload.HeadTus)
+				r.Patch("/", cfg.Upload.PatchTus)
+				r.Delete("/", cfg.Upload.DeleteTus)
+				r.Post("/finalize", cfg.Upload.FinalizeTus)
+			})
+		})
+		r.Post("/api/v1/blobs", cfg.Upload.Multipart)
 	}
 
 	return r
