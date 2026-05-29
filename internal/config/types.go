@@ -14,6 +14,9 @@ type Config struct {
 	Moderation     Moderation     `yaml:"moderation"`
 	Coordinator    Coordinator    `yaml:"coordinator"`
 
+	// Uploads tunes the M4 write path (tus + multipart).
+	Uploads Uploads `yaml:"uploads"`
+
 	// Webhook destinations; honored only when paranoid=false.
 	Webhooks []WebhookDestination `yaml:"webhooks,omitempty"`
 
@@ -107,4 +110,21 @@ type WebhookDestination struct {
 	URL    string   `yaml:"url"`
 	Events []string `yaml:"events"`
 	Secret string   `yaml:"secret_file,omitempty"`
+}
+
+// Upload-pipeline defaults (M4). The size ceiling is an artificial Phase-1
+// limit tied to V1 whole-object encryption; Phase-2 streaming AEAD lifts it.
+const (
+	DefaultMaxUploadSizeBytes    int64 = 104857600 // 100 MiB
+	DefaultUploadSessionTTLSecs        = 86400      // 24h
+	DefaultMaxConcurrentAssembly       = 8
+)
+
+// Uploads configures the M4 write path. Zero-valued fields are filled with the
+// Default* constants by the loader (applyUploadDefaults).
+type Uploads struct {
+	MaxUploadSizeBytes    int64  `yaml:"max_upload_size_bytes"`
+	SessionTTLSeconds     int    `yaml:"session_ttl_seconds"`
+	MaxConcurrentAssembly int    `yaml:"max_concurrent_assembly"`
+	TmpDir                string `yaml:"tmp_dir"`
 }

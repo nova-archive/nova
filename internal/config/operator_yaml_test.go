@@ -26,6 +26,11 @@ func TestLoadMinimalOperatorYAML(t *testing.T) {
 	require.Equal(t, "quarantine", cfg.Moderation.TakedownDefaultAction)
 
 	require.False(t, cfg.Coordinator.PublicIpfsDht)
+
+	// Uploads defaults are applied when the section is absent.
+	require.Equal(t, config.DefaultMaxUploadSizeBytes, cfg.Uploads.MaxUploadSizeBytes)
+	require.Equal(t, 86400, cfg.Uploads.SessionTTLSeconds)
+	require.Equal(t, 8, cfg.Uploads.MaxConcurrentAssembly)
 }
 
 func TestLoadOperatorYAMLRejectsMissingFile(t *testing.T) {

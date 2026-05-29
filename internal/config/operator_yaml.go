@@ -26,7 +26,22 @@ func LoadFromBytes(data []byte) (*Config, error) {
 		return nil, err
 	}
 	ApplyParanoid(&cfg)
+	applyUploadDefaults(&cfg)
 	return &cfg, nil
+}
+
+// applyUploadDefaults fills zero-valued Uploads fields with the Default*
+// constants so callers always see a usable write-path configuration.
+func applyUploadDefaults(cfg *Config) {
+	if cfg.Uploads.MaxUploadSizeBytes <= 0 {
+		cfg.Uploads.MaxUploadSizeBytes = DefaultMaxUploadSizeBytes
+	}
+	if cfg.Uploads.SessionTTLSeconds <= 0 {
+		cfg.Uploads.SessionTTLSeconds = DefaultUploadSessionTTLSecs
+	}
+	if cfg.Uploads.MaxConcurrentAssembly <= 0 {
+		cfg.Uploads.MaxConcurrentAssembly = DefaultMaxConcurrentAssembly
+	}
 }
 
 // validate enforces the v3.1 refuse-to-start floors and basic shape.
