@@ -18,8 +18,8 @@ This master plan summarizes all 14 milestones with their goals and exit criteria
 |---|---|---|---|
 | M1 | Foundation: repo, migrations, postgres dev env | **completed** | this document, § M1 |
 | M2 | Envelope + IPFS round-trip | **completed** | [m2 plan](2026-05-25-phase1-m2-envelope-ipfs.md) |
-| M3 | Storage core API (read path) | in progress | [m3 plan](2026-05-28-phase1-m3-storage-read-api.md) |
-| M4 | Upload pipeline (write path) | pending | tbd |
+| M3 | Storage core API (read path) | **completed** | [m3 plan](2026-05-28-phase1-m3-storage-read-api.md) |
+| M4 | Upload pipeline (write path) | in progress | [m4 plan](2026-05-29-phase1-m4-upload-pipeline.md) |
 | M5 | Image transforms (nova-image) | pending | tbd |
 | M6 | Local JWT issuer + bearer auth | pending | tbd |
 | M7 | Signed URLs + signing-key rotation | pending | tbd |
@@ -61,7 +61,7 @@ After M14: Phase 1 release-candidate tag, then Phase 2 planning.
 ### M4 — Upload pipeline (write path)
 **Goal:** Drag-and-drop-equivalent: a curl-driven tus or multipart upload encrypts, imports, commits, returns a CID, and the blob is fetchable via M3's read path.
 
-**Deliverables:** tus.io handlers (`/api/v1/uploads/*`), multipart fallback (`/api/v1/blobs`, `/api/v1/images`), AnalyzeUpload → encrypt → import → manifest → DB-commit transaction, master-key versioning bootstrap, `derivative_prewarm` job kind (stub Phase 1; nova-image populates it in M5), upload failure rollback (Kubo unpin on transaction rollback).
+**Deliverables:** tus.io handlers (`/api/v1/uploads/*`), multipart fallback (`/api/v1/blobs`; `/api/v1/images` moves to M5 with the nova-image product), product-agnostic encrypt → import → manifest → DB-commit transaction (the AnalyzeUpload seam is a no-op until M5), master-key versioning bootstrap, `derivative_prewarm` job kind (stub Phase 1; nova-image populates it in M5), upload failure rollback (Kubo unpin on transaction rollback).
 
 **Exit:** integration test: tus + multipart uploads of JPEG, PNG, WebP; each fetchable; each has manifest + blocks rows.
 

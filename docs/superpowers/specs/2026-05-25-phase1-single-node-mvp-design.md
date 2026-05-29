@@ -870,7 +870,10 @@ ready to render the surface.
   (`/api/v1/blobs`).
 - AnalyzeUpload → encrypt → import → manifest → DB commit transaction.
 - Master-key wrap/unwrap; `data_encryption_keys` lifecycle.
-- nova-image AnalyzeUpload (width/height/PDQ); no format conversion yet.
+- Product-agnostic write path; the AnalyzeUpload seam is a no-op in M4.
+  nova-image AnalyzeUpload (width/height/PDQ) moves to M5 — see
+  `docs/superpowers/specs/2026-05-29-phase1-m4-upload-pipeline-design.md`
+  § "Source of truth and required doc reconciliations".
 - curl upload → GET /blob/{cid} round-trips a JPEG.
 
 **M5 — Image transforms (~week 5)**
