@@ -115,9 +115,12 @@ type WebhookDestination struct {
 // Upload-pipeline defaults (M4). The size ceiling is an artificial Phase-1
 // limit tied to V1 whole-object encryption; Phase-2 streaming AEAD lifts it.
 const (
-	DefaultMaxUploadSizeBytes    int64 = 104857600 // 100 MiB
-	DefaultUploadSessionTTLSecs        = 86400      // 24h
-	DefaultMaxConcurrentAssembly       = 8
+	// DefaultMaxUploadSizeBytes is 100 MiB.
+	DefaultMaxUploadSizeBytes int64 = 104857600
+	// DefaultUploadSessionTTLSecs is 24 hours.
+	DefaultUploadSessionTTLSecs = 86400
+	// DefaultMaxConcurrentAssembly bounds concurrent in-memory assembly.
+	DefaultMaxConcurrentAssembly = 8
 )
 
 // Uploads configures the M4 write path. Zero-valued fields are filled with the
