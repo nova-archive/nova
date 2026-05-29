@@ -3,6 +3,7 @@ module github.com/nova-archive/nova
 go 1.26.2
 
 require (
+	github.com/davidbyttow/govips/v2 v2.18.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/ipfs/boxo v0.39.0
@@ -257,6 +258,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
+	golang.org/x/image v0.38.0 // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
