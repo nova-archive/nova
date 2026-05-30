@@ -24,6 +24,7 @@ type Service struct {
 	ks            *envelope.Keystore
 	maxUploadSize int64
 	assembly      chan struct{} // buffered semaphore bounding in-memory assembly
+	hook          WriteHook
 }
 
 // Option configures a Service. Read-only callers pass none.
@@ -32,6 +33,7 @@ type Option func(*svcOpts)
 type svcOpts struct {
 	maxUploadSize int64
 	assemblySize  int
+	hook          WriteHook
 }
 
 // WithWriteLimits sets the upload size ceiling (bytes) and the maximum number
@@ -46,6 +48,12 @@ func WithWriteLimits(maxUploadSize int64, maxConcurrentAssembly int) Option {
 			o.assemblySize = maxConcurrentAssembly
 		}
 	}
+}
+
+// WithProductHook injects the product seam Put calls after the MIME floor and
+// before encryption. nil (the default) means no product analysis (raw write path).
+func WithProductHook(h WriteHook) Option {
+	return func(o *svcOpts) { o.hook = h }
 }
 
 // NewService builds a storage service over the given pool, IPFS backend, and
@@ -64,6 +72,7 @@ func NewService(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore,
 		ks:            ks,
 		maxUploadSize: o.maxUploadSize,
 		assembly:      make(chan struct{}, o.assemblySize),
+		hook:          o.hook,
 	}
 }
 
