@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -139,4 +140,21 @@ func (s *Service) commitDerivative(ctx context.Context, add ipfs.AddResult, plai
 		return false, err
 	}
 	return true, nil
+}
+
+// GetDerivativeCID returns the CID of the cached derivative for
+// (parent, preset, format), and whether one exists. No row ⇒ ("", false, nil).
+func (s *Service) GetDerivativeCID(ctx context.Context, parent, preset, format string) (string, bool, error) {
+	cid, err := s.q.GetDerivativeCID(ctx, gen.GetDerivativeCIDParams{
+		ParentCid:        pgtype.Text{String: parent, Valid: true},
+		DerivativePreset: pgtype.Text{String: preset, Valid: true},
+		DerivativeFormat: pgtype.Text{String: format, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return cid, true, nil
 }
