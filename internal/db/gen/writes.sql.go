@@ -30,6 +30,24 @@ func (q *Queries) GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (Ge
 	return i, err
 }
 
+const getDerivativeCID = `-- name: GetDerivativeCID :one
+SELECT cid FROM blobs
+WHERE parent_cid = $1 AND derivative_preset = $2 AND derivative_format = $3
+`
+
+type GetDerivativeCIDParams struct {
+	ParentCid        pgtype.Text
+	DerivativePreset pgtype.Text
+	DerivativeFormat pgtype.Text
+}
+
+func (q *Queries) GetDerivativeCID(ctx context.Context, arg GetDerivativeCIDParams) (string, error) {
+	row := q.db.QueryRow(ctx, getDerivativeCID, arg.ParentCid, arg.DerivativePreset, arg.DerivativeFormat)
+	var cid string
+	err := row.Scan(&cid)
+	return cid, err
+}
+
 const insertBlob = `-- name: InsertBlob :exec
 INSERT INTO blobs (cid, encryption_key_id, owner_id, mime_type, byte_size, source_ip, product, state, envelope_version)
 VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', 1)
@@ -115,6 +133,43 @@ func (q *Queries) InsertDEK(ctx context.Context, arg InsertDEKParams) (pgtype.UU
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const insertDerivativeBlob = `-- name: InsertDerivativeBlob :execrows
+INSERT INTO blobs (cid, encryption_key_id, parent_cid, derivative_preset, derivative_format,
+                   mime_type, byte_size, product, state, envelope_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'image', 'active', 1)
+ON CONFLICT (parent_cid, derivative_preset, derivative_format) WHERE parent_cid IS NOT NULL
+DO NOTHING
+`
+
+type InsertDerivativeBlobParams struct {
+	Cid              string
+	EncryptionKeyID  pgtype.UUID
+	ParentCid        pgtype.Text
+	DerivativePreset pgtype.Text
+	DerivativeFormat pgtype.Text
+	MimeType         string
+	ByteSize         int64
+}
+
+// Inserts a derivative blob. ON CONFLICT on the (parent,preset,format) partial
+// unique index DO NOTHING ⇒ 0 rows when a concurrent/cross-process writer won
+// (the caller then unpins its orphan import and reads the winner).
+func (q *Queries) InsertDerivativeBlob(ctx context.Context, arg InsertDerivativeBlobParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertDerivativeBlob,
+		arg.Cid,
+		arg.EncryptionKeyID,
+		arg.ParentCid,
+		arg.DerivativePreset,
+		arg.DerivativeFormat,
+		arg.MimeType,
+		arg.ByteSize,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const insertManifest = `-- name: InsertManifest :exec

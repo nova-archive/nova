@@ -19,12 +19,17 @@ type Querier interface {
 	GetBlobCore(ctx context.Context, cid string) (GetBlobCoreRow, error)
 	GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (GetCollectionForWriteRow, error)
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
+	GetDerivativeCID(ctx context.Context, arg GetDerivativeCIDParams) (string, error)
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
 	GetUploadSession(ctx context.Context, id pgtype.UUID) (GetUploadSessionRow, error)
 	InsertBlob(ctx context.Context, arg InsertBlobParams) error
 	InsertBlock(ctx context.Context, arg InsertBlockParams) error
 	InsertCollectionItem(ctx context.Context, arg InsertCollectionItemParams) error
 	InsertDEK(ctx context.Context, arg InsertDEKParams) (pgtype.UUID, error)
+	// Inserts a derivative blob. ON CONFLICT on the (parent,preset,format) partial
+	// unique index DO NOTHING ⇒ 0 rows when a concurrent/cross-process writer won
+	// (the caller then unpins its orphan import and reads the winner).
+	InsertDerivativeBlob(ctx context.Context, arg InsertDerivativeBlobParams) (int64, error)
 	InsertManifest(ctx context.Context, arg InsertManifestParams) error
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
 	// For an original, resolves its own collection memberships; for a derivative
