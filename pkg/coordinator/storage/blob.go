@@ -105,7 +105,7 @@ func (s *Service) Resolve(ctx context.Context, cidStr string) (*BlobView, error)
 		return nil, fmt.Errorf("storage: unexpected blob state %q", core.State)
 	}
 
-	vis, err := s.q.ResolveBlobVisibility(ctx, cidStr)
+	vis, err := s.q.ResolveEffectiveVisibility(ctx, cidStr)
 	if err != nil {
 		return nil, fmt.Errorf("storage: resolve visibility: %w", err)
 	}

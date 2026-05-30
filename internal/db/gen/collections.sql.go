@@ -9,15 +9,19 @@ import (
 	"context"
 )
 
-const resolveBlobVisibility = `-- name: ResolveBlobVisibility :many
+const resolveEffectiveVisibility = `-- name: ResolveEffectiveVisibility :many
 SELECT c.visibility::text AS visibility
-FROM collection_items ci
-JOIN collections c ON c.id = ci.collection_id
-WHERE ci.blob_cid = $1
+FROM blobs b
+JOIN collection_items ci ON ci.blob_cid = COALESCE(b.parent_cid, b.cid)
+JOIN collections c        ON c.id = ci.collection_id
+WHERE b.cid = $1
 `
 
-func (q *Queries) ResolveBlobVisibility(ctx context.Context, blobCid string) ([]string, error) {
-	rows, err := q.db.Query(ctx, resolveBlobVisibility, blobCid)
+// For an original, resolves its own collection memberships; for a derivative
+// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
+// parent visibility and hold no membership of their own. One query, no N+1.
+func (q *Queries) ResolveEffectiveVisibility(ctx context.Context, cid string) ([]string, error) {
+	rows, err := q.db.Query(ctx, resolveEffectiveVisibility, cid)
 	if err != nil {
 		return nil, err
 	}

@@ -27,7 +27,10 @@ type Querier interface {
 	InsertDEK(ctx context.Context, arg InsertDEKParams) (pgtype.UUID, error)
 	InsertManifest(ctx context.Context, arg InsertManifestParams) error
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
-	ResolveBlobVisibility(ctx context.Context, blobCid string) ([]string, error)
+	// For an original, resolves its own collection memberships; for a derivative
+	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
+	// parent visibility and hold no membership of their own. One query, no N+1.
+	ResolveEffectiveVisibility(ctx context.Context, cid string) ([]string, error)
 }
 
 var _ Querier = (*Queries)(nil)
