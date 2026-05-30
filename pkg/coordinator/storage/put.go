@@ -79,6 +79,27 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 		return nil, err
 	}
 
+	var persist func(context.Context, pgx.Tx, string) error
+	if s.hook != nil {
+		ar, herr := s.hook.Analyze(ctx, pc, buf)
+		if herr != nil {
+			return nil, herr
+		}
+		if ar.Scan.Action != ActionAllow {
+			return nil, ErrModerationRejected
+		}
+		if ar.Transformed != nil {
+			buf = ar.Transformed
+			if ar.ResultMIME != "" {
+				mime = ar.ResultMIME
+			}
+			if int64(len(buf)) > s.maxUploadSize {
+				return nil, ErrUploadTooLarge
+			}
+		}
+		persist = ar.Persist
+	}
+
 	encrypt := true
 	if pc.CollectionID != nil {
 		col, err := s.q.GetCollectionForWrite(ctx, pgUUID(*pc.CollectionID))
@@ -121,11 +142,15 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 		return nil, fmt.Errorf("storage: import: %w", err)
 	}
 
-	if err := s.commit(ctx, add, buf, mime, pc, encrypt, wrapped, mkvID); err != nil {
+	if err := s.commit(ctx, add, buf, mime, pc, encrypt, wrapped, mkvID, persist); err != nil {
 		if uerr := s.backend.Unpin(ctx, add.CID); uerr != nil {
 			err = fmt.Errorf("%w (unpin also failed: %v)", err, uerr)
 		}
 		return nil, fmt.Errorf("storage: commit: %w", err)
+	}
+
+	if s.hook != nil {
+		s.hook.OnCommitted(ctx, CommittedRef{CID: add.CID.String(), Product: pc.Product})
 	}
 
 	return &PutResult{
@@ -134,7 +159,7 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 	}, nil
 }
 
-func (s *Service) commit(ctx context.Context, add ipfs.AddResult, buf []byte, mime string, pc PutContext, encrypt bool, wrapped []byte, mkvID uuid.UUID) error {
+func (s *Service) commit(ctx context.Context, add ipfs.AddResult, buf []byte, mime string, pc PutContext, encrypt bool, wrapped []byte, mkvID uuid.UUID, persist func(context.Context, pgx.Tx, string) error) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -194,6 +219,11 @@ func (s *Service) commit(ctx context.Context, add ipfs.AddResult, buf []byte, mi
 		if err := qtx.InsertCollectionItem(ctx, gen.InsertCollectionItemParams{
 			CollectionID: pgUUID(*pc.CollectionID), BlobCid: cidStr,
 		}); err != nil {
+			return err
+		}
+	}
+	if persist != nil {
+		if err := persist(ctx, tx, cidStr); err != nil {
 			return err
 		}
 	}

@@ -44,4 +44,7 @@ var (
 
 	// ErrServerBusy: the in-memory assembly semaphore is saturated.
 	ErrServerBusy = errors.New("storage: assembly capacity saturated")
+
+	// ErrModerationRejected: the upload was rejected by the product's moderation hook.
+	ErrModerationRejected = errors.New("storage: upload rejected by moderation")
 )
