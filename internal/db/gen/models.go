@@ -876,6 +876,17 @@ type PinAudit struct {
 	CompletedAt   pgtype.Timestamptz
 }
 
+type RefreshToken struct {
+	ID        pgtype.UUID
+	UserID    pgtype.UUID
+	TokenHash []byte
+	IssuedAt  time.Time
+	ExpiresAt time.Time
+	RotatedTo pgtype.UUID
+	RevokedAt pgtype.Timestamptz
+	UserAgent pgtype.Text
+}
+
 type SignedUrlRevocation struct {
 	ID        pgtype.UUID
 	Kind      string
@@ -916,9 +927,11 @@ type UploadSession struct {
 }
 
 type User struct {
-	ID        pgtype.UUID
-	Email     string
-	Role      UserRole
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           pgtype.UUID
+	Email        string
+	Role         UserRole
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	PasswordHash pgtype.Text
+	Disabled     bool
 }

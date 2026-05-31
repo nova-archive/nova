@@ -14,6 +14,8 @@ type Querier interface {
 	AbortUploadSession(ctx context.Context, id pgtype.UUID) error
 	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
 	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
+	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	DeleteExpiredRefreshTokens(ctx context.Context) (int64, error)
 	DeleteUploadSession(ctx context.Context, id pgtype.UUID) error
 	FinalizeUploadSession(ctx context.Context, arg FinalizeUploadSessionParams) error
 	GetBlobCore(ctx context.Context, cid string) (GetBlobCoreRow, error)
@@ -21,7 +23,10 @@ type Querier interface {
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
 	GetDerivativeCID(ctx context.Context, arg GetDerivativeCIDParams) (string, error)
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
+	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)
 	GetUploadSession(ctx context.Context, id pgtype.UUID) (GetUploadSessionRow, error)
+	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
+	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	InsertBlob(ctx context.Context, arg InsertBlobParams) error
 	InsertBlock(ctx context.Context, arg InsertBlockParams) error
 	InsertCollectionItem(ctx context.Context, arg InsertCollectionItemParams) error
@@ -31,11 +36,16 @@ type Querier interface {
 	// (the caller then unpins its orphan import and reads the winner).
 	InsertDerivativeBlob(ctx context.Context, arg InsertDerivativeBlobParams) (int64, error)
 	InsertManifest(ctx context.Context, arg InsertManifestParams) error
+	InsertRefreshToken(ctx context.Context, arg InsertRefreshTokenParams) (pgtype.UUID, error)
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
+	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) error
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
 	// parent visibility and hold no membership of their own. One query, no N+1.
 	ResolveEffectiveVisibility(ctx context.Context, cid string) ([]string, error)
+	RevokeRefreshToken(ctx context.Context, id pgtype.UUID) error
+	RevokeRefreshTokenFamily(ctx context.Context, userID pgtype.UUID) error
+	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 }
 
 var _ Querier = (*Queries)(nil)
