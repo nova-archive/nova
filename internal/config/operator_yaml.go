@@ -90,5 +90,10 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("config: auth.anonymous with no moderation flow is refused")
 	}
 
+	// T1.20: public uploads require operator to publish terms of service.
+	if cfg.Uploads.PublicUploads && cfg.TosURL == "" {
+		return fmt.Errorf("config: uploads.public_uploads requires tos_url (T1.20)")
+	}
+
 	return nil
 }

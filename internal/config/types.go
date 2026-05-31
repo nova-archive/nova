@@ -52,6 +52,13 @@ type Auth struct {
 	// Anonymous=true is refused in production builds (refuse-to-start floor).
 	// Allowed only with the nova_dev build tag.
 	Anonymous bool `yaml:"anonymous,omitempty"`
+
+	// ClientSecretFile is the path to the OIDC client-secret file.
+	ClientSecretFile string `yaml:"client_secret_file,omitempty"`
+	// RoleClaim is the JWT claim used to extract roles; defaults to "groups".
+	RoleClaim string `yaml:"role_claim,omitempty"`
+	// RoleMapping maps IdP groups/scopes to nova roles.
+	RoleMapping map[string]string `yaml:"role_mapping,omitempty"`
 }
 
 type Orchestrator struct {
@@ -130,4 +137,6 @@ type Uploads struct {
 	SessionTTLSeconds     int    `yaml:"session_ttl_seconds"`
 	MaxConcurrentAssembly int    `yaml:"max_concurrent_assembly"`
 	TmpDir                string `yaml:"tmp_dir"`
+	// PublicUploads allows unauthenticated uploads; requires tos_url (T1.20).
+	PublicUploads bool `yaml:"public_uploads,omitempty"`
 }
