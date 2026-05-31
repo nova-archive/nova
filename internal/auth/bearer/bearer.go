@@ -70,6 +70,10 @@ func Optional(vs []auth.Verifier) func(http.Handler) http.Handler {
 			for _, v := range vs {
 				id, err := v.Verify(r.Context(), raw)
 				if err == nil {
+					if id.UserID == "" {
+						// Verifier misbehaved: nil error but no identity — skip.
+						continue
+					}
 					st.id = id
 					st.haveID = true
 					break
@@ -110,6 +114,8 @@ func RequireAuthenticated(next http.Handler) http.Handler {
 // RequireRole is a guard middleware factory. It passes requests through only
 // when the Identity's Role is one of the allowed roles. If no identity is
 // present it falls back to the same 503/401 logic as RequireAuthenticated.
+// Calling RequireRole with no roles forbids every authenticated caller
+// (fail-closed) — pass at least one role.
 func RequireRole(roles ...string) func(http.Handler) http.Handler {
 	allowed := make(map[string]struct{}, len(roles))
 	for _, role := range roles {

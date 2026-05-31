@@ -73,4 +73,31 @@ func TestRequireRoleUnavailable(t *testing.T) {
 	require.Equal(t, 503, serve(t, chain(down), "Bearer t", ok200))
 }
 
+// TestOptionalDoesNotHydrateOnVerifierError locks in the fail-open-closed
+// property: a verifier that returns a non-nil error must never hydrate an
+// identity, even when the identity struct is populated.
+func TestOptionalDoesNotHydrateOnVerifierError(t *testing.T) {
+	t.Parallel()
+	erroring := []auth.Verifier{
+		fakeVerifier{id: auth.Identity{UserID: "attacker", Role: "operator"}, err: errors.New("boom")},
+	}
+	chain := func(next http.Handler) http.Handler {
+		return bearer.Optional(erroring)(bearer.RequireAuthenticated(next))
+	}
+	require.Equal(t, 401, serve(t, chain, "Bearer t", ok200))
+}
+
+// TestOptionalDoesNotHydrateEmptyIdentity locks in the M1 hardening: a
+// verifier that returns (Identity{}, nil) must not hydrate an identity.
+func TestOptionalDoesNotHydrateEmptyIdentity(t *testing.T) {
+	t.Parallel()
+	emptyID := []auth.Verifier{
+		fakeVerifier{id: auth.Identity{}, err: nil},
+	}
+	chain := func(next http.Handler) http.Handler {
+		return bearer.Optional(emptyID)(bearer.RequireAuthenticated(next))
+	}
+	require.Equal(t, 401, serve(t, chain, "Bearer t", ok200))
+}
+
 var _ = errors.Is
