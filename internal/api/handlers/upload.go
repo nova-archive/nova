@@ -35,16 +35,28 @@ type SessionStore interface {
 // UploadHandler serves the tus endpoints (/api/v1/uploads*) and the multipart
 // fallback (/api/v1/blobs).
 type UploadHandler struct {
-	store         SessionStore
-	put           upload.Committer
-	maxUploadSize int64
-	recordIP      bool
+	store           SessionStore
+	put             upload.Committer
+	maxUploadSize   int64
+	recordIP        bool
+	imageAccepts    func(mime string) bool
+	imagePresetURLs func(cid string) map[string]string
 }
 
 // NewUploadHandler builds the upload handler. recordIP=false (paranoid mode)
 // suppresses source-IP capture on the multipart path.
 func NewUploadHandler(store SessionStore, put upload.Committer, maxUploadSize int64, recordIP bool) *UploadHandler {
 	return &UploadHandler{store: store, put: put, maxUploadSize: maxUploadSize, recordIP: recordIP}
+}
+
+// SetImageHooks injects the nova-image upload-edge hooks: an accept-predicate
+// for the early 415 pre-filter, and a preset-URL builder for the result body.
+// The coordinator calls this when the image product registers; until then the
+// /api/v1/images route behaves like a plain multipart upload forced to product
+// "image".
+func (h *UploadHandler) SetImageHooks(accepts func(mime string) bool, presetURLs func(cid string) map[string]string) {
+	h.imageAccepts = accepts
+	h.imagePresetURLs = presetURLs
 }
 
 // CreateTus handles POST /api/v1/uploads (tus Creation extension).
@@ -171,11 +183,25 @@ func (h *UploadHandler) FinalizeTus(w http.ResponseWriter, r *http.Request) {
 		h.writePutError(w, err, rid)
 		return
 	}
-	writeUploadResult(w, http.StatusOK, res)
+	writeUploadResult(w, http.StatusOK, res, nil)
 }
 
-// Multipart handles POST /api/v1/blobs (multipart/form-data fallback).
+// Multipart handles POST /api/v1/blobs (multipart/form-data fallback). product
+// comes from the form (default "raw").
 func (h *UploadHandler) Multipart(w http.ResponseWriter, r *http.Request) {
+	h.multipart(w, r, "")
+}
+
+// MultipartImage handles POST /api/v1/images: identical to Multipart but forces
+// product "image", applies the image accept-predicate (early 415), and includes
+// preset URLs in the result.
+func (h *UploadHandler) MultipartImage(w http.ResponseWriter, r *http.Request) {
+	h.multipart(w, r, "image")
+}
+
+// multipart is the shared body. forceProduct, when non-empty, overrides the
+// form's product field and enables the image edge behavior.
+func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceProduct string) {
 	rid := middleware.RequestIDFromContext(r.Context())
 	if err := r.ParseMultipartForm(8 << 20); err != nil { // 8 MiB in-memory; rest spills to disk
 		httputil.WriteError(w, http.StatusBadRequest, "bad_request", "invalid multipart form", rid)
@@ -191,11 +217,25 @@ func (h *UploadHandler) Multipart(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "upload exceeds max size", rid)
 		return
 	}
-	product := r.FormValue("product")
+
+	product := forceProduct
 	if product == "" {
-		product = "raw"
+		product = r.FormValue("product")
+		if product == "" {
+			product = "raw"
+		}
 	}
-	pc := storage.PutContext{MIME: header.Header.Get("Content-Type"), Product: product}
+
+	declaredMIME := header.Header.Get("Content-Type")
+
+	// Image edge: cheap pre-filter on the declared type before doing any work.
+	// The authoritative decode-based check happens in the product's AnalyzeUpload.
+	if forceProduct == "image" && h.imageAccepts != nil && !h.imageAccepts(declaredMIME) {
+		httputil.WriteError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "declared content-type is not an accepted image format", rid)
+		return
+	}
+
+	pc := storage.PutContext{MIME: declaredMIME, Product: product}
 	if h.recordIP {
 		pc.SourceIP = clientIP(r)
 	}
@@ -207,12 +247,18 @@ func (h *UploadHandler) Multipart(w http.ResponseWriter, r *http.Request) {
 		}
 		pc.CollectionID = &col
 	}
+
 	res, err := h.put.Put(r.Context(), file, header.Size, pc)
 	if err != nil {
 		h.writePutError(w, err, rid)
 		return
 	}
-	writeUploadResult(w, http.StatusCreated, res)
+
+	var presets map[string]string
+	if product == "image" && h.imagePresetURLs != nil {
+		presets = h.imagePresetURLs(res.CID)
+	}
+	writeUploadResult(w, http.StatusCreated, res, presets)
 }
 
 func (h *UploadHandler) writePutError(w http.ResponseWriter, err error, rid string) {
@@ -226,27 +272,33 @@ func (h *UploadHandler) writePutError(w http.ResponseWriter, err error, rid stri
 	case errors.Is(err, storage.ErrServerBusy):
 		w.Header().Set("Retry-After", "2")
 		httputil.WriteError(w, http.StatusServiceUnavailable, "server_busy", "server at capacity, retry", rid)
+	case errors.Is(err, storage.ErrModerationRejected):
+		httputil.WriteError(w, http.StatusUnprocessableEntity, "moderation_rejected", "upload rejected by moderation", rid)
 	default:
 		httputil.WriteError(w, http.StatusInternalServerError, "internal", "internal server error", rid)
 	}
 }
 
 // writeUploadResult emits the openapi UploadResult JSON with the Nova headers.
-// Headers are set before WriteHeader.
-func writeUploadResult(w http.ResponseWriter, status int, res *storage.PutResult) {
+// presets (non-nil for image uploads) is emitted under urls.presets.
+func writeUploadResult(w http.ResponseWriter, status int, res *storage.PutResult, presets map[string]string) {
 	w.Header().Set("X-Nova-Cid", res.CID)
 	w.Header().Set("X-Nova-Envelope-Version", "1")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
+	urls := map[string]any{
+		"original": "/blob/" + res.CID,
+		"json":     "/blob/" + res.CID + ".json",
+	}
+	if len(presets) > 0 {
+		urls["presets"] = presets
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"cid":       res.CID,
 		"byte_size": res.ByteSize,
 		"mime_type": res.MIME,
 		"product":   res.Product,
-		"urls": map[string]string{
-			"original": "/blob/" + res.CID,
-			"json":     "/blob/" + res.CID + ".json",
-		},
+		"urls":      urls,
 	})
 }
 

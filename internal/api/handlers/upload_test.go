@@ -46,12 +46,14 @@ func (f *fakeStore) Finalize(ctx context.Context, id uuid.UUID) (*storage.PutRes
 func (f *fakeStore) Abort(ctx context.Context, id uuid.UUID) error { return nil }
 
 type fakeMP struct {
-	res *storage.PutResult
-	err error
+	res   *storage.PutResult
+	err   error
+	gotPC storage.PutContext
 }
 
 func (f *fakeMP) Put(ctx context.Context, r io.Reader, n int64, pc storage.PutContext) (*storage.PutResult, error) {
 	_, _ = io.Copy(io.Discard, r)
+	f.gotPC = pc
 	return f.res, f.err
 }
 
@@ -66,6 +68,7 @@ func uploadRouter(h *UploadHandler) http.Handler {
 		r.Post("/finalize", h.FinalizeTus)
 	})
 	r.Post("/api/v1/blobs", h.Multipart)
+	r.Post("/api/v1/images", h.MultipartImage)
 	return r
 }
 
@@ -196,4 +199,45 @@ func TestMultipart(t *testing.T) {
 	body, ctype = multipartFileBody(t, "abc", "image/png")
 	rec = do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+func TestMultipartImageSuccess(t *testing.T) {
+	mp := &fakeMP{res: &storage.PutResult{CID: "bafyimg", ByteSize: 3, MIME: "image/jpeg", Product: "image"}}
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false)
+	h.SetImageHooks(
+		func(m string) bool { return m == "image/jpeg" },
+		func(cid string) map[string]string { return map[string]string{"thumb": "/i/" + cid + "/p/thumb.webp"} },
+	)
+	body, ctype := multipartFileBody(t, "abc", "image/jpeg")
+	rec := do(t, uploadRouter(h), "POST", "/api/v1/images", body, map[string]string{"Content-Type": ctype})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	require.Equal(t, "image", mp.gotPC.Product) // product forced to "image"
+	var out struct {
+		Product string `json:"product"`
+		URLs    struct {
+			Presets map[string]string `json:"presets"`
+		} `json:"urls"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Equal(t, "image", out.Product)
+	require.Equal(t, "/i/bafyimg/p/thumb.webp", out.URLs.Presets["thumb"])
+}
+
+func TestMultipartImageRejectsNonImage(t *testing.T) {
+	mp := &fakeMP{} // res nil; if Put were called it'd panic on nil deref or return nil — but it must NOT be called
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false)
+	h.SetImageHooks(func(m string) bool { return m == "image/jpeg" }, nil)
+	body, ctype := multipartFileBody(t, "hello", "text/plain")
+	rec := do(t, uploadRouter(h), "POST", "/api/v1/images", body, map[string]string{"Content-Type": ctype})
+	require.Equal(t, http.StatusUnsupportedMediaType, rec.Code)
+	require.Equal(t, "", mp.gotPC.Product) // Put never called
+}
+
+func TestMultipartImageModerationRejected(t *testing.T) {
+	mp := &fakeMP{err: storage.ErrModerationRejected}
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false)
+	h.SetImageHooks(func(m string) bool { return true }, nil)
+	body, ctype := multipartFileBody(t, "abc", "image/jpeg")
+	rec := do(t, uploadRouter(h), "POST", "/api/v1/images", body, map[string]string{"Content-Type": ctype})
+	require.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 }

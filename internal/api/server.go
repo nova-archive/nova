@@ -46,6 +46,7 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 			})
 		})
 		r.Post("/api/v1/blobs", cfg.Upload.Multipart)
+		r.Post("/api/v1/images", cfg.Upload.MultipartImage)
 	}
 
 	return r
