@@ -6,12 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nova-archive/nova/internal/config"
 )
+
+// defaultSecretsDir is the base directory for the file-mount fallback of the
+// master-key resolver chain (env → _FILE → <dir>/master-key-<label>). It is a
+// package var only so tests can redirect it; production never changes it.
+var defaultSecretsDir = "/run/secrets"
 
 // Keystore holds the operator's master keys (one per version label)
 // in process memory and exposes Wrap/Unwrap that record and resolve
@@ -34,13 +41,24 @@ type Keystore struct {
 	activeLabel string
 }
 
-// NewKeystoreFromEnv parses NOVA_MASTER_KEY_<LABEL> entries from the
-// process environment (where <LABEL> is uppercased — V1, V2, V2026Q2)
-// and NOVA_MASTER_KEY_ACTIVE selects the default. Labels are stored
-// lowercase in the keystore and in master_key_versions.version_label.
+// NewKeystoreFromEnv loads the operator's master keys. NOVA_MASTER_KEY_ACTIVE
+// selects the active label (<LABEL> uppercased in env — V1, V2, V2026Q2; stored
+// lowercase in the keystore and master_key_versions.version_label).
 //
-// At least one NOVA_MASTER_KEY_<LABEL> matching ACTIVE must be set, or
-// the constructor returns an error.
+// Each label is resolved through the standard secret precedence (the same chain
+// the OIDC signing key uses), so the master key never has to sit in the process
+// environment — it can be a Docker/Kubernetes secret mount:
+//
+//	NOVA_MASTER_KEY_<LABEL>          (inline hex)
+//	  → NOVA_MASTER_KEY_<LABEL>_FILE (path to a file holding the hex)
+//	  → /run/secrets/master-key-<label>  (default mount path)
+//
+// The active label is always resolved through the full chain, so the common
+// case — drop /run/secrets/master-key-v1, set NOVA_MASTER_KEY_ACTIVE=v1 — works
+// with no key material in the environment. Additional (rotation) labels are
+// declared by an inline value or a _FILE env. A declared label that resolves
+// from no source, or a set-but-unreadable _FILE, is fatal (never silently
+// skipped). See REVIEW_2026_05_25.md C3 and THREAT_MODEL.md boundary ③.
 func NewKeystoreFromEnv(pool *pgxpool.Pool) (*Keystore, error) {
 	active := strings.TrimSpace(os.Getenv("NOVA_MASTER_KEY_ACTIVE"))
 	if active == "" {
@@ -48,9 +66,12 @@ func NewKeystoreFromEnv(pool *pgxpool.Pool) (*Keystore, error) {
 	}
 	active = strings.ToLower(active)
 
-	masters := make(map[string][]byte)
+	// Build the candidate label set: the active label (always) plus every
+	// label declared inline (NOVA_MASTER_KEY_<LABEL>) or by a mount-path env
+	// (NOVA_MASTER_KEY_<LABEL>_FILE).
+	const prefix = "NOVA_MASTER_KEY_"
+	labels := map[string]struct{}{active: {}}
 	for _, e := range os.Environ() {
-		const prefix = "NOVA_MASTER_KEY_"
 		if !strings.HasPrefix(e, prefix) {
 			continue
 		}
@@ -58,27 +79,48 @@ func NewKeystoreFromEnv(pool *pgxpool.Pool) (*Keystore, error) {
 		if eq < 0 {
 			continue
 		}
-		key := e[:eq]
-		val := strings.TrimSpace(e[eq+1:])
-		label := strings.ToLower(strings.TrimPrefix(key, prefix))
-		if label == "active" || label == "file" || strings.HasSuffix(label, "_file") {
+		rest := e[len(prefix):eq] // <LABEL>, ACTIVE, FILE, or <LABEL>_FILE
+		if strings.EqualFold(rest, "active") || strings.EqualFold(rest, "file") {
 			continue
 		}
-		if val == "" {
+		if u := strings.ToUpper(rest); strings.HasSuffix(u, "_FILE") {
+			rest = rest[:len(rest)-len("_FILE")]
+		}
+		if rest == "" {
 			continue
 		}
-		raw, err := hex.DecodeString(val)
-		if err != nil {
-			return nil, fmt.Errorf("keystore: NOVA_MASTER_KEY_%s is not valid hex: %w", strings.ToUpper(label), err)
-		}
-		if len(raw) != KeySize {
-			return nil, fmt.Errorf("keystore: NOVA_MASTER_KEY_%s must be %d bytes (got %d)", strings.ToUpper(label), KeySize, len(raw))
-		}
-		masters[label] = raw
+		labels[strings.ToLower(rest)] = struct{}{}
 	}
 
-	if _, ok := masters[active]; !ok {
-		return nil, fmt.Errorf("keystore: NOVA_MASTER_KEY_ACTIVE=%s but NOVA_MASTER_KEY_%s is not set", active, strings.ToUpper(active))
+	// Resolve each label through the shared precedence:
+	// env NOVA_MASTER_KEY_<LABEL> → NOVA_MASTER_KEY_<LABEL>_FILE → <dir>/master-key-<label>.
+	// The mount-path leaf is lowercased (Linux paths are case-sensitive).
+	masters := make(map[string][]byte, len(labels))
+	for label := range labels {
+		up := strings.ToUpper(label)
+		val, err := config.ResolveSecret(
+			prefix+up,
+			prefix+up+"_FILE",
+			filepath.Join(defaultSecretsDir, "master-key-"+label),
+		)
+		if err != nil {
+			if label == active {
+				return nil, fmt.Errorf("keystore: active master key %q resolves from no source "+
+					"($%s%s, $%s%s_FILE, or %s/master-key-%s): %w",
+					label, prefix, up, prefix, up, defaultSecretsDir, label, err)
+			}
+			// A declared (non-active) label that fails to resolve is fatal —
+			// never silently drop a key (its wrapped blobs would be unreadable).
+			return nil, fmt.Errorf("keystore: declared master key %q failed to resolve: %w", label, err)
+		}
+		raw, err := hex.DecodeString(strings.TrimSpace(val))
+		if err != nil {
+			return nil, fmt.Errorf("keystore: NOVA_MASTER_KEY_%s is not valid hex: %w", up, err)
+		}
+		if len(raw) != KeySize {
+			return nil, fmt.Errorf("keystore: NOVA_MASTER_KEY_%s must be %d bytes (got %d)", up, KeySize, len(raw))
+		}
+		masters[label] = raw
 	}
 
 	return &Keystore{
