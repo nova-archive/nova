@@ -18,13 +18,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/nova-archive/nova/internal/jobs"
+	"github.com/nova-archive/nova/internal/jobs/kinds"
 	novaimage "github.com/nova-archive/nova/nova-image"
 	"github.com/nova-archive/nova/nova-image/internal/imageapi"
 	"github.com/nova-archive/nova/nova-image/internal/imagemeta"
 	"github.com/nova-archive/nova/nova-image/internal/imagemoderation"
 	"github.com/nova-archive/nova/nova-image/internal/transform"
-	"github.com/nova-archive/nova/internal/jobs"
-	"github.com/nova-archive/nova/internal/jobs/kinds"
 	"github.com/nova-archive/nova/pkg/coordinator/product"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 )
