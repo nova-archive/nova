@@ -47,7 +47,13 @@ func TestLoginThenVerify(t *testing.T) {
 	rr := httptest.NewRecorder()
 	iss.Login(rr, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body)))
 	require.Equal(t, http.StatusOK, rr.Code)
-	var tr struct{ AccessToken, RefreshToken, TokenType string }
+	require.Contains(t, rr.Body.String(), `"access_token"`)
+	require.Contains(t, rr.Body.String(), `"token_type":"bearer"`)
+	var tr struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+	}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &tr))
 	require.Equal(t, "bearer", tr.TokenType)
 	id, err := iss.Verifier().Verify(ctx, tr.AccessToken)
@@ -82,14 +88,21 @@ func TestRefreshRotatesAndVerifies(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"username": "u@example.com", "password": "hunter2hunter2"})
 	rr := httptest.NewRecorder()
 	iss.Login(rr, httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body)))
-	var tr struct{ AccessToken, RefreshToken, TokenType string }
+	var tr struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+	}
 	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &tr))
 
 	rb, _ := json.Marshal(map[string]string{"refresh_token": tr.RefreshToken})
 	rr2 := httptest.NewRecorder()
 	iss.Refresh(rr2, httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", bytes.NewReader(rb)))
 	require.Equal(t, http.StatusOK, rr2.Code)
-	var tr2 struct{ AccessToken, RefreshToken string }
+	var tr2 struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
 	require.NoError(t, json.Unmarshal(rr2.Body.Bytes(), &tr2))
 	require.NotEqual(t, tr.RefreshToken, tr2.RefreshToken)
 	_, err := iss.Verifier().Verify(ctx, tr2.AccessToken)

@@ -44,15 +44,16 @@ func New(cfg Config) *Issuer {
 }
 
 // tokenResponse is the JSON body returned by Login and Refresh.
-// Field names use Go's default CamelCase JSON encoding (no tags) so that
-// clients can decode into struct{ AccessToken, RefreshToken, TokenType string }
-// without extra tags.
+// Fields are tagged with snake_case keys to match the OpenAPI TokenResponse
+// schema and OAuth2 convention (access_token, refresh_token, token_type,
+// expires_in, kid). Downstream consumers (novactl, SPA, integration tests)
+// must decode using matching snake_case tags.
 type tokenResponse struct {
-	AccessToken  string
-	RefreshToken string
-	TokenType    string
-	ExpiresIn    int
-	KID          string
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	KID          string `json:"kid"`
 }
 
 func writeTokenResponse(w http.ResponseWriter, accessToken, refreshToken string, cfg Config) {
