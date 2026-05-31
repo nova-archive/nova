@@ -88,6 +88,20 @@ func TestKeystoreMultiLabelMixedSources(t *testing.T) {
 	require.Len(t, ks.masters["v2"], KeySize)
 }
 
+func TestKeystoreIgnoresPseudoLabelFileVariants(t *testing.T) {
+	dir := useSecretsDir(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "master-key-v1"), []byte(hexKey(t)), 0o600))
+	t.Setenv("NOVA_MASTER_KEY_ACTIVE", "v1")
+	// Typo'd _FILE forms of the pseudo-labels must not leak in as phantom labels.
+	t.Setenv("NOVA_MASTER_KEY_ACTIVE_FILE", filepath.Join(t.TempDir(), "nope"))
+	t.Setenv("NOVA_MASTER_KEY_FILE_FILE", filepath.Join(t.TempDir(), "nope2"))
+	ks, err := NewKeystoreFromEnv(nil)
+	require.NoError(t, err)
+	require.Len(t, ks.masters["v1"], KeySize)
+	require.NotContains(t, ks.masters, "active")
+	require.NotContains(t, ks.masters, "file")
+}
+
 func TestKeystoreUnreadableFileEnvRefuses(t *testing.T) {
 	useSecretsDir(t)
 	t.Setenv("NOVA_MASTER_KEY_V1_FILE", filepath.Join(t.TempDir(), "does-not-exist"))

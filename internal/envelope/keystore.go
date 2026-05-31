@@ -80,13 +80,12 @@ func NewKeystoreFromEnv(pool *pgxpool.Pool) (*Keystore, error) {
 			continue
 		}
 		rest := e[len(prefix):eq] // <LABEL>, ACTIVE, FILE, or <LABEL>_FILE
-		if strings.EqualFold(rest, "active") || strings.EqualFold(rest, "file") {
-			continue
-		}
 		if u := strings.ToUpper(rest); strings.HasSuffix(u, "_FILE") {
 			rest = rest[:len(rest)-len("_FILE")]
 		}
-		if rest == "" {
+		// Filter the ACTIVE/FILE pseudo-labels AFTER stripping _FILE so typo'd
+		// forms (ACTIVE_FILE, FILE_FILE) don't leak in as phantom labels.
+		if rest == "" || strings.EqualFold(rest, "active") || strings.EqualFold(rest, "file") {
 			continue
 		}
 		labels[strings.ToLower(rest)] = struct{}{}
