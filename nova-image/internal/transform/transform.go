@@ -66,6 +66,11 @@ type Spec struct {
 	// Fit: "cover" = cover-crop to exact BoxW×BoxH dimensions.
 	// Any other value (including empty) = fit within the box (contain).
 	Fit string
+	// Lossless requests lossless encoding where the target format supports it
+	// (webp, avif/heif, jxl). png is inherently lossless; jpeg has no lossless
+	// mode and ignores this flag. Used by the upload-time format-conversion path
+	// so a "lossless" re-encode does not degrade the canonical original.
+	Lossless bool
 }
 
 // Transformer performs image operations subject to concurrency and megapixel
@@ -133,7 +138,7 @@ func (t *Transformer) Render(src []byte, spec Spec, format string) (out []byte, 
 	}
 	// else: empty Spec — transcode only, no resize.
 
-	encoded, err := encode(img, format)
+	encoded, err := encode(img, format, spec.Lossless)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -197,7 +202,7 @@ func ValidateCodecs(inputs, outputs []string) error {
 	defer probe.Close()
 
 	for _, f := range outputs {
-		if _, err := encode(probe, f); err != nil {
+		if _, err := encode(probe, f, false); err != nil {
 			return fmt.Errorf("transform: output format %q unavailable in this libvips build: %w", f, err)
 		}
 	}
@@ -207,7 +212,9 @@ func ValidateCodecs(inputs, outputs []string) error {
 
 // encode encodes img to the given format and returns the bytes.
 // format is normalised: "jpg" is treated as "jpeg".
-func encode(img *vips.ImageRef, format string) ([]byte, error) {
+// lossless requests lossless encoding for formats that support it (webp, avif,
+// jxl); png is inherently lossless; jpeg ignores the flag.
+func encode(img *vips.ImageRef, format string, lossless bool) ([]byte, error) {
 	f := strings.ToLower(format)
 	if f == "jpg" {
 		f = "jpeg"
@@ -228,18 +235,21 @@ func encode(img *vips.ImageRef, format string) ([]byte, error) {
 	case "webp":
 		params := vips.NewWebpExportParams()
 		params.Quality = 80
+		params.Lossless = lossless
 		b, _, err := img.ExportWebp(params)
 		return b, err
 
 	case "avif":
 		params := vips.NewAvifExportParams()
 		params.Quality = 60
+		params.Lossless = lossless
 		b, _, err := img.ExportAvif(params)
 		return b, err
 
 	case "jxl":
 		params := vips.NewJxlExportParams()
 		params.Quality = 75
+		params.Lossless = lossless
 		b, _, err := img.ExportJxl(params)
 		return b, err
 

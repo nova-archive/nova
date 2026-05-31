@@ -68,3 +68,31 @@ func TestValidateCodecsPassesForCoreFormats(t *testing.T) {
 	require.NoError(t, Startup(0)) // 0 ⇒ a sane default cache cap
 	require.NoError(t, ValidateCodecs([]string{"png", "jpeg"}, []string{"jpeg", "png", "webp"}))
 }
+
+// TestRenderLossless verifies that Spec.Lossless is threaded into the encoder.
+// It uses a 64×64 gradient PNG (enough variation for lossy vs lossless to
+// differ in encoded bytes) and encodes to webp both ways.
+func TestRenderLossless(t *testing.T) {
+	tr := New(Bounds{MaxMegapixels: 100, MaxConcurrent: 2})
+	src := makePNG(t, 64, 64)
+
+	// Lossless round-trip: output must be non-empty and decode to original dims.
+	outLossless, w, h, err := tr.Render(src, Spec{Lossless: true}, "webp")
+	require.NoError(t, err)
+	require.Equal(t, 64, w)
+	require.Equal(t, 64, h)
+	require.NotEmpty(t, outLossless)
+	require.True(t, bytes.HasPrefix(outLossless, []byte("RIFF")) && bytes.Contains(outLossless[:16], []byte("WEBP")))
+
+	// Lossy encode of the same source.
+	outLossy, w2, h2, err := tr.Render(src, Spec{Lossless: false}, "webp")
+	require.NoError(t, err)
+	require.Equal(t, 64, w2)
+	require.Equal(t, 64, h2)
+	require.NotEmpty(t, outLossy)
+
+	// The two encodings must produce different byte streams — lossless WebP is
+	// always larger (and structurally different) than lossy WebP for a
+	// gradient image.
+	require.NotEqual(t, outLossless, outLossy, "lossless and lossy webp outputs should differ")
+}
