@@ -1,13 +1,31 @@
 // Package kinds holds the job-kind constants and handlers registered with the
-// worker pool. derivative_prewarm is a no-op in Phase 1 M4; nova-image wires
-// the real body and the enqueue site in M5 (the product OnCommitted hook).
+// worker pool.
 package kinds
 
-import "context"
+import (
+	"context"
+	"encoding/json"
 
-// KindDerivativePrewarm pre-warms common image-derivative presets after a
-// parent upload commits. M4 ships the kind so M5 only has to fill the body.
+	"github.com/nova-archive/nova/internal/jobs"
+)
+
 const KindDerivativePrewarm = "derivative_prewarm"
 
-// DerivativePrewarmStub is the M4 no-op handler. It satisfies jobs.Handler.
-func DerivativePrewarmStub(ctx context.Context, payload []byte) error { return nil }
+type DerivativePrewarmPayload struct {
+	ParentCID string   `json:"parent_cid"`
+	Presets   []string `json:"presets"`
+}
+
+// NewDerivativePrewarmHandler builds the handler that pre-generates presets for
+// a freshly-committed image. prewarm is the nova-image generation fn (best-effort:
+// it should log per-preset failures and return an error only when the parent is
+// unreadable, so the queue's backoff retries a transient failure).
+func NewDerivativePrewarmHandler(prewarm func(ctx context.Context, parentCID string, presets []string) error) jobs.Handler {
+	return func(ctx context.Context, payload []byte) error {
+		var p DerivativePrewarmPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return err
+		}
+		return prewarm(ctx, p.ParentCID, p.Presets)
+	}
+}
