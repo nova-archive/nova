@@ -1,6 +1,8 @@
 package password_test
 
 import (
+	"encoding/base64"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -60,4 +62,58 @@ func TestGateParallelSafe(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestVerifyDegenerateNeverPanics asserts that Verify returns (false, error)
+// and does NOT panic for stored hash strings that pass structural/Sscanf checks
+// but carry degenerate argon2 parameters that would cause argon2.IDKey to panic.
+func TestVerifyDegenerateNeverPanics(t *testing.T) {
+	t.Parallel()
+
+	b64 := base64.RawStdEncoding.EncodeToString
+	salt := make([]byte, 16)   // zero salt is fine for this test
+	digest := make([]byte, 32) // zero digest, valid length
+
+	b64salt := b64(salt)
+	b64digest := b64(digest)
+
+	cases := []struct {
+		name    string
+		encoded string
+	}{
+		{
+			name:    "empty digest (keyLen=0)",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=65536,t=3,p=2$%s$", b64salt),
+		},
+		{
+			name:    "t=0",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=65536,t=0,p=2$%s$%s", b64salt, b64digest),
+		},
+		{
+			name:    "p=0",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=65536,t=3,p=0$%s$%s", b64salt, b64digest),
+		},
+		{
+			name:    "m=0",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=0,t=3,p=2$%s$%s", b64salt, b64digest),
+		},
+		{
+			name:    "empty salt",
+			encoded: fmt.Sprintf("$argon2id$v=19$m=65536,t=3,p=2$$%s", b64digest),
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var ok bool
+			var err error
+			require.NotPanics(t, func() {
+				ok, err = password.Verify(tc.encoded, "anything")
+			})
+			require.False(t, ok, "degenerate hash must not verify as matching")
+			require.Error(t, err, "degenerate hash must return an error")
+		})
+	}
 }

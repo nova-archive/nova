@@ -24,7 +24,7 @@ const (
 func Hash(plain string) (string, error) {
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
-		return "", err
+		return "", fmt.Errorf("password: read salt: %w", err)
 	}
 	sum := argon2.IDKey([]byte(plain), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	b64 := base64.RawStdEncoding.EncodeToString
@@ -33,14 +33,17 @@ func Hash(plain string) (string, error) {
 }
 
 // Verify reports whether plain matches the encoded argon2id hash.
+// It is total: no input (including degenerate stored hashes) can cause a panic.
 func Verify(encoded, plain string) (bool, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
 		return false, errors.New("password: malformed hash")
 	}
-	var mem, time uint32
+	// parts[2] holds "v=19". argon2id v1.3 is the only variant we generate;
+	// we intentionally do not branch on the version field today.
+	var memory, timeCost uint32
 	var threads uint8
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &mem, &time, &threads); err != nil {
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &timeCost, &threads); err != nil {
 		return false, fmt.Errorf("password: malformed params: %w", err)
 	}
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
@@ -51,7 +54,33 @@ func Verify(encoded, plain string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("password: bad digest: %w", err)
 	}
-	got := argon2.IDKey([]byte(plain), salt, time, mem, threads, uint32(len(want)))
+
+	// Reject degenerate parameters before reaching argon2.IDKey, which panics
+	// on zero values. Defense-in-depth: the recover guard below catches any
+	// other unexpected panic from the library as well.
+	if memory == 0 || timeCost == 0 || threads == 0 {
+		return false, errors.New("password: invalid argon2 parameters")
+	}
+	if len(want) == 0 {
+		return false, errors.New("password: empty digest")
+	}
+	if len(salt) == 0 {
+		return false, errors.New("password: empty salt")
+	}
+
+	return argon2Compare(plain, salt, want, timeCost, memory, threads)
+}
+
+// argon2Compare runs the constant-time compare inside a recover guard so that
+// any unexpected argon2 library panic becomes a returned error instead of
+// crashing the process.
+func argon2Compare(plain string, salt, want []byte, timeCost, memory uint32, threads uint8) (match bool, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			match, err = false, fmt.Errorf("password: argon2 verify failed: %v", r)
+		}
+	}()
+	got := argon2.IDKey([]byte(plain), salt, timeCost, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
 
