@@ -35,6 +35,8 @@ import (
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
+	novaimage "github.com/nova-archive/nova/nova-image"
+	"github.com/nova-archive/nova/nova-image/imageproduct"
 	"github.com/nova-archive/nova/pkg/coordinator"
 )
 
@@ -87,6 +89,24 @@ func run() error {
 	sessionTTL := time.Duration(envInt("NOVA_UPLOAD_SESSION_TTL_SECONDS", config.DefaultUploadSessionTTLSecs)) * time.Second
 	recordIP := os.Getenv("NOVA_PARANOID") != "true"
 
+	// Image product config. Phase-1: defaults only (operator.yaml image-section
+	// decode is deferred until the operator.yaml loader is wired into cmd).
+	imgCfg := novaimage.DefaultConfig()
+	if err := imgCfg.Validate(); err != nil {
+		return fmt.Errorf("image config: %w", err)
+	}
+	if err := imageproduct.Startup(imgCfg.VipsCacheMaxMemBytes); err != nil {
+		return fmt.Errorf("libvips startup: %w", err)
+	}
+	if err := imageproduct.ValidateCodecs(imgCfg.AllowedInputFormats, imgCfg.AllowedOutputFormats); err != nil {
+		return fmt.Errorf("image codec unavailable (refusing to start): %w", err)
+	}
+	if imgCfg.FormatConversion.Enabled && !imgCfg.FormatConversion.Lossless {
+		fmt.Fprintf(os.Stderr, "coordinator: NOTICE: format_conversion is enabled with lossless=false; "+
+			"uploaded lossless images (PNG/BMP/TIFF) will be re-encoded to %s with quality loss (destructive)\n",
+			imgCfg.FormatConversion.Target)
+	}
+
 	pool, err := db.Open(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
@@ -129,6 +149,11 @@ func run() error {
 	})
 	if err != nil {
 		return fmt.Errorf("coordinator: %w", err)
+	}
+
+	img := imageproduct.New(imgCfg, c.Storage(), pool, c.Queue())
+	if err := c.RegisterProduct(img); err != nil {
+		return fmt.Errorf("register image product: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "coordinator: listening on %s\n", listen)

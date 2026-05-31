@@ -55,12 +55,13 @@ type Config struct {
 // Coordinator owns the HTTP server. Build with New; register products before
 // Run; drive with Run/Shutdown.
 type Coordinator struct {
-	cfg         Config
-	mux         *chi.Mux
-	srv         *http.Server
-	addr        atomic.Value // string
-	uploadStore *upload.Store
-	gcInterval  time.Duration
+	cfg           Config
+	mux           *chi.Mux
+	srv           *http.Server
+	addr          atomic.Value // string
+	uploadStore   *upload.Store
+	uploadHandler *handlers.UploadHandler
+	gcInterval    time.Duration
 
 	svc      *storage.Service
 	queue    *jobs.Queue
@@ -106,7 +107,9 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 				return nil, err
 			}
 			c.uploadStore = store
-			sc.Upload = handlers.NewUploadHandler(store, svc, sizeOrDefault(cfg.MaxUploadSizeBytes), cfg.RecordSourceIP)
+			uh := handlers.NewUploadHandler(store, svc, sizeOrDefault(cfg.MaxUploadSizeBytes), cfg.RecordSourceIP)
+			c.uploadHandler = uh
+			sc.Upload = uh
 		}
 	}
 	if pool != nil {
@@ -164,6 +167,23 @@ func (c *Coordinator) RegisterProduct(p product.Product) error {
 	}
 	p.RegisterRoutes(c.mux)
 	c.products[p.Name()] = p
+
+	// If this product is image-capable (exposes preset URLs) and the multipart
+	// upload edge is mounted, wire its accept-predicate + preset-URL builder so
+	// /api/v1/images can do an early 415 and emit urls.presets.
+	if c.uploadHandler != nil {
+		if edge, ok := p.(interface {
+			PresetURLs(cid string) map[string]string
+		}); ok {
+			accepted := p.AcceptedMimeTypes()
+			set := make(map[string]bool, len(accepted))
+			for _, m := range accepted {
+				set[m] = true
+			}
+			c.uploadHandler.SetImageHooks(func(mime string) bool { return set[mime] }, edge.PresetURLs)
+		}
+	}
+
 	return nil
 }
 

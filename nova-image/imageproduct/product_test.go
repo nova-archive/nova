@@ -179,3 +179,22 @@ func TestOnCommitted_NilQueueNoop(t *testing.T) {
 	err := p.OnCommitted(ctx, &storage.CommittedRef{CID: "x"}, nil)
 	require.NoError(t, err)
 }
+
+// TestPresetURLs verifies that PresetURLs returns the expected canonical URLs.
+func TestPresetURLs(t *testing.T) {
+	p := New(novaimage.DefaultConfig(), nil, nil, nil)
+	urls := p.PresetURLs("bafyCID")
+
+	// DefaultConfig has presets: thumb (webp), og (jpeg), hero (webp).
+	require.Equal(t, "/i/bafyCID/p/thumb.webp", urls["thumb"])
+	require.Equal(t, "/i/bafyCID/p/og.jpeg", urls["og"])
+	require.Equal(t, "/i/bafyCID/p/hero.webp", urls["hero"])
+	require.Len(t, urls, 3, "should have exactly 3 presets")
+}
+
+// TestValidateCodecsDefaults verifies that the default allowed formats are all
+// available in the local libvips build (jpeg/png/webp are universally supported).
+func TestValidateCodecsDefaults(t *testing.T) {
+	cfg := novaimage.DefaultConfig()
+	require.NoError(t, ValidateCodecs(cfg.AllowedInputFormats, cfg.AllowedOutputFormats))
+}

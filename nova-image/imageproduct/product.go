@@ -198,6 +198,26 @@ func isLosslessInput(mime string) bool {
 // consult uc here once the policy lands (post-M5).
 func preserveOriginal(uc *product.UploadContext) bool { return false }
 
+// PresetURLs returns the canonical /i/{cid}/p/{name}.{ext} URL for each
+// configured preset, keyed by preset name. Used by the upload edge to advertise
+// the available derivatives in the upload result.
+func (p *Product) PresetURLs(cid string) map[string]string {
+	out := make(map[string]string, len(p.cfg.Presets))
+	for name, preset := range p.cfg.Presets {
+		out[name] = "/i/" + cid + "/p/" + name + "." + preset.Format
+	}
+	return out
+}
+
+// Startup initialises libvips with the configured cache cap. cmd calls this at
+// boot (before serving) so a missing/broken libvips fails fast. Idempotent.
+func Startup(cacheMaxMem int64) error { return transform.Startup(cacheMaxMem) }
+
+// ValidateCodecs checks that every configured input/output format is usable in
+// this libvips build. cmd treats a failure as refuse-to-start (so an operator
+// who enables avif/jxl without the codec is told at boot, not at request time).
+func ValidateCodecs(inputs, outputs []string) error { return transform.ValidateCodecs(inputs, outputs) }
+
 // Compile-time interface checks.
 var (
 	_ product.Product  = (*Product)(nil)
