@@ -12,6 +12,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -44,9 +45,10 @@ type Config struct {
 
 // Verifier validates external OIDC bearer tokens. It implements auth.Verifier.
 type Verifier struct {
-	cfg Config
-	mu  sync.RWMutex
-	idv *coreoidc.IDTokenVerifier
+	cfg            Config
+	mu             sync.RWMutex
+	idv            *coreoidc.IDTokenVerifier
+	initialBackoff time.Duration // first sleep in retryDiscovery; 0 → 1s default
 	// ready is true once discovery has succeeded and idv is set.
 	ready bool
 }
@@ -60,16 +62,23 @@ type Verifier struct {
 // resilient.)
 //
 // New returns a non-nil error only for invalid configuration (e.g. empty
-// IssuerURL).
+// IssuerURL). Network/IdP failures during discovery are NOT errors — the
+// verifier starts in the unavailable state and recovers in the background.
 func New(ctx context.Context, cfg Config) (*Verifier, error) {
+	return newWithBackoff(ctx, cfg, 0)
+}
+
+// newWithBackoff is the internal constructor used by New and tests. A zero
+// backoff means "use the production default of 1s".
+func newWithBackoff(ctx context.Context, cfg Config, initialBackoff time.Duration) (*Verifier, error) {
 	if cfg.IssuerURL == "" {
-		return nil, auth.ErrAuthUnavailable // callers should treat empty IssuerURL as misconfiguration
+		return nil, errors.New("oidc: IssuerURL is required")
 	}
 	if cfg.RoleClaim == "" {
 		cfg.RoleClaim = "groups"
 	}
 
-	v := &Verifier{cfg: cfg}
+	v := &Verifier{cfg: cfg, initialBackoff: initialBackoff}
 
 	provider, err := coreoidc.NewProvider(ctx, cfg.IssuerURL)
 	if err != nil {
@@ -88,7 +97,10 @@ func New(ctx context.Context, cfg Config) (*Verifier, error) {
 // succeeds, then sets idv and ready under the write lock.
 func (v *Verifier) retryDiscovery(ctx context.Context) {
 	const maxBackoff = 60 * time.Second
-	backoff := time.Second
+	backoff := v.initialBackoff
+	if backoff == 0 {
+		backoff = time.Second
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -109,7 +121,7 @@ func (v *Verifier) retryDiscovery(ctx context.Context) {
 		}
 
 		v.mu.Lock()
-		v.idv = provider.Verifier(&coreoidc.Config{ClientID: v.cfg.IssuerURL})
+		v.idv = provider.Verifier(&coreoidc.Config{ClientID: v.cfg.ClientID}) // Fix I1: was v.cfg.IssuerURL
 		v.ready = true
 		v.mu.Unlock()
 
@@ -173,8 +185,11 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (auth.Identity, error
 	}, nil
 }
 
-// mapRole reads the configured role claim from claims, matches the first value
-// found in RoleMapping, and returns the mapped role. Falls back to "viewer".
+// mapRole reads the configured role claim from claims and returns the mapped
+// Nova role. It iterates the claim values in array order and returns the FIRST
+// value that matches an entry in cfg.RoleMapping (first-match-wins, not
+// highest-privilege). Values not present in the operator-supplied RoleMapping
+// are ignored; if no value matches the fallback is "viewer".
 func (v *Verifier) mapRole(claims map[string]any) string {
 	val, ok := claims[v.cfg.RoleClaim]
 	if !ok {

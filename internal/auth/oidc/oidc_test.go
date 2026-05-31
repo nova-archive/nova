@@ -107,3 +107,36 @@ func TestForeignIssuerTokenNotForMe(t *testing.T) {
 	require.True(t, errors.Is(err, auth.ErrTokenNotForMe),
 		"expected ErrTokenNotForMe, got: %v", err)
 }
+
+// TestCorrectIssuerBadSignatureRejected proves that the unverified-iss
+// pre-check is not a bypass: a token with the correct iss and aud but signed
+// by a DIFFERENT key (not in the JWKS) must fail signature verification and
+// must NOT be returned as ErrTokenNotForMe (it passed the iss routing check).
+func TestCorrectIssuerBadSignatureRejected(t *testing.T) {
+	ctx := context.Background()
+	issuer, _, v := stubIDP(t)
+
+	// Generate a fresh key that is NOT in the stub IdP's JWKS.
+	_, wrongPriv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	wrongSigner, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.EdDSA, Key: jose.JSONWebKey{Key: wrongPriv, KeyID: "wrong-kid"}},
+		nil,
+	)
+	require.NoError(t, err)
+
+	raw, err := jwt.Signed(wrongSigner).Claims(map[string]any{
+		"iss": issuer,
+		"sub": "attacker",
+		"aud": "nova",
+		"exp": time.Now().Add(time.Minute).Unix(),
+		"iat": time.Now().Unix(),
+	}).Serialize()
+	require.NoError(t, err)
+
+	_, err = v.Verify(ctx, raw)
+	require.Error(t, err, "bad-signature token must be rejected")
+	require.False(t, errors.Is(err, auth.ErrTokenNotForMe),
+		"token passed iss pre-check; error must NOT be ErrTokenNotForMe, got: %v", err)
+}
