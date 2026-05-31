@@ -3,6 +3,7 @@
 /dist/
 /build/
 /coordinator
+/novactl
 coverage.out
 coverage.html
 
