@@ -1,8 +1,6 @@
 package api
 
 import (
-	"net/http"
-
 	"github.com/go-chi/chi/v5"
 	"github.com/nova-archive/nova/internal/api/handlers"
 	"github.com/nova-archive/nova/internal/api/middleware"
@@ -21,8 +19,8 @@ type ServerConfig struct {
 // read-path routes. Storage-core and product namespaces (/api/v1, /fed/v1,
 // /i, /v, /a, /d, /r) are intentionally NOT mounted in M3; chi's default
 // NotFound returns 404 for them until their owning milestones add them.
-func NewServer(cfg ServerConfig) http.Handler {
-	r := chi.NewRouter()
+func NewServer(cfg ServerConfig) *chi.Mux {
+	r := chi.NewMux()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recover)
 	if cfg.Limiter != nil {
