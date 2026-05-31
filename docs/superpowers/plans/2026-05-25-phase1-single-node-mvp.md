@@ -20,7 +20,7 @@ This master plan summarizes all 14 milestones with their goals and exit criteria
 | M2 | Envelope + IPFS round-trip | **completed** | [m2 plan](2026-05-25-phase1-m2-envelope-ipfs.md) |
 | M3 | Storage core API (read path) | **completed** | [m3 plan](2026-05-28-phase1-m3-storage-read-api.md) |
 | M4 | Upload pipeline (write path) | in progress | [m4 plan](2026-05-29-phase1-m4-upload-pipeline.md) |
-| M5 | Image transforms (nova-image) | pending | tbd |
+| M5 | Image transforms (nova-image) | in progress | [m5 plan](2026-05-29-phase1-m5-image-transforms.md) |
 | M6 | Local JWT issuer + bearer auth | pending | tbd |
 | M7 | Signed URLs + signing-key rotation | pending | tbd |
 | M8 | Integrity audits | pending | tbd |

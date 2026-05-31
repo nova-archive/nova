@@ -255,7 +255,13 @@ metadata follows these conventions:
 4. **Migrations live with the product.** Each product ships its own
    `migrations/` directory containing forward-only Postgres SQL
    files (`NNN_description.sql`). The coordinator runs them in
-   numeric order at boot.
+   numeric order at boot. **Exception: `image_metadata` is
+   core-owned** — it is defined in `docs/specs/DATA_MODEL.sql` and
+   included in `internal/db/migrations/0001_init.sql` (the storage
+   core's initial migration). The products-own-migrations rule
+   governs future new product tables. Accordingly, `nova-image`
+   ships no migrations of its own in Phase 1 (`Migrations()` returns
+   an empty FS).
 5. **No shared enums across products.** If two products need a
    "format" enum they each define their own. Sharing causes coupled
    migrations and breaks the modular contract.
@@ -341,10 +347,10 @@ under the monorepo:
 
 ```
 internal/transform/         govips wrapper, transform pipeline
-internal/perceptualhash/    PDQ + BK-tree
+internal/perceptualhash/    Phase 3: Go-native 256-bit pHash (near-dup dedup) + BK-tree
 internal/imageapi/          /i/* route handlers
-internal/imagemoderation/   ModerationScanner (PDQ vs StopNCII, severe-content escalation)
-nova-image/migrations/      Side-table migrations (image_metadata)
+internal/imagemoderation/   Phase 4: PDQ scanner vs StopNCII/NCMEC (external blocklist matching)
+nova-image/migrations/      (none in Phase 1; image_metadata is core-owned in 0001_init.sql)
 web/widget/                 Drag-and-drop uploader
 ```
 
@@ -352,15 +358,19 @@ web/widget/                 Drag-and-drop uploader
 1. Verify MIME is one of `image/jpeg`, `image/png`, `image/webp`,
    `image/avif`, `image/tiff`, `image/bmp`, `image/gif`.
 2. Decode to raw pixels, extract width/height.
-3. Compute PDQ perceptual hash.
-4. Run `ImageModeration.Scan(plaintext, perceptual_hash)`:
-   - PDQ blocklist match → return `ScanResult{Action: 'tombstone',
-     Rule: 'pdq_match'}` (severe content) or `'quarantine'` (operator
-     blocklist).
-5. If `format_conversion` enabled, re-encode to WebP (lossless for
+3. **Phase 1 (pass-through):** skip perceptual hash computation;
+   `ImageModeration.Scan` is a no-op allow. **Phase 3** adds a
+   Go-native 256-bit pHash (goimagehash `ExtPerceptionHash`) for
+   near-duplicate dedup. **Phase 4** adds PDQ computation and
+   `ImageModeration.Scan` against the StopNCII/NCMEC blocklist —
+   PDQ blocklist match → `ScanResult{Action: 'tombstone',
+   Rule: 'pdq_match'}` (severe content) or `'quarantine'` (operator
+   blocklist).
+4. If `format_conversion` enabled, re-encode to WebP (lossless for
    screenshots/spectrograms; configurable quality otherwise).
-6. Return `ImageMetadata{width, height, perceptual_hash}` and the
-   (possibly transformed) plaintext.
+5. Return `ImageMetadata{width, height, perceptual_hash}` and the
+   (possibly transformed) plaintext. `perceptual_hash` is NULL in
+   Phase 1; populated from Phase 3 onward.
 
 `OnCommitted` for `nova-image`:
 1. Pre-warm the most common derivative presets (`thumb`, `og`)

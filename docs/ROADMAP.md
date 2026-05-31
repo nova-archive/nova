@@ -121,8 +121,9 @@ v3.1 promotions into Phase 2:
 
 ## Phase 3 — Dedup and moderation
 
-Perceptual hash index, near-duplicate detection, content-moderation
-pipeline.
+Go-native 256-bit perceptual hash (pHash, goimagehash
+`ExtPerceptionHash`) index and BK-tree for near-duplicate detection
+and dedup. Content-moderation pipeline scaffolding.
 
 ## Phase 4 — Adapters, SDKs, and severe-content workflow
 
@@ -132,8 +133,11 @@ Swift.
 
 v2 addition: full severe-content workflow per
 `SEVERE_CONTENT_PROCEDURE.md`:
-- PDQ scan against StopNCII at upload (synchronous reject for
-  clear matches, quarantine + legal-hold for ambiguous).
+- PDQ hash computation and scan against the StopNCII/NCMEC external
+  blocklist at upload (synchronous reject for clear matches,
+  quarantine + legal-hold for ambiguous). Note: PDQ is distinct from
+  the Phase-3 Go-native pHash — PDQ is for external blocklist
+  matching only, not dedup.
 - NCMEC CyberTipline report generation.
 - Admin SPA legal-hold clearance UI.
 - Audit-log export for evidence packaging.

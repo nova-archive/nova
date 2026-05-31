@@ -358,7 +358,7 @@ CREATE TABLE image_metadata (
     cid              text PRIMARY KEY REFERENCES blobs (cid) ON DELETE CASCADE,
     width            int NOT NULL CHECK (width > 0),
     height           int NOT NULL CHECK (height > 0),
-    perceptual_hash  bytea,                            -- 32 bytes (PDQ) for originals; NULL for derivatives
+    perceptual_hash  bytea,                            -- 32 bytes; Phase 3 Go-native 256-bit pHash (dedup), Phase 4 PDQ (external matching); NULL until then
     alt_text         text,
     caption          text
 );
@@ -547,7 +547,7 @@ CREATE TABLE takedown_repeat_infringers (
 --
 -- The original prefix-string-against-canonical scheme was broken: the
 -- canonical signed-URL string starts with the URL path (e.g.,
--- '/i/bafy.../p/thumb.webp\n...'), so prefixes like 'cid:bafy...' or
+-- '/i/bafy.../p/thumb.webp<LF>...'), so prefixes like 'cid:bafy...' or
 -- 'aud:https://example.com' could never match. This table stores
 -- structured (kind, value) tuples; the verifier parses the canonical
 -- string into its fields and checks each field against the revocations.

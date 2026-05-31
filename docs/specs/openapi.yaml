@@ -211,10 +211,10 @@ paths:
       - name: ext
         in: path
         required: true
-        description: Output format file extension. The gateway re-encodes if necessary.
+        description: Output format file extension. The gateway re-encodes if necessary. avif and jxl are operator-gated (off by default).
         schema:
           type: string
-          enum: [jpg, jpeg, png, webp, avif, gif]
+          enum: [jpg, jpeg, png, webp, avif, gif, jxl]
     get:
       tags: [content-image]
       operationId: getImageAsFormat
@@ -222,6 +222,11 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ImageBytes' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '406':
+          description: Requested output format is not enabled by the operator.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '410': { $ref: '#/components/responses/Tombstoned' }
 
   /i/{cid}/{w}x{h}.{ext}:
@@ -240,16 +245,27 @@ paths:
       - name: ext
         in: path
         required: true
+        description: Output format file extension. avif and jxl are operator-gated (off by default).
         schema:
           type: string
-          enum: [jpg, jpeg, png, webp, avif]
+          enum: [jpg, jpeg, png, webp, avif, jxl]
     get:
       tags: [content-image]
       operationId: getImageResizedBox
       summary: Retrieve the image resized to fit a `w x h` box (cover crop).
       responses:
         '200': { $ref: '#/components/responses/ImageBytes' }
+        '400':
+          description: Requested dimension is not in the operator whitelist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '406':
+          description: Requested output format is not enabled by the operator.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /i/{cid}/w{w}.{ext}:
     parameters:
@@ -262,16 +278,27 @@ paths:
       - name: ext
         in: path
         required: true
+        description: Output format file extension. avif and jxl are operator-gated (off by default).
         schema:
           type: string
-          enum: [jpg, jpeg, png, webp, avif]
+          enum: [jpg, jpeg, png, webp, avif, jxl]
     get:
       tags: [content-image]
       operationId: getImageResizedWidth
       summary: Retrieve the image resized to a target width, aspect preserved.
       responses:
         '200': { $ref: '#/components/responses/ImageBytes' }
+        '400':
+          description: Requested dimension is not in the operator whitelist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '406':
+          description: Requested output format is not enabled by the operator.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /i/{cid}/p/{preset}.{ext}:
     parameters:
@@ -284,9 +311,10 @@ paths:
       - name: ext
         in: path
         required: true
+        description: Output format file extension. avif and jxl are operator-gated (off by default).
         schema:
           type: string
-          enum: [jpg, jpeg, png, webp, avif]
+          enum: [jpg, jpeg, png, webp, avif, jxl]
     get:
       tags: [content-image]
       operationId: getImagePreset
@@ -295,6 +323,11 @@ paths:
         '200': { $ref: '#/components/responses/ImageBytes' }
         '404':
           description: Either the CID does not exist or the preset is unknown.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '406':
+          description: Requested output format is not enabled by the operator.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

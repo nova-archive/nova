@@ -127,6 +127,9 @@ Key topology points (all justified in `docs/REVIEW_2026_05_25.md`):
   secrets, and tmp-uploads are separate named volumes — different
   backup cadences (postgres = daily WAL or `pg_dump`; Kubo =
   weekly snapshot; secrets = paper backup off-host).
+- **In-process worker pool** (landed in M5): the coordinator starts
+  the job worker pool in `Run` on startup. The `derivative_prewarm`
+  job kind is live; other job kinds follow in later milestones.
 
 ### Network exposure floor
 
@@ -342,8 +345,8 @@ docker/
   Dockerfile                 multi-stage:
                              1) go-builder: builds coordinator + novactl
                              2) node-builder: builds widget, admin, setup bundles
-                             3) runtime: distroless or alpine; non-root UID;
-                                copies binaries + static assets in
+                             3) runtime: Debian-slim/glibc (required for govips/libvips cgo link);
+                                non-root UID; copies binaries + static assets in
   Dockerfile.dev             extends runtime with `air` watcher + source mount
   docker-compose.yml         dev profile (no certbot; self-signed TLS)
   docker-compose.prod.yml    prod profile (certbot, real TLS, no wizard port)
@@ -987,9 +990,11 @@ sudo usermod -aG docker $USER     # log out + back in for group to take
 
 **Things requiring your involvement during build (potentially):**
 
-- If `govips` build fails inside the container, we may need to
-  pin a specific libvips version or use a different base image.
-  I'll surface this if it happens.
+- ~~If `govips` build fails inside the container, we may need to
+  pin a specific libvips version or use a different base image.~~
+  **Resolved in M5:** runtime base image is Debian-slim/glibc
+  (govips/libvips requires glibc; alpine/musl and distroless are
+  unsuitable for the cgo libvips link).
 - If `embedded Kubo` adds significant transitive Go module bloat,
   we may need to vendor or use Go workspace tricks. I'll surface
   this if it happens.
@@ -1174,9 +1179,13 @@ world outside the binary.
 
 **Open questions to revisit during implementation:**
 
-1. **govips + libvips inside distroless.** Whether `distroless`
+1. **govips + libvips inside distroless.** ~~Whether `distroless`
    contains enough shared libraries for govips to link, or whether
-   we need an alpine-based runtime base image. Test in M5.
+   we need an alpine-based runtime base image. Test in M5.~~
+   **RESOLVED in M5:** distroless (musl/alpine) is unsuitable because
+   govips/libvips requires glibc. The runtime base image is
+   **Debian-slim (glibc)**; non-root UID; copies coordinator binary
+   and static assets in.
 2. **In-process Kubo binary size.** Whether vendoring Kubo and its
    transitive deps blows past a comfortable container image size.
    If yes, mitigation: build with `-trimpath -ldflags="-s -w"`;
