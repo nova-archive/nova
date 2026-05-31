@@ -237,8 +237,11 @@ CREATE INDEX refresh_tokens_gc_idx   ON refresh_tokens (expires_at)
 - `refresh_tokens` follows the OAuth 2.0 BCP for SPAs: opaque 32-byte secret (base64url),
   stored only as SHA-256, single-use with rotation. On refresh, the presented token is
   marked `rotated_to` the new token's id; presenting a token that already has `rotated_to`
-  set (or `revoked_at`) is **reuse** → revoke the whole family (walk `rotated_to` / shared
-  `user_id` lineage) and emit a structured security log.
+  set (or `revoked_at`) is **reuse** → revoke the family and emit a structured security log.
+  Phase-1 implements "family" as **all of the user's live refresh tokens** (`RevokeRefreshTokenFamily`
+  is `WHERE user_id = $1 AND revoked_at IS NULL`) — coarser than per-`rotated_to`-lineage but
+  strictly safer: a stolen token logs the user out of every session. (A future refinement could
+  scope revocation to the compromised chain.)
 - `ON DELETE CASCADE` on `user_id`: refresh tokens have no meaning without their user
   (consistent with `DATA_MODEL.sql`'s cascade convention).
 - GC: a periodic sweep deletes rows past `expires_at` (reuse the coordinator's existing
@@ -437,14 +440,25 @@ verifier set are built in `run()` and injected into `coordinator.New`.
 
 | Condition | Status | `code` |
 |---|---|---|
-| no/blank bearer on a guarded route | 401 + `WWW-Authenticate: Bearer` | `unauthenticated` |
-| bad signature / malformed token | 401 | `invalid_token` |
-| expired access token | 401 | `token_expired` |
+| missing OR invalid OR expired bearer on a guarded route | 401 + `WWW-Authenticate: Bearer` | `unauthenticated` |
 | valid token, role too low | 403 | `forbidden` |
+| external-OIDC verification temporarily unavailable (IdP discovery pending) | 503 + `Retry-After` | `auth_unavailable` |
 | login: any credential failure | 401 | `invalid_credentials` |
 | refresh: expired/reused/unknown | 401 | `invalid_refresh_token` |
 | local auth endpoint under external mode | 404 | `external_oidc_active` |
-| login over per-IP or semaphore limit | 503 + `Retry-After` (or 429 for the per-IP bucket) | `rate_limited` |
+| `/api/v1/users/me` subject is not a uuid | 401 | `invalid_token` |
+| login over per-IP or semaphore limit | 503 + `Retry-After` (or 429 for the per-IP bucket) | `server_busy` |
+
+**Fail-open `Optional`, fail-closed guards (implemented).** `bearer.Optional`
+never rejects: a present-but-invalid/expired/foreign token simply does not
+hydrate an identity, so the request proceeds anonymously on *unguarded* routes
+(public reads, and uploads under `public_uploads`). On a *guarded* route the
+guard then sees no identity and returns a single generic `401 unauthenticated`
+— it deliberately does **not** distinguish bad-signature vs. expired (no
+verification oracle, and clients refresh-on-any-401 regardless). The earlier
+draft's separate `token_expired` / `invalid_token` guard codes are therefore
+**not** surfaced by the guards; `invalid_token` survives only on the
+`/users/me` non-uuid-subject path above.
 
 ---
 
@@ -503,7 +517,7 @@ End-to-end against the production (untagged) coordinator behind an nginx testcon
 3. `GET /api/v1/users/me` with the access token → 200 + correct `User`.
 4. Hit the `/api/v1/admin/*` boundary: operator token → not-404 boundary behavior;
    no token → 401; a `viewer` token → 403.
-5. Forge/await an expired access token → 401 `token_expired`.
+5. Forge/await an expired access token → 401 `unauthenticated` (guards don't distinguish expiry).
 6. `POST /api/v1/auth/refresh` → new pair succeeds; reusing the old refresh → family
    revoked, 401.
 7. `POST /api/v1/auth/logout`; subsequent refresh → 401.

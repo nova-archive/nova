@@ -202,6 +202,12 @@ func buildAuthConfig(ctx context.Context, q *gen.Queries) (coordinator.AuthConfi
 		// External-OIDC mode: verify-only. New is resilient to IdP downtime
 		// (background discovery retry) and only errors on invalid config.
 		clientID := os.Getenv("NOVA_AUTH_CLIENT_ID")
+		if clientID == "" {
+			// go-oidc requires the client id as the expected token audience;
+			// with it empty every token fails verification (universal 401).
+			// Fail fast instead of shipping a silently-broken auth surface.
+			return ac, errors.New("NOVA_AUTH_CLIENT_ID is required in external OIDC mode (it is the token audience); refusing to start")
+		}
 		ver, err := oidc.New(ctx, oidc.Config{
 			IssuerURL: issuerURL,
 			ClientID:  clientID,

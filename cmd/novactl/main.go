@@ -220,12 +220,8 @@ func cmdLogin(args []string) error {
 		return nil
 
 	case http.StatusUnauthorized:
-		ae := readAPIError(resp.Body)
-		if ae.Code == "invalid_credentials" || ae.Code != "" {
-			fmt.Fprintln(os.Stderr, "invalid credentials")
-		} else {
-			fmt.Fprintln(os.Stderr, "invalid credentials")
-		}
+		_ = readAPIError(resp.Body)
+		fmt.Fprintln(os.Stderr, "invalid credentials")
 		os.Exit(1)
 
 	case http.StatusServiceUnavailable:

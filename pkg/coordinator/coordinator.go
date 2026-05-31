@@ -80,11 +80,12 @@ type Coordinator struct {
 	uploadHandler *handlers.UploadHandler
 	gcInterval    time.Duration
 
-	svc      *storage.Service
-	queue    *jobs.Queue
-	workers  *jobs.WorkerPool
-	hook     *productHook
-	products map[string]product.Product
+	svc         *storage.Service
+	queue       *jobs.Queue
+	workers     *jobs.WorkerPool
+	authQueries *gen.Queries // refresh-token GC (nil when no pool)
+	hook        *productHook
+	products    map[string]product.Product
 }
 
 // New constructs a coordinator from injected dependencies. pool/backend/ks may
@@ -132,6 +133,7 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 	if pool != nil {
 		c.queue = jobs.NewQueue(pool)
 		c.workers = jobs.NewWorkerPool(c.queue, jobs.WorkerOptions{})
+		c.authQueries = gen.New(pool)
 	}
 
 	sc.Verifiers = cfg.Auth.Verifiers
@@ -249,7 +251,7 @@ func (c *Coordinator) Run(ctx context.Context) error {
 		return err
 	}
 	c.addr.Store(ln.Addr().String())
-	if c.uploadStore != nil {
+	if c.uploadStore != nil || c.authQueries != nil {
 		go c.gcLoop(ctx)
 	}
 	if c.workers != nil {
@@ -280,7 +282,8 @@ func (c *Coordinator) Shutdown(ctx context.Context) error {
 	return c.srv.Shutdown(ctx)
 }
 
-// gcLoop periodically reclaims abandoned upload sessions until ctx is done.
+// gcLoop periodically reclaims abandoned upload sessions and expired refresh
+// tokens until ctx is done.
 func (c *Coordinator) gcLoop(ctx context.Context) {
 	interval := c.gcInterval
 	if interval <= 0 {
@@ -293,7 +296,12 @@ func (c *Coordinator) gcLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_, _ = c.uploadStore.GC(ctx)
+			if c.uploadStore != nil {
+				_, _ = c.uploadStore.GC(ctx)
+			}
+			if c.authQueries != nil {
+				_, _ = c.authQueries.DeleteExpiredRefreshTokens(ctx)
+			}
 		}
 	}
 }
