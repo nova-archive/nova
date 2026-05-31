@@ -168,8 +168,9 @@ func (q *Queries) InsertRefreshToken(ctx context.Context, arg InsertRefreshToken
 	return id, err
 }
 
-const markRefreshTokenRotated = `-- name: MarkRefreshTokenRotated :exec
-UPDATE refresh_tokens SET rotated_to = $2 WHERE id = $1
+const markRefreshTokenRotated = `-- name: MarkRefreshTokenRotated :execrows
+UPDATE refresh_tokens SET rotated_to = $2
+WHERE id = $1 AND rotated_to IS NULL AND revoked_at IS NULL
 `
 
 type MarkRefreshTokenRotatedParams struct {
@@ -177,9 +178,12 @@ type MarkRefreshTokenRotatedParams struct {
 	RotatedTo pgtype.UUID
 }
 
-func (q *Queries) MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) error {
-	_, err := q.db.Exec(ctx, markRefreshTokenRotated, arg.ID, arg.RotatedTo)
-	return err
+func (q *Queries) MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markRefreshTokenRotated, arg.ID, arg.RotatedTo)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const revokeRefreshToken = `-- name: RevokeRefreshToken :exec

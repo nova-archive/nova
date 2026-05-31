@@ -38,7 +38,7 @@ type Querier interface {
 	InsertManifest(ctx context.Context, arg InsertManifestParams) error
 	InsertRefreshToken(ctx context.Context, arg InsertRefreshTokenParams) (pgtype.UUID, error)
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
-	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) error
+	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
 	// parent visibility and hold no membership of their own. One query, no N+1.

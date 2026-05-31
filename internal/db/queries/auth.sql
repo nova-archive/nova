@@ -23,8 +23,9 @@ RETURNING id;
 SELECT id, user_id, expires_at, rotated_to, revoked_at
 FROM refresh_tokens WHERE token_hash = $1;
 
--- name: MarkRefreshTokenRotated :exec
-UPDATE refresh_tokens SET rotated_to = $2 WHERE id = $1;
+-- name: MarkRefreshTokenRotated :execrows
+UPDATE refresh_tokens SET rotated_to = $2
+WHERE id = $1 AND rotated_to IS NULL AND revoked_at IS NULL;
 
 -- name: RevokeRefreshToken :exec
 UPDATE refresh_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL;

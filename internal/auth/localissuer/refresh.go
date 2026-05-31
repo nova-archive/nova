@@ -81,13 +81,22 @@ func (rs *refreshStore) issue(ctx context.Context, userID uuid.UUID, ua string) 
 	return raw, nil
 }
 
-// rotate validates raw, checks for reuse / expiry, mints a replacement token,
-// atomically marks the old token as rotated, and returns the owner's UUID plus
-// the new raw token.
+// rotate validates raw, checks for reuse / expiry / disabled owner, mints a
+// replacement token, and uses a conditional UPDATE as the serialization point
+// to prevent concurrent double-spend. The sequence is:
 //
-// Reuse detection: if the presented token has already been rotated or revoked,
-// the entire token family is revoked immediately and errRefreshInvalid is
-// returned. This limits the blast radius of a stolen refresh token.
+//  1. Look up the presented token; reject (no-rows) unknowns.
+//  2. Reject reused tokens (rotated_to or revoked_at already set) with family
+//     revocation — this limits blast radius of a stolen refresh token.
+//  3. Reject expired tokens.
+//  4. Reject tokens owned by a disabled user; revoke the whole family.
+//  5. Mint and INSERT the child token.
+//  6. Conditionally mark the old token rotated (WHERE rotated_to IS NULL AND
+//     revoked_at IS NULL). If rows-affected == 0 another concurrent call won
+//     the race: revoke the just-minted child (no orphan left live) and return
+//     errRefreshInvalid.
+//
+// Only when exactly one row is marked does rotate() return the new raw token.
 func (rs *refreshStore) rotate(ctx context.Context, raw string, ua string) (uuid.UUID, string, error) {
 	row, err := rs.q.GetRefreshTokenByHash(ctx, hashToken(raw))
 	if err != nil {
@@ -99,18 +108,34 @@ func (rs *refreshStore) rotate(ctx context.Context, raw string, ua string) (uuid
 
 	// Reuse detection: token was already rotated or explicitly revoked.
 	if row.RevokedAt.Valid || row.RotatedTo.Valid {
-		_ = rs.q.RevokeRefreshTokenFamily(ctx, row.UserID)
+		if err := rs.q.RevokeRefreshTokenFamily(ctx, row.UserID); err != nil {
+			slog.Error("refresh family revoke failed", "user_id", uuid.UUID(row.UserID.Bytes), "err", err)
+		}
 		slog.Warn("refresh token reuse detected", "user_id", uuid.UUID(row.UserID.Bytes))
 		return uuid.Nil, "", errRefreshInvalid
 	}
 
 	// Expiry check.
 	if row.ExpiresAt.Before(time.Now()) {
-		_ = rs.q.RevokeRefreshToken(ctx, row.ID)
+		if err := rs.q.RevokeRefreshToken(ctx, row.ID); err != nil {
+			slog.Error("refresh token revoke failed", "user_id", uuid.UUID(row.UserID.Bytes), "err", err)
+		}
 		return uuid.Nil, "", errRefreshInvalid
 	}
 
-	// Happy path: mint replacement and link it to the old token.
+	// Disabled-user check: a disabled user must not be able to mint new tokens.
+	user, err := rs.q.GetUserByID(ctx, row.UserID)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	if user.Disabled {
+		if err := rs.q.RevokeRefreshTokenFamily(ctx, row.UserID); err != nil {
+			slog.Error("refresh family revoke failed (disabled user)", "user_id", uuid.UUID(row.UserID.Bytes), "err", err)
+		}
+		return uuid.Nil, "", errRefreshInvalid
+	}
+
+	// Happy path: mint replacement and attempt to claim the old token slot.
 	newRaw, newHash, err := mint()
 	if err != nil {
 		return uuid.Nil, "", err
@@ -124,11 +149,24 @@ func (rs *refreshStore) rotate(ctx context.Context, raw string, ua string) (uuid
 	if err != nil {
 		return uuid.Nil, "", err
 	}
-	if err := rs.q.MarkRefreshTokenRotated(ctx, gen.MarkRefreshTokenRotatedParams{
+
+	// Serialization point: conditional UPDATE ensures exactly one concurrent
+	// caller can mark this token rotated. If we get rowsAffected == 0 another
+	// goroutine/process already rotated or revoked this token; revoke our
+	// just-inserted child so it doesn't remain live, then signal failure.
+	rowsAffected, err := rs.q.MarkRefreshTokenRotated(ctx, gen.MarkRefreshTokenRotatedParams{
 		ID:        row.ID,
 		RotatedTo: newID,
-	}); err != nil {
+	})
+	if err != nil {
 		return uuid.Nil, "", err
+	}
+	if rowsAffected == 0 {
+		// Lost the race — revoke the orphaned child we just minted.
+		if err := rs.q.RevokeRefreshToken(ctx, newID); err != nil {
+			slog.Error("orphan child token revoke failed", "user_id", uuid.UUID(row.UserID.Bytes), "err", err)
+		}
+		return uuid.Nil, "", errRefreshInvalid
 	}
 
 	return uuid.UUID(row.UserID.Bytes), newRaw, nil
