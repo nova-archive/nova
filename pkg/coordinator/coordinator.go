@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/api/handlers"
+	"github.com/nova-archive/nova/internal/auth"
+	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
 	"github.com/nova-archive/nova/internal/jobs"
@@ -33,6 +35,17 @@ import (
 type RateLimitConfig struct {
 	RatePerSec float64
 	Burst      float64
+}
+
+// AuthConfig carries the auth dependencies threaded into the HTTP server.
+// Verifiers and Issuer are built by cmd/coordinator (Task 15) and passed in;
+// the coordinator only forwards them to api.ServerConfig.
+type AuthConfig struct {
+	Verifiers     []auth.Verifier
+	Issuer        api.IssuerHandlers // *localissuer.Issuer in local mode; nil in external
+	Descriptor    api.AuthConfigDescriptor
+	PublicUploads bool
+	LoginRate     RateLimitConfig // strict per-IP limiter for /auth/login
 }
 
 // Config holds coordinator settings (not dependencies).
@@ -50,6 +63,10 @@ type Config struct {
 	UploadTmpDir          string
 	UploadGCInterval      time.Duration
 	RecordSourceIP        bool
+
+	// Auth carries the M6 auth dependencies. Zero value means no auth
+	// (verifiers nil, no local issuer, PublicUploads false).
+	Auth AuthConfig
 }
 
 // Coordinator owns the HTTP server. Build with New; register products before
@@ -115,6 +132,19 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 	if pool != nil {
 		c.queue = jobs.NewQueue(pool)
 		c.workers = jobs.NewWorkerPool(c.queue, jobs.WorkerOptions{})
+	}
+
+	sc.Verifiers = cfg.Auth.Verifiers
+	sc.Issuer = cfg.Auth.Issuer
+	sc.AuthConfig = cfg.Auth.Descriptor
+	sc.PublicUploads = cfg.Auth.PublicUploads
+	if cfg.Auth.LoginRate.RatePerSec > 0 {
+		sc.LoginLimiter = ratelimit.NewLimiter(ratelimit.Config{
+			RatePerSec: cfg.Auth.LoginRate.RatePerSec, Burst: cfg.Auth.LoginRate.Burst,
+		}, nil)
+	}
+	if pool != nil {
+		sc.Me = handlers.NewMeHandler(gen.New(pool))
 	}
 
 	c.mux = api.NewServer(sc)

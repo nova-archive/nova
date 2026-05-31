@@ -65,6 +65,7 @@ func TestIntegrationM4UploadThroughNginx(t *testing.T) {
 		SessionTTL:            time.Hour,
 		UploadTmpDir:          t.TempDir(),
 		UploadGCInterval:      time.Hour,
+		Auth:                  coordinator.AuthConfig{PublicUploads: true},
 	})
 	require.NoError(t, err)
 	runCtx, runCancel := context.WithCancel(ctx)
