@@ -69,6 +69,7 @@ type Session struct {
 	MIME           string
 	Product        string
 	CollectionID   *uuid.UUID
+	OwnerID        *uuid.UUID
 	State          string
 	BlobCID        string
 }
@@ -138,6 +139,10 @@ func (s *Store) Get(ctx context.Context, id uuid.UUID) (*Session, error) {
 	if row.CollectionID.Valid {
 		c := uuid.UUID(row.CollectionID.Bytes)
 		sess.CollectionID = &c
+	}
+	if row.OwnerID.Valid {
+		o := uuid.UUID(row.OwnerID.Bytes)
+		sess.OwnerID = &o
 	}
 	return sess, nil
 }
@@ -219,7 +224,7 @@ func (s *Store) Finalize(ctx context.Context, id uuid.UUID) (*storage.PutResult,
 	defer f.Close()
 
 	res, err := s.put.Put(ctx, f, sess.DeclaredLength, storage.PutContext{
-		MIME: sess.MIME, Product: sess.Product, CollectionID: sess.CollectionID,
+		MIME: sess.MIME, Product: sess.Product, CollectionID: sess.CollectionID, OwnerID: sess.OwnerID,
 	})
 	if err != nil {
 		return nil, err

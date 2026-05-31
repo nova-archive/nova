@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/nova-archive/nova/internal/api/middleware"
+	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/upload"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 	"github.com/stretchr/testify/require"
@@ -240,4 +241,22 @@ func TestMultipartImageModerationRejected(t *testing.T) {
 	body, ctype := multipartFileBody(t, "abc", "image/jpeg")
 	rec := do(t, uploadRouter(h), "POST", "/api/v1/images", body, map[string]string{"Content-Type": ctype})
 	require.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+}
+
+func TestMultipartSetsOwnerFromIdentity(t *testing.T) {
+	t.Parallel()
+	mp := &fakeMP{res: &storage.PutResult{CID: "bafyown", ByteSize: 5, MIME: "text/plain", Product: "raw"}}
+	h := NewUploadHandler(&fakeStore{}, mp, 1<<20, false)
+
+	body, ctype := multipartFileBody(t, "hello", "text/plain")
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/blobs", body)
+	r.Header.Set("Content-Type", ctype)
+	uid := uuid.New()
+	r = r.WithContext(auth.ContextWithIdentity(r.Context(), auth.Identity{UserID: uid.String(), Role: "uploader"}))
+	rr := httptest.NewRecorder()
+	h.Multipart(rr, r)
+
+	require.Equal(t, http.StatusCreated, rr.Code)
+	require.NotNil(t, mp.gotPC.OwnerID)
+	require.Equal(t, uid, *mp.gotPC.OwnerID)
 }

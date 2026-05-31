@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nova-archive/nova/internal/api/httputil"
 	"github.com/nova-archive/nova/internal/api/middleware"
+	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/upload"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 )
@@ -85,6 +86,7 @@ func (h *UploadHandler) CreateTus(w http.ResponseWriter, r *http.Request) {
 		}
 		p.CollectionID = &col
 	}
+	p.OwnerID = ownerFromContext(r.Context())
 	id, err := h.store.Create(r.Context(), p)
 	if err != nil {
 		if errors.Is(err, upload.ErrTooLarge) {
@@ -247,6 +249,7 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 		}
 		pc.CollectionID = &col
 	}
+	pc.OwnerID = ownerFromContext(r.Context())
 
 	res, err := h.put.Put(r.Context(), file, header.Size, pc)
 	if err != nil {
@@ -332,6 +335,17 @@ func parseID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 		return uuid.Nil, false
 	}
 	return id, true
+}
+
+// ownerFromContext resolves the authenticated user UUID from the request context.
+// Returns nil when no identity is present or UserID is not a valid UUID.
+func ownerFromContext(ctx context.Context) *uuid.UUID {
+	if id, ok := auth.IdentityFromContext(ctx); ok && id.UserID != "" {
+		if u, err := uuid.Parse(id.UserID); err == nil {
+			return &u
+		}
+	}
+	return nil
 }
 
 // clientIP extracts the client address from X-Forwarded-For (first hop) or
