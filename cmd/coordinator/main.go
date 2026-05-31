@@ -17,6 +17,12 @@
 //	NOVA_MAX_CONCURRENT_ASSEMBLY concurrent in-memory encrypts (default 8)
 //	NOVA_UPLOAD_SESSION_TTL_SECONDS  tus session TTL (default 86400)
 //	NOVA_PARANOID             "true" suppresses source-IP recording
+//	NOVA_OIDC_SIGNING_KEY[_FILE]  Ed25519 seed hex (32 bytes); required in local auth mode
+//	NOVA_AUTH_ISSUER_URL      external OIDC issuer URL; empty ⇒ built-in local issuer
+//	NOVA_AUTH_CLIENT_ID       external OIDC client id (audience)
+//	NOVA_AUTH_ISSUER          local-mode token iss/aud base (default "https://<hostname>/")
+//	NOVA_PUBLIC_UPLOADS       "true" allows anonymous uploads (requires NOVA_TOS_URL; T1.20)
+//	NOVA_TOS_URL              ToS URL; required when NOVA_PUBLIC_UPLOADS=true
 package main
 
 import (
@@ -26,13 +32,21 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/auth"
+	"github.com/nova-archive/nova/internal/auth/localissuer"
+	"github.com/nova-archive/nova/internal/auth/oidc"
+	"github.com/nova-archive/nova/internal/auth/password"
+	"github.com/nova-archive/nova/internal/auth/token"
 	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db"
+	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
 	novaimage "github.com/nova-archive/nova/nova-image"
@@ -121,6 +135,13 @@ func run() error {
 		return fmt.Errorf("keystore bootstrap: %w", err)
 	}
 
+	// Build auth (and enforce its refuse-to-start floors) before the expensive
+	// embedded-Kubo boot, so a missing signing key / T1.20 violation fails fast.
+	authCfg, err := buildAuthConfig(ctx, gen.New(pool))
+	if err != nil {
+		return err
+	}
+
 	backend, err := ipfs.NewEmbedded(ctx, ipfs.EmbeddedOptions{
 		RepoPath:     repo,
 		Mode:         ipfs.ModePrivate,
@@ -146,6 +167,7 @@ func run() error {
 		UploadTmpDir:          tmpDir,
 		UploadGCInterval:      time.Hour,
 		RecordSourceIP:        recordIP,
+		Auth:                  authCfg,
 	})
 	if err != nil {
 		return fmt.Errorf("coordinator: %w", err)
@@ -158,6 +180,94 @@ func run() error {
 
 	fmt.Fprintf(os.Stderr, "coordinator: listening on %s\n", listen)
 	return c.Run(ctx)
+}
+
+// buildAuthConfig assembles the coordinator's auth wiring from the environment.
+// When NOVA_AUTH_ISSUER_URL is set the coordinator runs in external-OIDC mode
+// (verify-only; local issuer endpoints 404). Otherwise it runs the built-in
+// local Ed25519 issuer, which requires NOVA_OIDC_SIGNING_KEY (refuse-to-start
+// floor). Public uploads require NOVA_TOS_URL (T1.20).
+func buildAuthConfig(ctx context.Context, q *gen.Queries) (coordinator.AuthConfig, error) {
+	var ac coordinator.AuthConfig
+
+	publicUploads := os.Getenv("NOVA_PUBLIC_UPLOADS") == "true"
+	if publicUploads && os.Getenv("NOVA_TOS_URL") == "" {
+		return ac, errors.New("NOVA_PUBLIC_UPLOADS=true requires NOVA_TOS_URL (T1.20); refusing to start")
+	}
+	ac.PublicUploads = publicUploads
+	// Strict per-IP limiter on /api/v1/auth/login: ~5 attempts/minute, burst 5.
+	ac.LoginRate = coordinator.RateLimitConfig{RatePerSec: 5.0 / 60.0, Burst: 5}
+
+	if issuerURL := os.Getenv("NOVA_AUTH_ISSUER_URL"); issuerURL != "" {
+		// External-OIDC mode: verify-only. New is resilient to IdP downtime
+		// (background discovery retry) and only errors on invalid config.
+		clientID := os.Getenv("NOVA_AUTH_CLIENT_ID")
+		ver, err := oidc.New(ctx, oidc.Config{
+			IssuerURL: issuerURL,
+			ClientID:  clientID,
+			RoleClaim: "groups",
+			RoleMapping: map[string]string{
+				"nova:operator":  "operator",
+				"nova:moderator": "moderator",
+				"nova:uploader":  "uploader",
+			},
+		})
+		if err != nil {
+			return ac, fmt.Errorf("external oidc: %w", err)
+		}
+		ac.Verifiers = []auth.Verifier{ver}
+		ac.Issuer = nil
+		ac.Descriptor = api.AuthConfigDescriptor{Mode: "external", IssuerURL: issuerURL, ClientID: clientID}
+		return ac, nil
+	}
+
+	// Local-issuer mode: load the Ed25519 signing key (refuse to start if absent).
+	seed, err := config.ResolveSecret("NOVA_OIDC_SIGNING_KEY", "NOVA_OIDC_SIGNING_KEY_FILE", "/run/secrets/oidc-signing-key")
+	if err != nil || strings.TrimSpace(seed) == "" {
+		return ac, errors.New("NOVA_OIDC_SIGNING_KEY is required in local auth mode " +
+			"(or set NOVA_AUTH_ISSUER_URL for external OIDC); refusing to start")
+	}
+	signer, err := token.NewSignerFromSeed(strings.TrimSpace(seed))
+	if err != nil {
+		return ac, fmt.Errorf("oidc signing key: %w", err)
+	}
+	issuerURL := os.Getenv("NOVA_AUTH_ISSUER")
+	if issuerURL == "" {
+		host, herr := os.Hostname()
+		if herr != nil || host == "" {
+			host = "localhost"
+		}
+		issuerURL = "https://" + host + "/"
+	}
+	localIss, err := localissuer.New(localissuer.Config{
+		Queries:    q,
+		Signer:     signer,
+		Gate:       password.NewGate(gateSize()),
+		IssuerURL:  issuerURL,
+		Audience:   "nova",
+		AccessTTL:  15 * time.Minute,
+		RefreshTTL: 12 * time.Hour,
+	})
+	if err != nil {
+		return ac, fmt.Errorf("local issuer: %w", err)
+	}
+	ac.Verifiers = []auth.Verifier{localIss.Verifier()}
+	ac.Issuer = localIss
+	ac.Descriptor = api.AuthConfigDescriptor{Mode: "local"}
+	return ac, nil
+}
+
+// gateSize bounds concurrent argon2 password verifications to protect against
+// login-flood memory exhaustion: min(NumCPU, 4), at least 1.
+func gateSize() int {
+	n := runtime.NumCPU()
+	if n > 4 {
+		n = 4
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 func envInt(key string, def int) int {
