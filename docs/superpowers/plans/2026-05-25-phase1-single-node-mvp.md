@@ -21,7 +21,7 @@ This master plan summarizes all 14 milestones with their goals and exit criteria
 | M3 | Storage core API (read path) | **completed** | [m3 plan](2026-05-28-phase1-m3-storage-read-api.md) |
 | M4 | Upload pipeline (write path) | in progress | [m4 plan](2026-05-29-phase1-m4-upload-pipeline.md) |
 | M5 | Image transforms (nova-image) | in progress | [m5 plan](2026-05-29-phase1-m5-image-transforms.md) |
-| M6 | Local JWT issuer + bearer auth | pending | tbd |
+| M6 | Local JWT issuer + bearer auth | **completed** | [m6 plan](2026-05-30-phase1-m6-auth.md) |
 | M7 | Signed URLs + signing-key rotation | pending | tbd |
 | M8 | Integrity audits | pending | tbd |
 | M9 | Moderation (DMCA + severe-content manual path) | pending | tbd |
@@ -77,7 +77,9 @@ After M14: Phase 1 release-candidate tag, then Phase 2 planning.
 
 **Deliverables:** `internal/auth/localissuer` OIDC-shaped service (`/api/v1/auth/login`, `/refresh`, `/logout`, `/jwks.json`); access/refresh token rotation; argon2id password hashing; `internal/auth/bearer` middleware verifying via JWKS; `internal/auth/oidc` adapter for external OIDC; `novactl auth` subcommand; config-driven swap between local and external OIDC; `nova_dev` build tag dropped from main builds.
 
-**Exit:** integration test: login → call protected endpoint → succeed; expired access token → 401; refresh → succeed; external OIDC mode → local-issuer endpoints return 404 and redirects to issuer; production binary refuses to start with `auth: anonymous`.
+**Exit:** integration test: login → call protected endpoint → succeed; expired access token → 401; refresh → succeed; external OIDC mode → local-issuer endpoints return **404 `external_oidc_active`** (clients discover the IdP via `GET /api/v1/auth/config` and drive PKCE themselves; an external-issuer token verifies through the bearer middleware); production binary refuses to start with `auth: anonymous`.
+
+**Scope reconciliation (settled at M6 planning):** M6 ships auth infrastructure only. The collection-management API (`/api/v1/collections*`) and authenticated metadata read/update (`GET/PATCH /api/v1/blobs|images/{cid}`) — forward-referenced to "M6" by M3/M4/M5 — are deferred to a later REST/admin milestone (consumed first by the M11 admin SPA). The `audit_log` writer + its admin read endpoint move to **M9** (M6 emits structured logs for auth security events instead). See `docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md`.
 
 ### M7 — Signed URLs + signing-key rotation
 **Goal:** Operator mints a signed URL via API; expired or revoked URLs fail; signing-key rotation works with grace window.

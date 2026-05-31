@@ -2,9 +2,12 @@
 -- Nova: Networked Object Versatile Archive
 -- Data Model — Phase 0 v2 (Postgres 16)
 --
--- This file is the authoritative schema. Production migrations under
--- internal/db/migrations/ in Phase 1+ derive from this file; sqlc reads
--- the schema and generates the Go query layer.
+-- This file is the Phase-0 v2 schema baseline. From Phase 1 onward, the
+-- authoritative, evolving schema lives in internal/db/migrations/ (goose),
+-- which is what sqlc reads (internal/db/sqlc.yaml: schema: "migrations") to
+-- generate the Go query layer. Phase-1 migrations 0002+ (jobs, partitions,
+-- envelope_version, upload_sessions, auth) are intentionally NOT backfilled
+-- here; consult internal/db/migrations/ for the live schema.
 --
 -- v2 revisions vs the original Phase 0:
 --   - keys → data_encryption_keys + signing_keys + master_key_versions

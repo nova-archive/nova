@@ -813,6 +813,120 @@ paths:
   # Users
   # =========================================================================
 
+  # =========================================================================
+  # Auth (local OIDC-shaped JWT issuer for management/bearer auth; distinct
+  # from the HMAC signed-URL scheme in SIGNED_URL_FORMAT.md). In external-OIDC
+  # mode (auth.issuer_url set) login/refresh/logout/jwks return 404
+  # external_oidc_active; only /auth/config responds, advertising the external
+  # IdP for the client to drive the authorization-code + PKCE flow.
+  # =========================================================================
+
+  /api/v1/auth/login:
+    post:
+      tags: [admin]
+      operationId: authLogin
+      summary: Exchange username + password for an access + refresh token pair (local issuer).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Token pair.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401':
+          description: Invalid credentials (generic; no user-enumeration).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: External-OIDC mode is active; the local issuer is disabled.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: Login concurrency/rate limit; retry after a short delay.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [admin]
+      operationId: authRefresh
+      summary: Rotate a refresh token for a new pair (single-use; reuse revokes the family).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: New token pair.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '401':
+          description: Refresh token invalid, expired, revoked, or reused.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: External-OIDC mode is active; the local issuer is disabled.
+
+  /api/v1/auth/logout:
+    post:
+      tags: [admin]
+      operationId: authLogout
+      summary: Revoke a refresh token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LogoutRequest' }
+      responses:
+        '204': { description: Logged out (idempotent). }
+        '404':
+          description: External-OIDC mode is active; the local issuer is disabled.
+
+  /api/v1/auth/jwks.json:
+    get:
+      tags: [admin]
+      operationId: authJWKS
+      summary: JSON Web Key Set for verifying local-issuer access tokens.
+      security: []
+      responses:
+        '200':
+          description: JWKS (OKP/Ed25519 signing key).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Jwks' }
+        '404':
+          description: External-OIDC mode is active; the local issuer is disabled.
+
+  /api/v1/auth/config:
+    get:
+      tags: [admin]
+      operationId: authConfig
+      summary: Unauthenticated auth-mode discovery document for clients (SPA/CLI).
+      description: |
+        Always present in both modes. In local mode returns `{mode: local}`.
+        In external mode returns the IdP `issuer_url` (and `client_id`/`scopes`)
+        so the client can initiate the OIDC authorization-code + PKCE flow itself.
+      security: []
+      responses:
+        '200':
+          description: Auth discovery document.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthConfig' }
+
   /api/v1/users/me:
     get:
       tags: [metadata]
@@ -1305,15 +1419,23 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        OIDC bearer token issued by the operator's Authelia instance
-        (or any compatible OIDC provider). Required for **every**
-        `/api/v1/*` endpoint in any production build.
+        JWT bearer token. The **Phase-1 default** is Nova's built-in local
+        OIDC-shaped issuer (EdDSA/Ed25519; see `/api/v1/auth/*`). Operators may
+        instead point `auth.issuer_url` at an external OIDC provider (Authelia or
+        any compatible IdP), in which case the coordinator verifies external
+        tokens via the IdP's JWKS and the local-issuer endpoints return 404
+        `external_oidc_active`. Both verify concurrently during migration. The
+        coordinator is a resource server: it validates bearer tokens but does not
+        mediate the interactive login flow (the SPA/CLI drive PKCE, discovering
+        the IdP via `/api/v1/auth/config`).
 
-        v2 note: the original `auth: anonymous` mode for management
-        endpoints was removed. It is available only in dev builds
-        (build tag `nova_dev`) and only when the coordinator binds
-        to loopback. Production builds refuse to start with anonymous
-        management auth regardless of operator config.
+        Management `/api/v1/*` writes and admin routes require a bearer with a
+        sufficient role; public content reads (`/blob/*`, `/i/*`) do not.
+
+        v2 note: the original `auth: anonymous` mode for management endpoints was
+        removed. It is available only in dev builds (build tag `nova_dev`) and
+        only when the coordinator binds to loopback. Production builds refuse to
+        start with anonymous management auth regardless of operator config.
 
   parameters:
 
@@ -1494,6 +1616,54 @@ components:
         details:
           type: object
           additionalProperties: true
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, format: password }
+
+    TokenResponse:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token: { type: string, description: EdDSA-signed JWT bearer token. }
+        refresh_token: { type: string, description: Opaque single-use rotating refresh token. }
+        token_type: { type: string, enum: [bearer] }
+        expires_in: { type: integer, description: Access-token TTL in seconds. }
+        kid: { type: string, description: Signing-key id (JWKS key selector). }
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+
+    LogoutRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+
+    AuthConfig:
+      type: object
+      required: [mode]
+      properties:
+        mode: { type: string, enum: [local, external] }
+        issuer_url: { type: string, description: External IdP issuer (external mode only). }
+        client_id: { type: string }
+        scopes: { type: array, items: { type: string } }
+
+    Jwks:
+      type: object
+      description: JSON Web Key Set (RFC 7517); OKP/Ed25519 signing key(s).
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
 
     User:
       type: object

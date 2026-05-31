@@ -167,6 +167,20 @@ threat tolerance.
 | `moderation.pdq_threshold` | per operator policy | informed by PDQ recommendations | `SEVERE_CONTENT_PROCEDURE.md`; `PRODUCT_MODULE_INTERFACE.md` |
 | `legal_hold.statutory_retention_days` | per jurisdiction | operator consults counsel | `SEVERE_CONTENT_PROCEDURE.md` |
 
+### Authentication
+
+| Key | Default | Notes | Where documented |
+|---|---|---|---|
+| `auth.issuer_url` | empty (built-in local issuer) | non-empty ⇒ verify-only external OIDC; local issuer endpoints 404 `external_oidc_active` | M6 design `docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md` |
+| `auth.role_claim` | `groups` | external-OIDC claim read for role mapping | M6 design |
+| `auth.role_mapping` | operator-supplied | maps IdP group/scope strings → Nova roles; unmapped ⇒ `viewer` (safe default) | M6 design |
+| `uploads.public_uploads` | `false` | `true` allows anonymous uploads; refuse-to-start without `tos_url` (T1.20) | M6 design; `PRIVACY_AUDIT.md` |
+
+The coordinator is a resource server: it accepts bearer tokens from the local
+issuer and/or an operator-chosen external IdP (operator freedom; see Tier 3),
+but never mediates the interactive login flow. Role mapping is operator policy —
+a misconfiguration can over- or under-grant, so `viewer` is the unmapped default.
+
 ### Network mode
 
 | Key | Default | Notes | Where documented |
