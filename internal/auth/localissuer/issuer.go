@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -36,11 +37,24 @@ type Issuer struct {
 }
 
 // New constructs an Issuer from the given Config.
-func New(cfg Config) *Issuer {
+// It returns an error if any required field is missing, so that
+// misconfiguration (e.g. empty Audience) is caught at startup rather than
+// silently disabling audience confinement at runtime.
+func New(cfg Config) (*Issuer, error) {
+	switch {
+	case cfg.Queries == nil:
+		return nil, fmt.Errorf("localissuer: Queries must not be nil")
+	case cfg.Signer == nil:
+		return nil, fmt.Errorf("localissuer: Signer must not be nil")
+	case cfg.IssuerURL == "":
+		return nil, fmt.Errorf("localissuer: IssuerURL must not be empty")
+	case cfg.Audience == "":
+		return nil, fmt.Errorf("localissuer: Audience must not be empty")
+	}
 	return &Issuer{
 		cfg:     cfg,
 		refresh: newRefreshStore(cfg.Queries, cfg.RefreshTTL),
-	}
+	}, nil
 }
 
 // tokenResponse is the JSON body returned by Login and Refresh.
@@ -98,7 +112,7 @@ func (iss *Issuer) Login(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// User not found — still run dummy verify to equalize timing.
 			password.DummyVerify(body.Password)
-			slog.Warn("login failed: user not found", "username", body.Username)
+			slog.Warn("login failed: user not found")
 			httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password", reqID)
 			return
 		}
@@ -115,7 +129,12 @@ func (iss *Issuer) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	match, _ := password.Verify(u.PasswordHash.String, body.Password)
+	match, verifyErr := password.Verify(u.PasswordHash.String, body.Password)
+	if verifyErr != nil {
+		slog.Error("password verify error", "user_id", uuid.UUID(u.ID.Bytes), "err", verifyErr)
+		httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password", reqID)
+		return
+	}
 	if !match {
 		slog.Warn("login failed: wrong password", "user_id", uuid.UUID(u.ID.Bytes))
 		httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password", reqID)
