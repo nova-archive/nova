@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/netip"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/nova-archive/nova/internal/api/handlers"
@@ -34,16 +35,17 @@ type AuthConfigDescriptor struct {
 
 // ServerConfig carries the handlers + knobs the router needs.
 type ServerConfig struct {
-	Version       string
-	Blob          *handlers.BlobHandler
-	Upload        *handlers.UploadHandler
-	Limiter       *ratelimit.Limiter
-	Verifiers     []auth.Verifier
-	Issuer        IssuerHandlers       // nil => external mode (auth/* 404 except config)
-	AuthConfig    AuthConfigDescriptor // always served at /api/v1/auth/config
-	Me            *handlers.MeHandler
-	PublicUploads bool
-	LoginLimiter  *ratelimit.Limiter
+	Version        string
+	Blob           *handlers.BlobHandler
+	Upload         *handlers.UploadHandler
+	Limiter        *ratelimit.Limiter
+	Verifiers      []auth.Verifier
+	Issuer         IssuerHandlers       // nil => external mode (auth/* 404 except config)
+	AuthConfig     AuthConfigDescriptor // always served at /api/v1/auth/config
+	Me             *handlers.MeHandler
+	PublicUploads  bool
+	LoginLimiter   *ratelimit.Limiter
+	TrustedProxies []netip.Prefix // gates XFF trust for rate-limit + source-IP recording
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -59,7 +61,7 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recover)
 	if cfg.Limiter != nil {
-		r.Use(middleware.RateLimit(cfg.Limiter))
+		r.Use(middleware.RateLimit(cfg.Limiter, cfg.TrustedProxies))
 	}
 
 	r.Get("/health", handlers.Health(cfg.Version))
@@ -77,7 +79,7 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 			// Local mode: mount issuer endpoints.
 			if cfg.LoginLimiter != nil {
 				r.Group(func(r chi.Router) {
-					r.Use(middleware.RateLimit(cfg.LoginLimiter))
+					r.Use(middleware.RateLimit(cfg.LoginLimiter, cfg.TrustedProxies))
 					r.Post("/auth/login", cfg.Issuer.Login)
 				})
 			} else {

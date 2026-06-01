@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -40,14 +39,23 @@ type UploadHandler struct {
 	put             upload.Committer
 	maxUploadSize   int64
 	recordIP        bool
+	trustedProxies  []netip.Prefix
 	imageAccepts    func(mime string) bool
 	imagePresetURLs func(cid string) map[string]string
 }
 
 // NewUploadHandler builds the upload handler. recordIP=false (paranoid mode)
-// suppresses source-IP capture on the multipart path.
-func NewUploadHandler(store SessionStore, put upload.Committer, maxUploadSize int64, recordIP bool) *UploadHandler {
-	return &UploadHandler{store: store, put: put, maxUploadSize: maxUploadSize, recordIP: recordIP}
+// suppresses source-IP capture on the multipart path. trustedProxies gates
+// X-Forwarded-For trust when resolving the client IP for source_ip recording
+// (see httputil.ClientIP); nil/empty means XFF is always ignored.
+func NewUploadHandler(store SessionStore, put upload.Committer, maxUploadSize int64, recordIP bool, trustedProxies []netip.Prefix) *UploadHandler {
+	return &UploadHandler{
+		store:          store,
+		put:            put,
+		maxUploadSize:  maxUploadSize,
+		recordIP:       recordIP,
+		trustedProxies: trustedProxies,
+	}
 }
 
 // SetImageHooks injects the nova-image upload-edge hooks: an accept-predicate
@@ -239,7 +247,7 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 
 	pc := storage.PutContext{MIME: declaredMIME, Product: product}
 	if h.recordIP {
-		pc.SourceIP = clientIP(r)
+		pc.SourceIP = httputil.ClientIP(r, h.trustedProxies)
 	}
 	if cidStr := r.FormValue("collection_id"); cidStr != "" {
 		col, err := uuid.Parse(cidStr)
@@ -348,19 +356,3 @@ func ownerFromContext(ctx context.Context) *uuid.UUID {
 	return nil
 }
 
-// clientIP extracts the client address from X-Forwarded-For (first hop) or
-// RemoteAddr. Returns the zero Addr when unparseable (⇒ source_ip not recorded).
-func clientIP(r *http.Request) netip.Addr {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		first := strings.TrimSpace(strings.Split(xff, ",")[0])
-		if ip, err := netip.ParseAddr(first); err == nil {
-			return ip
-		}
-	}
-	host := r.RemoteAddr
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	ip, _ := netip.ParseAddr(host)
-	return ip
-}

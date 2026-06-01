@@ -17,6 +17,7 @@
 //	NOVA_MAX_CONCURRENT_ASSEMBLY concurrent in-memory encrypts (default 8)
 //	NOVA_UPLOAD_SESSION_TTL_SECONDS  tus session TTL (default 86400)
 //	NOVA_PARANOID             "true" suppresses source-IP recording
+//	NOVA_TRUSTED_PROXIES      comma-separated IPs or CIDRs trusted to set XFF (default empty = XFF ignored)
 //	NOVA_OIDC_SIGNING_KEY[_FILE]  Ed25519 seed hex (32 bytes); required in local auth mode
 //	NOVA_AUTH_ISSUER_URL      external OIDC issuer URL; empty ⇒ built-in local issuer
 //	NOVA_AUTH_CLIENT_ID       external OIDC client id (audience)
@@ -39,6 +40,7 @@ import (
 	"time"
 
 	"github.com/nova-archive/nova/internal/api"
+	"github.com/nova-archive/nova/internal/api/httputil"
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/localissuer"
 	"github.com/nova-archive/nova/internal/auth/oidc"
@@ -102,6 +104,11 @@ func run() error {
 	maxAssembly := envInt("NOVA_MAX_CONCURRENT_ASSEMBLY", config.DefaultMaxConcurrentAssembly)
 	sessionTTL := time.Duration(envInt("NOVA_UPLOAD_SESSION_TTL_SECONDS", config.DefaultUploadSessionTTLSecs)) * time.Second
 	recordIP := os.Getenv("NOVA_PARANOID") != "true"
+
+	trustedProxies, err := httputil.ParseTrustedProxies(os.Getenv("NOVA_TRUSTED_PROXIES"))
+	if err != nil {
+		return fmt.Errorf("NOVA_TRUSTED_PROXIES: %w", err)
+	}
 
 	// Image product config. Phase-1: defaults only (operator.yaml image-section
 	// decode is deferred until the operator.yaml loader is wired into cmd).
@@ -167,6 +174,7 @@ func run() error {
 		UploadTmpDir:          tmpDir,
 		UploadGCInterval:      time.Hour,
 		RecordSourceIP:        recordIP,
+		TrustedProxies:        trustedProxies,
 		Auth:                  authCfg,
 	})
 	if err != nil {

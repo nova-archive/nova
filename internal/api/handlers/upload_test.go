@@ -93,7 +93,7 @@ func TestParseUploadMetadata(t *testing.T) {
 }
 
 func TestCreateTusValidation(t *testing.T) {
-	h := NewUploadHandler(&fakeStore{}, &fakeMP{}, 100, false)
+	h := NewUploadHandler(&fakeStore{}, &fakeMP{}, 100, false, nil)
 	router := uploadRouter(h)
 
 	// Missing Tus-Resumable → 400.
@@ -109,7 +109,7 @@ func TestCreateTusValidation(t *testing.T) {
 
 func TestCreateTusSuccess(t *testing.T) {
 	id := uuid.New()
-	h := NewUploadHandler(&fakeStore{createID: id}, &fakeMP{}, 100, false)
+	h := NewUploadHandler(&fakeStore{createID: id}, &fakeMP{}, 100, false, nil)
 	rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/uploads", nil, map[string]string{
 		"Tus-Resumable": "1.0.0", "Upload-Length": "5",
 	})
@@ -123,21 +123,21 @@ func TestPatchTus(t *testing.T) {
 	url := "/api/v1/uploads/" + id.String()
 
 	// Wrong content-type → 400.
-	h := NewUploadHandler(&fakeStore{newOff: 3}, &fakeMP{}, 100, false)
+	h := NewUploadHandler(&fakeStore{newOff: 3}, &fakeMP{}, 100, false, nil)
 	rec := do(t, uploadRouter(h), http.MethodPatch, url, bytes.NewReader([]byte("abc")), map[string]string{
 		"Upload-Offset": "0", "Content-Type": "text/plain",
 	})
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	// Conflict → 409.
-	h = NewUploadHandler(&fakeStore{appendErr: upload.ErrConflict}, &fakeMP{}, 100, false)
+	h = NewUploadHandler(&fakeStore{appendErr: upload.ErrConflict}, &fakeMP{}, 100, false, nil)
 	rec = do(t, uploadRouter(h), http.MethodPatch, url, bytes.NewReader([]byte("abc")), map[string]string{
 		"Upload-Offset": "0", "Content-Type": "application/offset+octet-stream",
 	})
 	require.Equal(t, http.StatusConflict, rec.Code)
 
 	// Success → 204 + Upload-Offset.
-	h = NewUploadHandler(&fakeStore{newOff: 3}, &fakeMP{}, 100, false)
+	h = NewUploadHandler(&fakeStore{newOff: 3}, &fakeMP{}, 100, false, nil)
 	rec = do(t, uploadRouter(h), http.MethodPatch, url, bytes.NewReader([]byte("abc")), map[string]string{
 		"Upload-Offset": "0", "Content-Type": "application/offset+octet-stream",
 	})
@@ -150,12 +150,12 @@ func TestFinalizeTus(t *testing.T) {
 	url := "/api/v1/uploads/" + id.String() + "/finalize"
 
 	// Incomplete → 409.
-	h := NewUploadHandler(&fakeStore{finErr: upload.ErrIncomplete}, &fakeMP{}, 100, false)
+	h := NewUploadHandler(&fakeStore{finErr: upload.ErrIncomplete}, &fakeMP{}, 100, false, nil)
 	rec := do(t, uploadRouter(h), http.MethodPost, url, nil, nil)
 	require.Equal(t, http.StatusConflict, rec.Code)
 
 	// Success → 200 + JSON body.
-	h = NewUploadHandler(&fakeStore{finRes: &storage.PutResult{CID: "bafyabc", ByteSize: 5, MIME: "image/png", Product: "raw"}}, &fakeMP{}, 100, false)
+	h = NewUploadHandler(&fakeStore{finRes: &storage.PutResult{CID: "bafyabc", ByteSize: 5, MIME: "image/png", Product: "raw"}}, &fakeMP{}, 100, false, nil)
 	rec = do(t, uploadRouter(h), http.MethodPost, url, nil, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 	var body map[string]any
@@ -183,20 +183,20 @@ func multipartFileBody(t *testing.T, content, ctype string) (*bytes.Buffer, stri
 
 func TestMultipart(t *testing.T) {
 	// Success → 201 + JSON.
-	h := NewUploadHandler(&fakeStore{}, &fakeMP{res: &storage.PutResult{CID: "bafymp", ByteSize: 3, MIME: "image/png", Product: "raw"}}, 100, false)
+	h := NewUploadHandler(&fakeStore{}, &fakeMP{res: &storage.PutResult{CID: "bafymp", ByteSize: 3, MIME: "image/png", Product: "raw"}}, 100, false, nil)
 	body, ctype := multipartFileBody(t, "abc", "image/png")
 	rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
 	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 	require.Contains(t, rec.Body.String(), "bafymp")
 
 	// MIME rejected → 400.
-	h = NewUploadHandler(&fakeStore{}, &fakeMP{err: storage.ErrMimeRejected}, 100, false)
+	h = NewUploadHandler(&fakeStore{}, &fakeMP{err: storage.ErrMimeRejected}, 100, false, nil)
 	body, ctype = multipartFileBody(t, "abc", "image/jpeg")
 	rec = do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
 	// Server busy → 503.
-	h = NewUploadHandler(&fakeStore{}, &fakeMP{err: storage.ErrServerBusy}, 100, false)
+	h = NewUploadHandler(&fakeStore{}, &fakeMP{err: storage.ErrServerBusy}, 100, false, nil)
 	body, ctype = multipartFileBody(t, "abc", "image/png")
 	rec = do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -204,7 +204,7 @@ func TestMultipart(t *testing.T) {
 
 func TestMultipartImageSuccess(t *testing.T) {
 	mp := &fakeMP{res: &storage.PutResult{CID: "bafyimg", ByteSize: 3, MIME: "image/jpeg", Product: "image"}}
-	h := NewUploadHandler(&fakeStore{}, mp, 100, false)
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false, nil)
 	h.SetImageHooks(
 		func(m string) bool { return m == "image/jpeg" },
 		func(cid string) map[string]string { return map[string]string{"thumb": "/i/" + cid + "/p/thumb.webp"} },
@@ -226,7 +226,7 @@ func TestMultipartImageSuccess(t *testing.T) {
 
 func TestMultipartImageRejectsNonImage(t *testing.T) {
 	mp := &fakeMP{} // res nil; if Put were called it'd panic on nil deref or return nil — but it must NOT be called
-	h := NewUploadHandler(&fakeStore{}, mp, 100, false)
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false, nil)
 	h.SetImageHooks(func(m string) bool { return m == "image/jpeg" }, nil)
 	body, ctype := multipartFileBody(t, "hello", "text/plain")
 	rec := do(t, uploadRouter(h), "POST", "/api/v1/images", body, map[string]string{"Content-Type": ctype})
@@ -236,7 +236,7 @@ func TestMultipartImageRejectsNonImage(t *testing.T) {
 
 func TestMultipartImageModerationRejected(t *testing.T) {
 	mp := &fakeMP{err: storage.ErrModerationRejected}
-	h := NewUploadHandler(&fakeStore{}, mp, 100, false)
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false, nil)
 	h.SetImageHooks(func(m string) bool { return true }, nil)
 	body, ctype := multipartFileBody(t, "abc", "image/jpeg")
 	rec := do(t, uploadRouter(h), "POST", "/api/v1/images", body, map[string]string{"Content-Type": ctype})
@@ -246,7 +246,7 @@ func TestMultipartImageModerationRejected(t *testing.T) {
 func TestMultipartSetsOwnerFromIdentity(t *testing.T) {
 	t.Parallel()
 	mp := &fakeMP{res: &storage.PutResult{CID: "bafyown", ByteSize: 5, MIME: "text/plain", Product: "raw"}}
-	h := NewUploadHandler(&fakeStore{}, mp, 1<<20, false)
+	h := NewUploadHandler(&fakeStore{}, mp, 1<<20, false, nil)
 
 	body, ctype := multipartFileBody(t, "hello", "text/plain")
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/blobs", body)

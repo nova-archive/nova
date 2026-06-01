@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -67,6 +68,13 @@ type Config struct {
 	// Auth carries the M6 auth dependencies. Zero value means no auth
 	// (verifiers nil, no local issuer, PublicUploads false).
 	Auth AuthConfig
+
+	// TrustedProxies gates X-Forwarded-For trust at the rate-limit and
+	// source-IP-recording call sites. Nil/empty means XFF is always
+	// ignored (the safe default for direct-exposure deployments). When
+	// nginx fronts the coordinator on loopback, set this to the proxy's
+	// address (e.g., {127.0.0.1/32, ::1/128}). M6.2 B2.
+	TrustedProxies []netip.Prefix
 }
 
 // Coordinator owns the HTTP server. Build with New; register products before
@@ -115,7 +123,11 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		limiter:    limiter,
 	}
 
-	sc := api.ServerConfig{Version: cfg.Version, Limiter: limiter}
+	sc := api.ServerConfig{
+		Version:        cfg.Version,
+		Limiter:        limiter,
+		TrustedProxies: cfg.TrustedProxies,
+	}
 	if pool != nil && backend != nil && ks != nil {
 		svc := storage.NewService(pool, backend, ks,
 			storage.WithWriteLimits(cfg.MaxUploadSizeBytes, cfg.MaxConcurrentAssembly),
@@ -130,7 +142,7 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 				return nil, err
 			}
 			c.uploadStore = store
-			uh := handlers.NewUploadHandler(store, svc, sizeOrDefault(cfg.MaxUploadSizeBytes), cfg.RecordSourceIP)
+			uh := handlers.NewUploadHandler(store, svc, sizeOrDefault(cfg.MaxUploadSizeBytes), cfg.RecordSourceIP, cfg.TrustedProxies)
 			c.uploadHandler = uh
 			sc.Upload = uh
 		}
