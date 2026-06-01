@@ -107,12 +107,22 @@ func (iss *Issuer) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
+	// Login-failure logs are deliberately uniform at the default Info/Warn
+	// level: the Warn line carries no reason field and no user_id, so an
+	// observer of aggregated logs cannot enumerate which usernames exist or
+	// are disabled. The granular reason + user_id moves to a Debug line, so
+	// operators with the log level set to Debug get the triage info but
+	// production deployments do not leak it. (M6.2 B3.)
+	const failedLogMsg = "login failed"
+	const failedDebugMsg = "login failed (detail)"
+
 	u, err := iss.cfg.Queries.GetUserByEmail(ctx, body.Username)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// User not found — still run dummy verify to equalize timing.
 			password.DummyVerify(body.Password)
-			slog.Warn("login failed: user not found")
+			slog.Warn(failedLogMsg, "request_id", reqID)
+			slog.Debug(failedDebugMsg, "request_id", reqID, "reason", "user_not_found")
 			httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password", reqID)
 			return
 		}
@@ -124,7 +134,8 @@ func (iss *Issuer) Login(w http.ResponseWriter, r *http.Request) {
 	if u.Disabled || !u.PasswordHash.Valid {
 		// Disabled or no password — still run dummy verify to equalize timing.
 		password.DummyVerify(body.Password)
-		slog.Warn("login failed: user disabled or no password hash", "user_id", uuid.UUID(u.ID.Bytes))
+		slog.Warn(failedLogMsg, "request_id", reqID)
+		slog.Debug(failedDebugMsg, "request_id", reqID, "reason", "user_disabled_or_no_hash", "user_id", uuid.UUID(u.ID.Bytes))
 		httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password", reqID)
 		return
 	}
@@ -136,7 +147,8 @@ func (iss *Issuer) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !match {
-		slog.Warn("login failed: wrong password", "user_id", uuid.UUID(u.ID.Bytes))
+		slog.Warn(failedLogMsg, "request_id", reqID)
+		slog.Debug(failedDebugMsg, "request_id", reqID, "reason", "wrong_password", "user_id", uuid.UUID(u.ID.Bytes))
 		httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid username or password", reqID)
 		return
 	}
