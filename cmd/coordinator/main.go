@@ -187,7 +187,23 @@ func run() error {
 		return fmt.Errorf("register image product: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "coordinator: listening on %s\n", listen)
+	// M6.2 D2 — one structured startup line so operators (and log
+	// aggregators) can confirm the auth mode, key sources, and listen
+	// surface at boot without grepping per-component init lines. No
+	// secret values are logged: only the labels and counts that let an
+	// operator answer "did this process boot with the config I expect?"
+	slog.Info("coordinator startup",
+		"mode", authCfg.Descriptor.Mode,
+		"issuer", authCfg.Descriptor.IssuerURL,
+		"verifier_count", len(authCfg.Verifiers),
+		"active_master_key_label", ks.ActiveLabel(),
+		"kubo_repo", repo,
+		"listen", listen,
+		"version", version,
+		"public_uploads", authCfg.PublicUploads,
+		"paranoid", !recordIP,
+		"trusted_proxies", len(trustedProxies),
+	)
 	return c.Run(ctx)
 }
 
