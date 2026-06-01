@@ -5,14 +5,27 @@ package envelope
 // which is global mutable state, so this file must NOT use t.Parallel().
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+// captureSlog redirects the slog default logger to buf at Info level for the
+// duration of the test, restoring the previous default on cleanup.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	prev := slog.Default()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
 
 func hexKey(t *testing.T) string {
 	t.Helper()
@@ -123,4 +136,34 @@ func TestKeystoreBadHexFromFileRefuses(t *testing.T) {
 	t.Setenv("NOVA_MASTER_KEY_ACTIVE", "v1")
 	_, err := NewKeystoreFromEnv(nil)
 	require.Error(t, err)
+}
+
+// TestKeystoreLogsSourcePerLabel verifies the M6.2 B5 contract: each
+// successfully-resolved master key emits one structured Info log line
+// carrying the resolution source, but never the key bytes themselves.
+func TestKeystoreLogsSourcePerLabel(t *testing.T) {
+	dir := useSecretsDir(t)
+	v2path := filepath.Join(dir, "v2.key")
+	v2hex := hexKey(t)
+	require.NoError(t, os.WriteFile(v2path, []byte(v2hex), 0o600))
+	v1hex := hexKey(t)
+	t.Setenv("NOVA_MASTER_KEY_V1", v1hex)
+	t.Setenv("NOVA_MASTER_KEY_V2_FILE", v2path)
+	t.Setenv("NOVA_MASTER_KEY_ACTIVE", "v1")
+
+	buf := captureSlog(t)
+	_, err := NewKeystoreFromEnv(nil)
+	require.NoError(t, err)
+
+	out := buf.String()
+	require.Contains(t, out, `"msg":"keystore: master key loaded"`)
+	require.Contains(t, out, `"label":"v1"`)
+	require.Contains(t, out, `"label":"v2"`)
+	require.Contains(t, out, `"source":"env"`)
+	require.Contains(t, out, `"source":"file_env"`)
+	require.Contains(t, out, `"active":true`)
+	require.Contains(t, out, `"active":false`)
+	// Key bytes must never appear in the log.
+	require.NotContains(t, out, v1hex)
+	require.NotContains(t, out, v2hex)
 }

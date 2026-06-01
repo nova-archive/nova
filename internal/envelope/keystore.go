@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,7 +98,7 @@ func NewKeystoreFromEnv(pool *pgxpool.Pool) (*Keystore, error) {
 	masters := make(map[string][]byte, len(labels))
 	for label := range labels {
 		up := strings.ToUpper(label)
-		val, err := config.ResolveSecret(
+		val, source, err := config.ResolveSecret(
 			prefix+up,
 			prefix+up+"_FILE",
 			filepath.Join(defaultSecretsDir, "master-key-"+label),
@@ -120,6 +121,11 @@ func NewKeystoreFromEnv(pool *pgxpool.Pool) (*Keystore, error) {
 			return nil, fmt.Errorf("keystore: NOVA_MASTER_KEY_%s must be %d bytes (got %d)", up, KeySize, len(raw))
 		}
 		masters[label] = raw
+		// Log the source per label so operators can confirm whether each key
+		// came from an inline env, a _FILE redirect, or the default mount.
+		// No key bytes are logged. M6.2 B5.
+		slog.Info("keystore: master key loaded",
+			"label", label, "source", string(source), "active", label == active)
 	}
 
 	return &Keystore{

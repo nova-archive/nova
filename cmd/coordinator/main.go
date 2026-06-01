@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -236,11 +237,12 @@ func buildAuthConfig(ctx context.Context, q *gen.Queries) (coordinator.AuthConfi
 	}
 
 	// Local-issuer mode: load the Ed25519 signing key (refuse to start if absent).
-	seed, err := config.ResolveSecret("NOVA_OIDC_SIGNING_KEY", "NOVA_OIDC_SIGNING_KEY_FILE", "/run/secrets/oidc-signing-key")
+	seed, signerSrc, err := config.ResolveSecret("NOVA_OIDC_SIGNING_KEY", "NOVA_OIDC_SIGNING_KEY_FILE", "/run/secrets/oidc-signing-key")
 	if err != nil || strings.TrimSpace(seed) == "" {
 		return ac, errors.New("NOVA_OIDC_SIGNING_KEY is required in local auth mode " +
 			"(or set NOVA_AUTH_ISSUER_URL for external OIDC); refusing to start")
 	}
+	slog.Info("oidc: signing key loaded", "source", string(signerSrc))
 	signer, err := token.NewSignerFromSeed(strings.TrimSpace(seed))
 	if err != nil {
 		return ac, fmt.Errorf("oidc signing key: %w", err)

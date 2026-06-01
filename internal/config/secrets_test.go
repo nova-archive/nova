@@ -13,9 +13,10 @@ func TestSecretsResolverPrefersEnvVar(t *testing.T) {
 	t.Setenv("FOO", "from-env")
 	t.Setenv("FOO_FILE", filepath.Join(t.TempDir(), "ignored"))
 
-	got, err := config.ResolveSecret("FOO", "FOO_FILE", "/dev/null")
+	got, src, err := config.ResolveSecret("FOO", "FOO_FILE", "/dev/null")
 	require.NoError(t, err)
 	require.Equal(t, "from-env", got)
+	require.Equal(t, config.SourceEnv, src)
 }
 
 func TestSecretsResolverFallsBackToFileEnv(t *testing.T) {
@@ -26,9 +27,10 @@ func TestSecretsResolverFallsBackToFileEnv(t *testing.T) {
 	t.Setenv("BAR", "")
 	t.Setenv("BAR_FILE", file)
 
-	got, err := config.ResolveSecret("BAR", "BAR_FILE", "/dev/null")
+	got, src, err := config.ResolveSecret("BAR", "BAR_FILE", "/dev/null")
 	require.NoError(t, err)
 	require.Equal(t, "from-file-env", got, "trailing newline should be trimmed")
+	require.Equal(t, config.SourceFileEnv, src)
 }
 
 func TestSecretsResolverFallsBackToDefaultMountPath(t *testing.T) {
@@ -39,15 +41,16 @@ func TestSecretsResolverFallsBackToDefaultMountPath(t *testing.T) {
 	t.Setenv("BAZ", "")
 	t.Setenv("BAZ_FILE", "")
 
-	got, err := config.ResolveSecret("BAZ", "BAZ_FILE", file)
+	got, src, err := config.ResolveSecret("BAZ", "BAZ_FILE", file)
 	require.NoError(t, err)
 	require.Equal(t, "from-mount", got)
+	require.Equal(t, config.SourceMount, src)
 }
 
 func TestSecretsResolverReturnsErrorWhenNoneAvailable(t *testing.T) {
 	t.Setenv("QUUX", "")
 	t.Setenv("QUUX_FILE", "")
 
-	_, err := config.ResolveSecret("QUUX", "QUUX_FILE", "/nonexistent")
+	_, _, err := config.ResolveSecret("QUUX", "QUUX_FILE", "/nonexistent")
 	require.Error(t, err)
 }
