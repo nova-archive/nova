@@ -226,6 +226,13 @@ CREATE INDEX dek_legal_hold_idx ON data_encryption_keys (legal_hold) WHERE legal
 -- per-blob keys: rotated on a schedule (default 90 days) with a grace
 -- window during which both old and new keys verify. The kid field is
 -- the public identifier embedded in signed URLs.
+--
+-- Like data_encryption_keys, wrapped_key is encrypted under the operator
+-- master key (master_key_version_id records which version). Master-key
+-- rotation (M10) MUST therefore re-wrap signing_keys rows in state
+-- 'active' AND within-grace 'retired' (both still verify), not just the
+-- blob DEKs — otherwise every signing key is orphaned on rotation. See
+-- ENCRYPTION_ENVELOPE.md "Rotation procedure" step 4. (Verifier: M7.)
 -- ----------------------------------------------------------------------------
 
 CREATE TABLE signing_keys (

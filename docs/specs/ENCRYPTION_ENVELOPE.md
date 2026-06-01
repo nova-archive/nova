@@ -199,7 +199,14 @@ Algorithm:
    b. Unwrap `wrapped_key` with old `MK`.
    c. Re-wrap with new `MK`, generating a fresh wrap nonce.
    d. UPDATE `wrapped_key`, `master_key_version_id = new.id`, `state = 'active'`.
-4. Same for `signing_keys`.
+4. Same for `signing_keys`, but with the filter `state IN ('active', 'retired')`
+   — active keys **and** retired keys still inside their grace window must be
+   re-wrapped, because both still verify signed URLs (see
+   `docs/specs/SIGNED_URL_FORMAT.md` § "Key rotation"). `shredded` signing keys
+   are skipped: their `wrapped_key` is already zeroed. Missing the `retired`
+   rows would orphan in-grace keys and break signed-URL verification for URLs
+   minted just before the rotation. (Signing-key wrapping lands in M7; this
+   re-wrap step is realised in M10.)
 5. Mark old row `state = 'retired'`, set `retired_at = now()`.
 6. Operator removes the old `MK` env var on next deploy.
 

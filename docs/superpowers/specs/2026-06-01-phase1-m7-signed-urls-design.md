@@ -54,6 +54,10 @@ already exist: `signing_keys`, `signed_url_revocations`, and the `key_state` enu
   periodic refresh. The pubsub fan-out lands with **federation (Phase 2)**.
 - **Master-key rotation tooling** — **M10**. Signing keys are a distinct key class from the
   master key; M7 rotates the HMAC signing keys, not the master key that wraps them.
+  **Forward dependency:** `signing_keys.wrapped_key` is the first non-DEK table wrapped under
+  the master key, so M10's re-wrap worker MUST also walk `signing_keys` (state `active` +
+  within-grace `retired`) or it orphans every signing key on rotation — see § "Risks and
+  notes" and reconciliation #6.
 - **Admin SPA surfacing key rotation / URL minting** — **M11**. M7 is backend + `novactl`.
 - **`audit_log` DB writer for rotate/revoke/sign actions** — **M9** (lands with the first
   takedown flows). M7 emits **structured logs** for these operator actions, consistent with
@@ -91,6 +95,17 @@ already exist: `signing_keys`, `signed_url_revocations`, and the `key_state` enu
    the `m7-signed-urls` tag on completion.
 
 5. **`internal/config/types.go`** — add a `SignedURLs` section (fields + comments only).
+
+6. **Master-key re-wrap of signing keys (raised in review) —
+   `docs/specs/ENCRYPTION_ENVELOPE.md`, master plan M10, `DATA_MODEL.sql`.** M7 introduces
+   the first non-DEK table (`signing_keys`) holding a `wrapped_key` encrypted under the master
+   key, so master-key rotation (M10) must re-wrap it too. The envelope spec already says "data
+   **and** signing" (§ "Master-key versioning") and its rotation procedure has a "Same for
+   `signing_keys`" step, but that step inherited the DEK `state='active'` filter — which would
+   silently orphan **within-grace `retired`** signing keys that are still verifying. M7
+   tightens ENCRYPTION_ENVELOPE.md step 4 to `state IN ('active','retired')`, adds the
+   signing-key re-wrap to the M10 deliverables/exit, and notes the obligation in the
+   `signing_keys` schema comment. (No M7 code change — this is a documented M10 dependency.)
 
 ---
 
@@ -498,6 +513,16 @@ End-to-end against the untagged coordinator behind nginx (Postgres + nginx conta
 
 ## Risks and notes
 
+- **Master-key rotation must re-wrap signing keys (forward dependency on M10).**
+  `signing_keys.wrapped_key` is wrapped under the operator master key (via
+  `master_key_version_id`), exactly like `data_encryption_keys`. When M10 implements
+  `rotate-master`, its re-wrap transaction MUST process `signing_keys` rows in state `active`
+  **and** within-grace `retired` (both still verify signed URLs) alongside the blob DEKs;
+  missing them orphans every signing key on rotation and breaks signed-URL verification
+  cluster-wide. The obligation is now captured in three co-located places so it cannot be
+  dropped: `ENCRYPTION_ENVELOPE.md` § "Rotation procedure" step 4 (tightened to the
+  `active`+`retired` filter), the M10 deliverables/exit in the master plan, and the
+  `signing_keys` schema comment (reconciliation #6). M7 itself ships no rotate-master code.
 - **Single-node revocation only.** In-process `Invalidate` + 30 s refresh is immediate on the
   one node; a future multi-node cluster needs the pubsub fan-out (Phase 2). Documented as the
   bound; the periodic refresh is the backstop if an invalidate is ever missed.

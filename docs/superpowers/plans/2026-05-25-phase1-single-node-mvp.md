@@ -105,9 +105,9 @@ After M14: Phase 1 release-candidate tag, then Phase 2 planning.
 ### M10 — Master-key rotation
 **Goal:** `novactl keys rotate-master --to-version v2` rotates a 10k-blob deployment online; reads succeed throughout.
 
-**Deliverables:** multi-version master-key loading (`NOVA_MASTER_KEY_V1`, `_V2`, `_ACTIVE`); `master_key_rotate_row` job kind; `POST /api/v1/admin/keys/rotate-master` enqueues per-row jobs; concurrent worker pool processes; `master_key_versions` lifecycle (active → rotating → retired).
+**Deliverables:** multi-version master-key loading (`NOVA_MASTER_KEY_V1`, `_V2`, `_ACTIVE`); `master_key_rotate_row` job kind; `POST /api/v1/admin/keys/rotate-master` enqueues per-row jobs; concurrent worker pool processes; **re-wrap of `signing_keys` (state `active` + within-grace `retired`) in addition to `data_encryption_keys`** — both reference `master_key_version_id` and the signing keys (added in M7) would otherwise be orphaned by rotation (see `ENCRYPTION_ENVELOPE.md` § "Rotation procedure" step 4); `master_key_versions` lifecycle (active → rotating → retired).
 
-**Exit:** integration test: 10k synthetic blobs; rotate; verify all decrypt against v2; mid-rotation kill of the coordinator → resume on restart; concurrent reads during rotation succeed; final wall-time measured and documented in `OPERATOR_CHECKLIST.md`.
+**Exit:** integration test: 10k synthetic blobs; rotate; verify all decrypt against v2; **signed URLs minted before rotation still verify afterward (signing keys re-wrapped, not orphaned)**; mid-rotation kill of the coordinator → resume on restart; concurrent reads during rotation succeed; final wall-time measured and documented in `OPERATOR_CHECKLIST.md`.
 
 ### M11 — Admin SPA
 **Goal:** Operator logs in via web; sees blob list, moderation queue, DMCA cases, integrity audit failures, jobs introspection, key-rotation buttons.
