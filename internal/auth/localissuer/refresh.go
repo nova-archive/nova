@@ -20,6 +20,46 @@ import (
 // a generic 401 so callers learn nothing about which check failed.
 var errRefreshInvalid = errors.New("localissuer: refresh token invalid")
 
+// errRefreshInternal indicates a transient/internal failure during refresh
+// rotation (DB error during a critical operation, family-revoke retries
+// exhausted). Handlers map this to 503 with a Retry-After hint rather than
+// 401, so a real outage is distinguishable from a token rejection. M6.2 B4
+// added this distinction so a failed family-revoke during reuse detection
+// surfaces clearly instead of silently returning 401 while parallel
+// attackers continue to succeed against the unrevoked family.
+var errRefreshInternal = errors.New("localissuer: refresh internal error")
+
+// Retry knobs for the family-revoke critical path. Two attempts + 100 ms
+// gap absorbs typical Postgres restart blips while keeping the user-facing
+// latency tight. Variables (not constants) so tests can dial them down.
+var (
+	revokeFamilyMaxAttempts = 2
+	revokeFamilyRetryDelay  = 100 * time.Millisecond
+)
+
+// retryUntil runs op up to maxAttempts times, sleeping `delay` between
+// attempts. ctx cancellation aborts the retry early (returning ctx.Err).
+// On all-attempts-fail, returns the last op error. Helper kept generic
+// so the same retry policy can wrap other critical DB ops if needed.
+func retryUntil(ctx context.Context, op func() error, maxAttempts int, delay time.Duration) error {
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		if err := op(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
 // refreshStore holds the query handle and the token TTL used when issuing.
 type refreshStore struct {
 	q   *gen.Queries
@@ -103,19 +143,33 @@ func (rs *refreshStore) rotate(ctx context.Context, raw string, ua string) (uuid
 		if errors.Is(err, pgx.ErrNoRows) {
 			return uuid.Nil, "", errRefreshInvalid
 		}
-		return uuid.Nil, "", err
+		slog.Error("refresh: db error on hash lookup", "err", err)
+		return uuid.Nil, "", errRefreshInternal
 	}
 
-	// Reuse detection: token was already rotated or explicitly revoked.
+	// Reuse detection: token was already rotated or explicitly revoked. The
+	// family-revoke is the load-bearing security action here — if it doesn't
+	// succeed, parallel attackers holding sibling tokens from the same family
+	// would continue to succeed. Retry on transient DB error; if all
+	// attempts fail, surface as errRefreshInternal (→ 503 Retry-After) so
+	// the failure is visible instead of silently returning 401 while the
+	// family stays live.
 	if row.RevokedAt.Valid || row.RotatedTo.Valid {
-		if err := rs.q.RevokeRefreshTokenFamily(ctx, row.UserID); err != nil {
-			slog.Error("refresh family revoke failed", "user_id", uuid.UUID(row.UserID.Bytes), "err", err)
+		err := retryUntil(ctx, func() error {
+			return rs.q.RevokeRefreshTokenFamily(ctx, row.UserID)
+		}, revokeFamilyMaxAttempts, revokeFamilyRetryDelay)
+		if err != nil {
+			slog.Error("refresh family revoke failed (reuse-detection critical path)",
+				"user_id", uuid.UUID(row.UserID.Bytes), "err", err)
+			return uuid.Nil, "", errRefreshInternal
 		}
 		slog.Warn("refresh token reuse detected", "user_id", uuid.UUID(row.UserID.Bytes))
 		return uuid.Nil, "", errRefreshInvalid
 	}
 
-	// Expiry check.
+	// Expiry check. Token is already expired; the per-row revoke is bookkeeping,
+	// not security-critical (the next presentation will hit the reuse-detection
+	// branch above and family-revoke from there).
 	if row.ExpiresAt.Before(time.Now()) {
 		if err := rs.q.RevokeRefreshToken(ctx, row.ID); err != nil {
 			slog.Error("refresh token revoke failed", "user_id", uuid.UUID(row.UserID.Bytes), "err", err)
@@ -124,9 +178,13 @@ func (rs *refreshStore) rotate(ctx context.Context, raw string, ua string) (uuid
 	}
 
 	// Disabled-user check: a disabled user must not be able to mint new tokens.
+	// Family revoke is best-effort here — the user.Disabled check above
+	// continues to block subsequent refreshes even if the rows are not
+	// explicitly revoked, so a single failed revoke is not a security gap.
 	user, err := rs.q.GetUserByID(ctx, row.UserID)
 	if err != nil {
-		return uuid.Nil, "", err
+		slog.Error("refresh: db error on user lookup", "err", err)
+		return uuid.Nil, "", errRefreshInternal
 	}
 	if user.Disabled {
 		if err := rs.q.RevokeRefreshTokenFamily(ctx, row.UserID); err != nil {
@@ -138,7 +196,7 @@ func (rs *refreshStore) rotate(ctx context.Context, raw string, ua string) (uuid
 	// Happy path: mint replacement and attempt to claim the old token slot.
 	newRaw, newHash, err := mint()
 	if err != nil {
-		return uuid.Nil, "", err
+		return uuid.Nil, "", errRefreshInternal
 	}
 	newID, err := rs.q.InsertRefreshToken(ctx, gen.InsertRefreshTokenParams{
 		UserID:    row.UserID,
@@ -147,7 +205,8 @@ func (rs *refreshStore) rotate(ctx context.Context, raw string, ua string) (uuid
 		UserAgent: pgText(ua),
 	})
 	if err != nil {
-		return uuid.Nil, "", err
+		slog.Error("refresh: db error inserting child token", "err", err)
+		return uuid.Nil, "", errRefreshInternal
 	}
 
 	// Serialization point: conditional UPDATE ensures exactly one concurrent
@@ -159,7 +218,8 @@ func (rs *refreshStore) rotate(ctx context.Context, raw string, ua string) (uuid
 		RotatedTo: newID,
 	})
 	if err != nil {
-		return uuid.Nil, "", err
+		slog.Error("refresh: db error marking rotated", "err", err)
+		return uuid.Nil, "", errRefreshInternal
 	}
 	if rowsAffected == 0 {
 		// Lost the race — revoke the orphaned child we just minted.

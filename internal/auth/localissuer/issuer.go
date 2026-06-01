@@ -195,6 +195,18 @@ func (iss *Issuer) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	uid, newRaw, err := iss.refresh.rotate(ctx, body.RefreshToken, r.UserAgent())
 	if err != nil {
+		// errRefreshInternal indicates a critical DB error during the rotation
+		// (e.g., reuse-detection family-revoke retries exhausted). Returning
+		// 503 instead of 401 makes the failure operationally visible — both
+		// for the client (transient, retryable) and for any parallel attacker
+		// presenting a sibling token from the same family who would otherwise
+		// continue to succeed against a silently-unrevoked family.
+		if errors.Is(err, errRefreshInternal) {
+			w.Header().Set("Retry-After", "2")
+			httputil.WriteError(w, http.StatusServiceUnavailable, "auth_unavailable",
+				"refresh service temporarily unavailable", reqID)
+			return
+		}
 		httputil.WriteError(w, http.StatusUnauthorized, "invalid_refresh_token", "refresh token is invalid or expired", reqID)
 		return
 	}
