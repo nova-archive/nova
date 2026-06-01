@@ -175,6 +175,45 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		sc.Me = handlers.NewMeHandler(gen.New(pool))
 	}
 
+	// /readyz checks. Each is a thin wrapper over the corresponding dep's
+	// liveness probe; the handler runs them in parallel under a 1 s deadline.
+	// Only checks for present deps are registered, so a no-pool / no-backend
+	// test coordinator still serves /readyz coherently (the empty-checks
+	// case returns 200 — matches /health's process-alive semantics).
+	var ready []handlers.ReadyCheck
+	if pool != nil {
+		pool := pool
+		ready = append(ready, handlers.ReadyCheck{
+			Name: "database",
+			Fn:   func(ctx context.Context) error { return pool.Ping(ctx) },
+		})
+	}
+	if backend != nil {
+		backend := backend
+		ready = append(ready, handlers.ReadyCheck{
+			Name: "ipfs",
+			Fn:   func(ctx context.Context) error { return backend.Health(ctx) },
+		})
+	}
+	// Verifier readiness — only verifiers that opt into ReadinessChecker
+	// (oidc.Verifier today) report a readiness signal. The localissuer
+	// verifier is always ready once constructed and skipped.
+	for i, v := range cfg.Auth.Verifiers {
+		if rc, ok := v.(interface{ Ready() bool }); ok {
+			rc := rc
+			ready = append(ready, handlers.ReadyCheck{
+				Name: fmt.Sprintf("verifier_%d", i),
+				Fn: func(ctx context.Context) error {
+					if rc.Ready() {
+						return nil
+					}
+					return errors.New("verifier discovery pending")
+				},
+			})
+		}
+	}
+	sc.Ready = handlers.NewReadyHandler(time.Second, ready...)
+
 	c.mux = api.NewServer(sc)
 	return c, nil
 }

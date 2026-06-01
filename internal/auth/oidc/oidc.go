@@ -53,6 +53,17 @@ type Verifier struct {
 	ready bool
 }
 
+// Ready reports whether OIDC discovery has succeeded and Verify can run
+// against the IdP. Used by the /readyz handler via a type assertion so a
+// coordinator with a pending external-IdP discovery is observably 503 on
+// the readiness probe (separate from /health, which only checks
+// process liveness). M6.2 D1.
+func (v *Verifier) Ready() bool {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.ready
+}
+
 // New constructs an external OIDC Verifier from cfg.
 //
 // It attempts OIDC discovery exactly once. On success the verifier is

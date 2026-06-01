@@ -90,7 +90,8 @@ func (f *fakeBackend) BlockGet(_ context.Context, c cid.Cid) ([]byte, error) {
 	defer f.mu.Unlock()
 	return f.store[c.String()], nil
 }
-func (f *fakeBackend) Close(_ context.Context) error { return nil }
+func (f *fakeBackend) Close(_ context.Context) error  { return nil }
+func (f *fakeBackend) Health(_ context.Context) error { return nil }
 
 func bootstrapKS(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *envelope.Keystore {
 	t.Helper()

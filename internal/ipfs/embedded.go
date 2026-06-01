@@ -3,6 +3,7 @@ package ipfs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -396,4 +397,19 @@ func (b *EmbeddedBackend) Close(_ context.Context) error {
 	b.node = nil
 	b.api = nil
 	return err
+}
+
+// Health reports backend liveness for /readyz. For the embedded backend
+// this means: the Kubo node has been constructed, has not been closed,
+// and its HTTP API surface is wired. No I/O — the call is intentionally
+// cheap so /readyz can be polled at ~1 Hz without amortized cost. A
+// remote backend (Phase 2) would ping the loopback API instead.
+func (b *EmbeddedBackend) Health(ctx context.Context) error {
+	if b.node == nil || b.api == nil {
+		return errors.New("ipfs embedded: backend closed")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
 }

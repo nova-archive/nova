@@ -94,7 +94,8 @@ func (f *fakeBackend) BlockstoreHas(ctx context.Context, c cid.Cid) (bool, error
 func (f *fakeBackend) BlockGet(ctx context.Context, c cid.Cid) ([]byte, error) {
 	return f.store[c.String()], nil
 }
-func (f *fakeBackend) Close(ctx context.Context) error { return nil }
+func (f *fakeBackend) Close(ctx context.Context) error  { return nil }
+func (f *fakeBackend) Health(ctx context.Context) error { return nil }
 
 func bootstrapKS(t *testing.T, ctx context.Context, pool *pgxpool.Pool) *envelope.Keystore {
 	t.Helper()

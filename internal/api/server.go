@@ -46,6 +46,7 @@ type ServerConfig struct {
 	PublicUploads  bool
 	LoginLimiter   *ratelimit.Limiter
 	TrustedProxies []netip.Prefix // gates XFF trust for rate-limit + source-IP recording
+	Ready          *handlers.ReadyHandler // nil ⇒ /readyz returns 200 with no checks
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -65,6 +66,9 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 	}
 
 	r.Get("/health", handlers.Health(cfg.Version))
+	if cfg.Ready != nil {
+		r.Get("/readyz", cfg.Ready.Serve)
+	}
 
 	if cfg.Blob != nil {
 		r.Get("/blob/{cid}", cfg.Blob.Serve)

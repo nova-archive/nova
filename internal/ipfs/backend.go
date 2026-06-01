@@ -90,4 +90,10 @@ type Backend interface {
 	// Close releases the backend's resources. After Close, all methods
 	// return errors.
 	Close(ctx context.Context) error
+
+	// Health is a lightweight liveness probe. Returns nil when the backend
+	// is operational, an error when it is not. Intended for /readyz; must
+	// be cheap (no I/O beyond an in-process state check or a tiny local
+	// metadata read) so /readyz can be polled frequently.
+	Health(ctx context.Context) error
 }
