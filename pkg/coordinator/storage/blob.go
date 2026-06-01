@@ -185,7 +185,7 @@ func (s *Service) OpenBytes(ctx context.Context, v *BlobView) (io.ReadCloser, er
 	if v.masterKeyVersionID == nil {
 		return nil, fmt.Errorf("storage: encrypted view missing key material")
 	}
-	perBlobKey, err := s.ks.Unwrap(v.wrappedKey, *v.masterKeyVersionID)
+	perBlobKey, err := s.ks.Unwrap(ctx, v.wrappedKey, *v.masterKeyVersionID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: unwrap per-blob key: %w", err)
 	}

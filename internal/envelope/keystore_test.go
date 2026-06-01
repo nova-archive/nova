@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,7 +72,7 @@ func TestIntegrationKeystoreWrapUnwrapRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, envelope.WrappedKeySize, len(wrapped))
 
-	got, err := ks.Unwrap(wrapped, versionID)
+	got, err := ks.Unwrap(ctx, wrapped, versionID)
 	require.NoError(t, err)
 	require.Equal(t, pbk, got)
 }
@@ -110,9 +112,53 @@ func TestIntegrationKeystoreMultiVersionUnwrap(t *testing.T) {
 
 	// We can still unwrap v1-wrapped keys via ks2 because both master
 	// keys are loaded in process memory.
-	got, err := ks2.Unwrap(wrappedV1, v1id)
+	got, err := ks2.Unwrap(ctx, wrappedV1, v1id)
 	require.NoError(t, err)
 	require.Equal(t, pbk, got)
+}
+
+// TestIntegrationKeystoreUnwrapCancelledCtx verifies the M6.2 B6 contract:
+// when the in-memory version cache misses and the DB reload path is
+// triggered with an already-cancelled context, Unwrap returns promptly
+// with a context error rather than hanging on Postgres. This is the
+// shutdown-safety guarantee — late requests during graceful drain no
+// longer wedge the coordinator.
+func TestIntegrationKeystoreUnwrapCancelledCtx(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	pool := dbtest.New(t, ctx)
+	t.Setenv("NOVA_MASTER_KEY_V1", mustHexKey())
+	t.Setenv("NOVA_MASTER_KEY_ACTIVE", "v1")
+
+	ks, err := envelope.NewKeystoreFromEnv(pool)
+	require.NoError(t, err)
+	_, err = ks.Bootstrap(ctx)
+	require.NoError(t, err)
+
+	pbk := make([]byte, envelope.KeySize)
+	_, _ = rand.Read(pbk)
+	wrapped, _, err := ks.Wrap(pbk)
+	require.NoError(t, err)
+
+	// Construct a versionID that is NOT in the in-memory cache. Any random
+	// uuid suffices — Unwrap will fall into the cache-miss reload path.
+	missingID := uuid.New()
+
+	cancelledCtx, cancelEarly := context.WithCancel(ctx)
+	cancelEarly()
+
+	_, err = ks.Unwrap(cancelledCtx, wrapped, missingID)
+	require.Error(t, err, "Unwrap with cancelled ctx + cache miss must error")
+	// pgx may wrap the context error; accept either errors.Is or the
+	// canonical substring (covers both wrapped and string-rendered forms).
+	require.True(t,
+		errors.Is(err, context.Canceled) ||
+			strings.Contains(err.Error(), "context canceled"),
+		"expected context-canceled error; got %v", err)
 }
 
 func TestKeystoreRefusesShortHexFromEnv(t *testing.T) {

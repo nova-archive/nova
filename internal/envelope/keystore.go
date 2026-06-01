@@ -213,11 +213,16 @@ func (k *Keystore) Wrap(perBlobKey []byte) ([]byte, uuid.UUID, error) {
 // Returns ErrEnvelopeAuthFailed if the master key has been rotated
 // away and is no longer loaded (operators must keep prior versions in
 // env until rotation completes for every wrapped key).
-func (k *Keystore) Unwrap(wrapped []byte, versionID uuid.UUID) ([]byte, error) {
+//
+// ctx is propagated to the cache-miss DB reload path (loadVersions) so a
+// shutting-down coordinator can drop late requests promptly instead of
+// hanging on a Postgres query that outlives the request lifetime. M6.2
+// B6.
+func (k *Keystore) Unwrap(ctx context.Context, wrapped []byte, versionID uuid.UUID) ([]byte, error) {
 	label, ok := k.versionByID[versionID]
 	if !ok {
 		// Not in cache; re-load and try again.
-		if err := k.loadVersions(context.Background()); err != nil {
+		if err := k.loadVersions(ctx); err != nil {
 			return nil, err
 		}
 		label, ok = k.versionByID[versionID]
