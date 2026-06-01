@@ -86,6 +86,10 @@ type Coordinator struct {
 	authQueries *gen.Queries // refresh-token GC (nil when no pool)
 	hook        *productHook
 	products    map[string]product.Product
+
+	// Rate limiters are held for periodic LRU sweep in gcLoop.
+	limiter      *ratelimit.Limiter
+	loginLimiter *ratelimit.Limiter
 }
 
 // New constructs a coordinator from injected dependencies. pool/backend/ks may
@@ -108,6 +112,7 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		gcInterval: cfg.UploadGCInterval,
 		hook:       hook,
 		products:   hook.products,
+		limiter:    limiter,
 	}
 
 	sc := api.ServerConfig{Version: cfg.Version, Limiter: limiter}
@@ -141,9 +146,10 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 	sc.AuthConfig = cfg.Auth.Descriptor
 	sc.PublicUploads = cfg.Auth.PublicUploads
 	if cfg.Auth.LoginRate.RatePerSec > 0 {
-		sc.LoginLimiter = ratelimit.NewLimiter(ratelimit.Config{
+		c.loginLimiter = ratelimit.NewLimiter(ratelimit.Config{
 			RatePerSec: cfg.Auth.LoginRate.RatePerSec, Burst: cfg.Auth.LoginRate.Burst,
 		}, nil)
+		sc.LoginLimiter = c.loginLimiter
 	}
 	if pool != nil {
 		sc.Me = handlers.NewMeHandler(gen.New(pool))
@@ -282,8 +288,12 @@ func (c *Coordinator) Shutdown(ctx context.Context) error {
 	return c.srv.Shutdown(ctx)
 }
 
-// gcLoop periodically reclaims abandoned upload sessions and expired refresh
-// tokens until ctx is done.
+// gcLoop periodically reclaims abandoned upload sessions, expired refresh
+// tokens, and stale rate-limiter buckets until ctx is done. The sweep
+// window for rate-limiter buckets matches the gcInterval (so on the
+// default 1 h interval, a bucket idle for 1+ h is evicted on the next
+// tick); this is best-effort housekeeping — the Config.MaxKeys cap is
+// the hard safety net.
 func (c *Coordinator) gcLoop(ctx context.Context) {
 	interval := c.gcInterval
 	if interval <= 0 {
@@ -301,6 +311,12 @@ func (c *Coordinator) gcLoop(ctx context.Context) {
 			}
 			if c.authQueries != nil {
 				_, _ = c.authQueries.DeleteExpiredRefreshTokens(ctx)
+			}
+			if c.limiter != nil {
+				c.limiter.Sweep(interval)
+			}
+			if c.loginLimiter != nil {
+				c.loginLimiter.Sweep(interval)
 			}
 		}
 	}
