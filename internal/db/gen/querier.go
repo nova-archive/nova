@@ -15,7 +15,17 @@ type Querier interface {
 	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
 	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	// Splits the GC across the two partial indexes defined in migration 0006/0007
+	// (refresh_tokens_gc_idx, refresh_tokens_revoked_gc_idx). The AND revoked_at
+	// IS NULL filter matches the partial-index predicate, so the planner can use
+	// the index scan instead of a sequential scan. Revoked-but-old rows are
+	// cleaned up by DeleteRevokedRefreshTokensOlderThan below.
 	DeleteExpiredRefreshTokens(ctx context.Context) (int64, error)
+	// Drops refresh_tokens rows that were explicitly revoked more than $1 ago
+	// (typically 30 days, giving operators a window to forensically inspect
+	// revoke events). Uses the refresh_tokens_revoked_gc_idx partial index
+	// added in migration 0007.
+	DeleteRevokedRefreshTokensOlderThan(ctx context.Context, revokedAt pgtype.Timestamptz) (int64, error)
 	DeleteUploadSession(ctx context.Context, id pgtype.UUID) error
 	FinalizeUploadSession(ctx context.Context, arg FinalizeUploadSessionParams) error
 	GetBlobCore(ctx context.Context, cid string) (GetBlobCoreRow, error)

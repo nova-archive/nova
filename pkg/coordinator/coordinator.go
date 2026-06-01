@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/api/handlers"
@@ -31,6 +32,13 @@ import (
 	"github.com/nova-archive/nova/pkg/coordinator/product"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 )
+
+// revokedRefreshGrace is how long an explicitly-revoked refresh_token row is
+// retained before the GC drops it. 30 days preserves the trail for incident
+// forensics (the revoked_at + user_agent fields tell you when an attacker's
+// stolen sibling token tripped reuse detection) while keeping the table
+// from growing without bound.
+const revokedRefreshGrace = 30 * 24 * time.Hour
 
 // RateLimitConfig tunes the in-process per-IP limiter.
 type RateLimitConfig struct {
@@ -323,6 +331,8 @@ func (c *Coordinator) gcLoop(ctx context.Context) {
 			}
 			if c.authQueries != nil {
 				_, _ = c.authQueries.DeleteExpiredRefreshTokens(ctx)
+				cutoff := pgtype.Timestamptz{Time: time.Now().Add(-revokedRefreshGrace), Valid: true}
+				_, _ = c.authQueries.DeleteRevokedRefreshTokensOlderThan(ctx, cutoff)
 			}
 			if c.limiter != nil {
 				c.limiter.Sweep(interval)

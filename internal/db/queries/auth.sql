@@ -35,4 +35,18 @@ UPDATE refresh_tokens SET revoked_at = now()
 WHERE user_id = $1 AND revoked_at IS NULL;
 
 -- name: DeleteExpiredRefreshTokens :execrows
-DELETE FROM refresh_tokens WHERE expires_at < now();
+-- Splits the GC across the two partial indexes defined in migration 0006/0007
+-- (refresh_tokens_gc_idx, refresh_tokens_revoked_gc_idx). The AND revoked_at
+-- IS NULL filter matches the partial-index predicate, so the planner can use
+-- the index scan instead of a sequential scan. Revoked-but-old rows are
+-- cleaned up by DeleteRevokedRefreshTokensOlderThan below.
+DELETE FROM refresh_tokens
+WHERE expires_at < now() AND revoked_at IS NULL;
+
+-- name: DeleteRevokedRefreshTokensOlderThan :execrows
+-- Drops refresh_tokens rows that were explicitly revoked more than $1 ago
+-- (typically 30 days, giving operators a window to forensically inspect
+-- revoke events). Uses the refresh_tokens_revoked_gc_idx partial index
+-- added in migration 0007.
+DELETE FROM refresh_tokens
+WHERE revoked_at IS NOT NULL AND revoked_at < $1;
