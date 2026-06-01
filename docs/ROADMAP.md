@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 0 v3 — Specifications (current)
+## Phase 0 v3 — Specifications (complete)
 
 Lock the protocol and contracts as documents before any production
 code is written. The original Phase 0 was completed, then revised in
@@ -78,6 +78,67 @@ v3.1 amendment:
   (streaming-AEAD, see Phase 2) drops in without disturbing v1
   paths. Blob metadata exposes `envelope_version` so consumers can
   branch.
+
+### Phase 1 — Progress (current)
+
+Each milestone is a tagged annotated commit; the canonical
+walking-skeleton breakdown lives in
+`docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`
+§ "Walking-skeleton milestone breakdown".
+
+- [x] **M1 foundation** (`m1-foundation`) — repo bones, schema +
+  migrations (DATA_MODEL.sql v2 → `internal/db/migrations/0001..0005`),
+  embedded Kubo skeleton, config loader, Makefile + CI.
+- [x] **M2 envelope + IPFS** (`m2-envelope-ipfs`) — XChaCha20-Poly1305
+  v1 codec, deterministic IPFS import per `IPFS_IMPORT_RULES.md`,
+  master-key wrap/unwrap, job queue.
+- [x] **M3 storage + read API** (`m3-storage-read-api`) — `Resolve`
+  + `OpenBytes`, `/blob/{cid}` GET/HEAD + `.json`, in-process
+  rate-limit middleware, `/health`.
+- [x] **M4 upload pipeline** (`m4-upload-pipeline`) — tus + multipart,
+  the `AnalyzeUpload`/`OnCommitted` product seam, encryption-at-rest
+  path, `data_encryption_keys` lifecycle, T1.20 public-uploads floor.
+- [x] **M5 image transforms** (`m5-image-transforms`) — `nova-image`
+  `Product` impl, `govips` wrapper with megapixel + concurrency
+  bounds, `/i/*` single-flight serve, derivative pre-warm, PDQ
+  pass-through scanner.
+- [x] **M6 auth** (`m6-auth`) — argon2id passwords + timing equalizer,
+  EdDSA local issuer + JWKS, rotating refresh tokens with reuse
+  detection, external-OIDC verify-only adapter with resilient
+  discovery, bearer middleware, per-IP login limiter, T1.19 +
+  signing-key floors, `novactl auth login|whoami|logout`.
+- [x] **M6.1 keystore hardening** (`m6.1-keystore-hardening`) —
+  env → `_FILE` → `/run/secrets/master-key-<label>` resolver chain
+  with ACTIVE/FILE pseudo-label filtering; `THREAT_MODEL.md`
+  boundary ③ amended.
+- [x] **M6.2 audit remediation** (`m6.2-audit-remediation`) —
+  spec-drift reconciliation across persistent docs; verified
+  security hardening (rate-limiter LRU + sweep, trusted-proxy XFF
+  enforcement, login-failure log unification, refresh-family
+  revocation correctness, master-key source logging, ctx-aware
+  Unwrap, multipart `LimitReader`); refresh-token GC partial-index
+  alignment; `/readyz` with DB + Kubo + OIDC checks; structured
+  coordinator startup log. See `docs/REVIEW_2026_05_31.md`.
+
+### Phase 1 — Deferred / Future-milestone slots
+
+These deliverables remain from the Phase 1 v3.1 commitment and are
+assigned to the slots already specified in
+`docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`
+§ "Walking-skeleton milestone breakdown". Implementation lands in
+the named milestone; no work is in scope for M6.2 beyond naming
+the slots here.
+
+| Slot | Deliverable |
+|---|---|
+| **M7** | Signed-URL HMAC verifier (`internal/auth/signedurl`); `signing_keys` rotation via `/api/v1/admin/keys/rotate-signing` with grace window; `signed_url_revocations` lookup; `(kind, value)` revocation API. |
+| **M8** | Integrity-audit scheduler + seven audit kinds (per `INTEGRITY_AUDIT.md`); `/api/v1/admin/audits/integrity` paginated listing; failure surfacing. |
+| **M9** | DMCA quarantine + scheduled tombstone job + counter-notice; severe-content manual quarantine with `--legal-hold`; `novactl moderation quarantine`; operator-curated blocklist; `/api/v1/admin/moderation/*`. |
+| **M10** | Master-key rotation (`novactl keys rotate-master`, `/api/v1/admin/keys/rotate-master`); parallel re-wrap worker; reads work against either MK version during rotation. |
+| **M11** | Admin SPA: hermetic React + Vite build; login (PKCE-style); blob list/view/soft-delete; moderation queue + DMCA cases; integrity-audit failures view; key-rotation UI; jobs view. (`web/admin/`) |
+| **M12** | Drag-and-drop widget: Uppy + tus.io; embeds in any HTML page; bearer-token auth; hermetic build, no external CDN. (`web/widget/`) |
+| **M13** | Setup wizard (web UI + headless `novactl setup`); `entrypoint.sh` `.bootstrap-complete` sentinel; templated nginx config with two-vhost split per `THREAT_MODEL.md` boundary ①; TLS modes + certbot integration (prod profile). (`cmd/setup-wizard/`, `web/setup/`, `internal/setup/`, `nginx/`) |
+| **M14** | Polish + end-to-end smoke test in CI; `docs/quickstart.md` operator guide; Phase 1 release-candidate tag. |
 
 ## Phase 2 — Federation + streaming-AEAD envelope
 

@@ -86,6 +86,7 @@ import (
     "io/fs"
 
     "github.com/go-chi/chi/v5"
+    "github.com/jackc/pgx/v5"
     "github.com/nova-archive/nova/pkg/coordinator/storage"
 )
 
@@ -124,12 +125,26 @@ type Product interface {
     // logged and metric-counted but do not roll back the upload.
     // Use this for async derivative generation, webhook emission,
     // and similar follow-on work.
-    OnCommitted(ctx context.Context, blob *storage.Blob, metadata Metadata) error
+    //
+    // `*storage.CommittedRef` is a small reference type carrying the
+    // CID and the IDs the core wrote — products do NOT receive the
+    // full plaintext or per-blob key here (those have already been
+    // dropped from memory by commit time).
+    OnCommitted(ctx context.Context, blob *storage.CommittedRef, metadata Metadata) error
 
-    // OnDelete is called as part of the tombstone flow, before the
-    // crypto-shred and unpin broadcast. The product cleans up
-    // side-table rows and cascades to its own derivatives.
-    OnDelete(ctx context.Context, blob *storage.Blob) error
+    // OnDelete is called from inside the storage core's transition
+    // transaction, before the crypto-shred and unpin broadcast. The
+    // product runs its side-table cleanup and derivative cascade in
+    // the same transaction (`tx`) so the parent state change and the
+    // product cascade succeed or roll back together.
+    //
+    // `parentCID` is the original blob whose state is changing;
+    // `newState` is one of `'quarantined'`, `'soft_deleted'`, or
+    // `'tombstoned'`. Products cascade their own derivative-blob
+    // state transitions to the matching new state (e.g., a
+    // `tombstoned` parent tombstones its children; a `quarantined`
+    // parent quarantines them).
+    OnDelete(ctx context.Context, tx pgx.Tx, parentCID string, newState string) error
 
     // RegisterRoutes mounts the product's read routes on the chi
     // router under its canonical prefix. The coordinator reserves

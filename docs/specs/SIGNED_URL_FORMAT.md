@@ -39,7 +39,7 @@ parameters appended in any order:
 | `sig` | base64url-encoded bytes | HMAC-SHA256 of the canonical string. No padding. |
 | `exp` | integer | Unix timestamp in seconds (UTC). After this moment the URL is rejected. |
 | `aud` | string | Origin of the embedding context (e.g., `https://example.com`). |
-| `kid` | string | Identifier of the signing key in the `keys` table. |
+| `kid` | string | Identifier of the signing key in the `signing_keys` table. |
 
 All four are required. Missing any parameter is a `403 invalid_signature` error.
 
@@ -72,8 +72,8 @@ canonical = path + "\n" + exp + "\n" + aud + "\n" + kid
 - The separator is a single ASCII LF byte (`0x0A`).
 
 The string is hashed with HMAC-SHA256 using the bytes stored in the
-`keys.wrapped_key` row referenced by `kid`, after unwrapping with
-the operator master key.
+`signing_keys.wrapped_key` row referenced by `kid`, after unwrapping
+with the operator master key.
 
 The resulting 32 raw bytes are base64url-encoded **without padding**
 to produce the `sig` parameter.
@@ -100,6 +100,14 @@ That is exactly four lines, terminated by `\n` between fields and
 **no trailing newline**.
 
 ## Verification
+
+> **Implementation status (M6.2).** The `signing_keys` and
+> `signed_url_revocations` tables are present from M1; the verifier
+> code path (`internal/auth/signedurl`) lands in M7 per
+> `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`
+> § "M7 — Signed URLs + signing-key rotation". The format below is
+> normative for that implementation; M6.2 reconciled stale `keys`
+> table references that survived the v2 schema split.
 
 The server performs verification in this order. **Any failure short-
 circuits with `403 invalid_signature` and an appropriate `code`

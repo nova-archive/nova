@@ -136,6 +136,41 @@ The coordinator loads every set version, picks `NOVA_MASTER_KEY_ACTIVE`
 as the default for new keys, and uses each row's
 `master_key_version_id` to choose the correct unwrapper.
 
+### Secret resolution chain (M6.1)
+
+Each `NOVA_MASTER_KEY_<LABEL>` is resolved through a three-step
+precedence chain so the master key never has to sit in the process
+environment — Docker / Kubernetes secret mounts and per-label
+`_FILE` redirects are both first-class:
+
+```
+NOVA_MASTER_KEY_<LABEL>          (inline hex; first precedence)
+  → NOVA_MASTER_KEY_<LABEL>_FILE (path to a file holding the hex)
+  → /run/secrets/master-key-<label>  (default secret-mount path)
+```
+
+The lowest-precedence leaf is lowercased because Linux paths are
+case-sensitive. The active label (`NOVA_MASTER_KEY_ACTIVE`) is
+always resolved through the full chain, so the common case — drop
+`/run/secrets/master-key-v1`, set `NOVA_MASTER_KEY_ACTIVE=v1` —
+works with no key material in the environment.
+
+Additional (rotation) labels are declared by an inline value or a
+`_FILE` env. A declared label that resolves from no source, or a
+set-but-unreadable `_FILE`, is **fatal at startup** — never
+silently skipped, because its wrapped blobs would become
+permanently unreadable. The active label is also fatal when it
+resolves from no source, with the same reasoning.
+
+The `ACTIVE` and `FILE` pseudo-labels (and the `_FILE` suffix on
+any other label) are stripped from the candidate-label set before
+resolution, so typo'd forms like `NOVA_MASTER_KEY_ACTIVE_FILE` or
+`NOVA_MASTER_KEY_FILE_FILE` cannot leak in as phantom labels.
+
+The same precedence chain is used for the OIDC signing key and any
+other secret loaded through `internal/config.ResolveSecret`. See
+`THREAT_MODEL.md` boundary ③ and `docs/REVIEW_2026_05_25.md` § C3.
+
 Constraints:
 
 - **MUST be at least 256 bits of entropy** per version. The

@@ -229,8 +229,10 @@ func (iss *Issuer) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// JWKS handles GET /.well-known/jwks.json (or similar).
-// It returns the public key set for token verification.
+// JWKS handles GET /api/v1/auth/jwks.json — the coordinator mounts the
+// JWKS under the auth-group prefix (not /.well-known/jwks.json) so nginx
+// can fence /api/v1/auth/* as a single allow-listed group. It returns
+// the public key set for token verification.
 func (iss *Issuer) JWKS(w http.ResponseWriter, r *http.Request) {
 	b, err := iss.cfg.Signer.JWKS()
 	if err != nil {

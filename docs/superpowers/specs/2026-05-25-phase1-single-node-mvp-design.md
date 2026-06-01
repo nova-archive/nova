@@ -706,8 +706,13 @@ auth:
   jwks_cache_ttl_seconds: 600
 ```
 
-When external OIDC is on, the local-issuer endpoints return 404 and
-the admin SPA / CLI redirect to the external IdP.
+When external OIDC is on, the local-issuer endpoints
+(`/api/v1/auth/{login,refresh,logout,jwks.json}`) return
+`404 external_oidc_active` and clients discover the IdP via the
+always-served `GET /api/v1/auth/config`, then drive PKCE themselves.
+This was clarified in the M6 design — see
+`docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md`
+§ "Mode selection" — superseding the earlier "SPA/CLI redirect" wording.
 
 ## Onboarding wizard
 
@@ -892,6 +897,28 @@ ready to render the surface.
 - `/api/v1/auth/login`, `/refresh`, `/logout`, `/jwks.json`.
 - `novactl auth login` CLI.
 - DEV → PROD: nova_dev build tag dropped; production refuses without bearer.
+- Design: `docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md`.
+  Implementation plan: `docs/superpowers/plans/2026-05-30-phase1-m6-auth.md`.
+
+**M6.1 — Keystore hardening (out-of-band)**
+- Master-key resolver chain (env → `_FILE` → `/run/secrets/master-key-<label>`)
+  for both `NOVA_MASTER_KEY_<LABEL>` and `NOVA_OIDC_SIGNING_KEY`.
+- ACTIVE/FILE pseudo-label filtering so typo'd forms cannot leak.
+- `THREAT_MODEL.md` boundary ③ amended.
+- Design: `docs/superpowers/specs/2026-05-31-m6.1-keystore-secret-mount-design.md`.
+
+**M6.2 — Audit remediation (out-of-band)**
+- Spec-drift reconciliation across persistent docs (README, ROADMAP,
+  THREAT_MODEL asset table, SIGNED_URL_FORMAT, ENCRYPTION_ENVELOPE,
+  PRODUCT_MODULE_INTERFACE, this design's L709 external-OIDC note).
+- Verified security hardening: rate-limiter LRU + sweep,
+  trusted-proxy XFF enforcement, login-failure log unification,
+  refresh-family revocation correctness, master-key source logging,
+  ctx-aware Unwrap, multipart `LimitReader`.
+- Performance: refresh-token GC partial-index alignment.
+- UX: `/readyz` with DB + Kubo + OIDC checks; structured coordinator
+  startup log.
+- Review: `docs/REVIEW_2026_05_31.md`.
 
 **M7 — Signed URLs + signing-key rotation (~week 7)**
 - `internal/auth/signedurl` + revocation lookup.

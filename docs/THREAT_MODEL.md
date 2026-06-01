@@ -23,7 +23,7 @@ The assets Nova protects, ranked by harm if exposed:
 |---|---|
 | **Operator master key** | Loss = permanent loss of every blob; compromise = total federation compromise |
 | **User-uploaded plaintext** | Sensitive personal content; the system's primary protected asset |
-| **Per-blob keys** (in `keys.wrapped_key`, when active) | Compromise lets an attacker decrypt corresponding blobs |
+| **Per-blob keys** (in `data_encryption_keys.wrapped_key`, when active) | Compromise lets an attacker decrypt corresponding blobs |
 | **User identity** (email, source IP, upload history) | PII; minimization required by GDPR |
 | **Federation membership** (the set of donor nodes and their IPs) | Knowing who hosts what enables targeted pressure |
 | **Audit log** | Tampering hides administrator misconduct |
