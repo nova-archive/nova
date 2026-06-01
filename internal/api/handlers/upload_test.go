@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -259,4 +260,38 @@ func TestMultipartSetsOwnerFromIdentity(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rr.Code)
 	require.NotNil(t, mp.gotPC.OwnerID)
 	require.Equal(t, uid, *mp.gotPC.OwnerID)
+}
+
+// TestMultipartRejectsOversizedDeclaredFile confirms the existing
+// declared-size check still fires for a well-formed body whose file
+// part exceeds maxUploadSize.
+func TestMultipartRejectsOversizedDeclaredFile(t *testing.T) {
+	t.Parallel()
+	mp := &fakeMP{}
+	h := NewUploadHandler(&fakeStore{}, mp, 10, false, nil) // 10-byte cap
+	body, ctype := multipartFileBody(t, "this is more than ten bytes", "text/plain")
+	rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	require.Contains(t, rec.Body.String(), "payload_too_large")
+	require.Equal(t, "", mp.gotPC.Product, "Put must not be called when the file exceeds the cap")
+}
+
+// TestMultipartRejectsBodyExceedingMaxBytesReader confirms the M6.2 B7
+// addition: when the raw request body exceeds maxUploadSize + slack,
+// http.MaxBytesReader trips ParseMultipartForm with *http.MaxBytesError
+// and the handler returns 413. This prevents an attacker who declares
+// a small file part but streams a huge body from exhausting disk via
+// the multipart spill-to-tmpfile path.
+func TestMultipartRejectsBodyExceedingMaxBytesReader(t *testing.T) {
+	t.Parallel()
+	// maxUploadSize 100 bytes + slack 1 MiB ⇒ effective body cap ≈ 1.0 MiB.
+	// Send ~3 MiB of file content to overshoot decisively.
+	mp := &fakeMP{}
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false, nil)
+	const sz = 3 * 1024 * 1024
+	body, ctype := multipartFileBody(t, strings.Repeat("a", sz), "text/plain")
+	rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	require.Contains(t, rec.Body.String(), "payload_too_large")
+	require.Equal(t, "", mp.gotPC.Product, "Put must not be called when the body exceeds MaxBytesReader")
 }

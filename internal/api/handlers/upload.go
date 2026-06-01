@@ -213,7 +213,20 @@ func (h *UploadHandler) MultipartImage(w http.ResponseWriter, r *http.Request) {
 // form's product field and enables the image edge behavior.
 func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceProduct string) {
 	rid := middleware.RequestIDFromContext(r.Context())
+
+	// M6.2 B7 — bound the request body BEFORE multipart parsing so an attacker
+	// who declares a small file part but streams a huge body cannot exhaust
+	// disk via the multipart spill-to-file path. The +1 MiB slack covers
+	// boundary headers and other form fields; ParseMultipartForm will surface
+	// the limit as *http.MaxBytesError, which we map to 413.
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadSize+(1<<20))
+
 	if err := r.ParseMultipartForm(8 << 20); err != nil { // 8 MiB in-memory; rest spills to disk
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			httputil.WriteError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "upload exceeds max size", rid)
+			return
+		}
 		httputil.WriteError(w, http.StatusBadRequest, "bad_request", "invalid multipart form", rid)
 		return
 	}
@@ -227,6 +240,12 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 		httputil.WriteError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "upload exceeds max size", rid)
 		return
 	}
+
+	// Defense-in-depth: bound the file reader handed to Put. Today Put uses
+	// io.ReadFull(declaredSize), so this is a no-op for the current call site;
+	// if a future caller reads-until-EOF, the LimitReader prevents a small-
+	// declared / large-streamed mismatch from blowing past the size cap.
+	boundedFile := io.LimitReader(file, h.maxUploadSize)
 
 	product := forceProduct
 	if product == "" {
@@ -259,7 +278,7 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 	}
 	pc.OwnerID = ownerFromContext(r.Context())
 
-	res, err := h.put.Put(r.Context(), file, header.Size, pc)
+	res, err := h.put.Put(r.Context(), boundedFile, header.Size, pc)
 	if err != nil {
 		h.writePutError(w, err, rid)
 		return
