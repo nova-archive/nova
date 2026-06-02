@@ -99,3 +99,55 @@ func (h *SigningAdminHandler) RotateSigning(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(rotateSigningResponse{KID: kid, GraceExpiresAt: graceExpires})
 }
+
+var validRevokeKinds = map[string]bool{"cid": true, "aud": true, "kid": true, "path_prefix": true}
+
+type revokeRequest struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+type revokeResponse struct {
+	Kind      string `json:"kind"`
+	Value     string `json:"value"`
+	RevokedAt string `json:"revoked_at"`
+}
+
+// RevokeSignedURL writes a (kind, value) revocation row (idempotent on the
+// unique pair) and invalidates the in-process revocation cache so it takes
+// effect immediately.
+func (h *SigningAdminHandler) RevokeSignedURL(w http.ResponseWriter, r *http.Request) {
+	rid := middleware.RequestIDFromContext(r.Context())
+	ctx := r.Context()
+
+	var req revokeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body", rid)
+		return
+	}
+	if !validRevokeKinds[req.Kind] {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_kind", "kind must be one of cid, aud, kid, path_prefix", rid)
+		return
+	}
+	if req.Value == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "value is required", rid)
+		return
+	}
+
+	if err := h.q.InsertRevocation(ctx, gen.InsertRevocationParams{Kind: req.Kind, Value: req.Value}); err != nil {
+		slog.Error("revoke: insert", "err", err, "request_id", rid)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", "revoke failed", rid)
+		return
+	}
+	if err := h.revs.Invalidate(ctx); err != nil {
+		// Non-fatal: the periodic refresh will pick the row up.
+		slog.Warn("revoke: cache invalidate", "err", err, "request_id", rid)
+	}
+	slog.Info("signed-url revoked", "kind", req.Kind, "value", req.Value, "request_id", rid)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(revokeResponse{
+		Kind: req.Kind, Value: req.Value, RevokedAt: time.Now().UTC().Format(time.RFC3339),
+	})
+}

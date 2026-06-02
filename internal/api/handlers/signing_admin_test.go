@@ -83,3 +83,39 @@ func TestIntegrationRotateSigning(t *testing.T) {
 	require.Equal(t, gen.KeyStateRetired, prior.State, "prior active key retired")
 	require.True(t, prior.RetireAfter.Valid && prior.RetireAfter.Time.After(time.Now()), "retire_after within grace")
 }
+
+func revoke(h *handlers.SigningAdminHandler, body string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.RevokeSignedURL(rec, httptest.NewRequest(http.MethodPost, "/api/v1/admin/signed-urls/revoke", strings.NewReader(body)))
+	return rec
+}
+
+func TestIntegrationRevokeSignedURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	h, q := newSigningAdminFixture(t, ctx)
+
+	rec := revoke(h, `{"kind":"cid","value":"bafyX"}`)
+	require.Equal(t, http.StatusCreated, rec.Code)
+	rows, err := q.ListRevocations(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, "cid", rows[0].Kind)
+	require.Equal(t, "bafyX", rows[0].Value)
+
+	// Idempotent on the unique (kind, value) pair.
+	require.Equal(t, http.StatusCreated, revoke(h, `{"kind":"cid","value":"bafyX"}`).Code)
+	rows, err = q.ListRevocations(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "duplicate revocation is a no-op")
+
+	// Invalid kind → 400 invalid_kind.
+	bad := revoke(h, `{"kind":"bogus","value":"x"}`)
+	require.Equal(t, http.StatusBadRequest, bad.Code)
+	require.Contains(t, bad.Body.String(), "invalid_kind")
+
+	// Missing value → 400.
+	require.Equal(t, http.StatusBadRequest, revoke(h, `{"kind":"aud","value":""}`).Code)
+}
