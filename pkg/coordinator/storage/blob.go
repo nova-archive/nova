@@ -114,7 +114,7 @@ func (s *Service) Resolve(ctx context.Context, cidStr string) (*BlobView, error)
 	// per-request via WithReadAuthz after verifying a path-bound signature;
 	// without a grant (and without a bearer path, which does not reach /blob),
 	// the read is refused. M7.
-	if visibility == VisibilityPrivate && !readAuthorized(ctx) {
+	if visibility == VisibilityPrivate && !ReadAuthorized(ctx) {
 		return nil, ErrBlobAuthRequired
 	}
 

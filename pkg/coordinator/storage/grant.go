@@ -15,8 +15,9 @@ func WithReadAuthz(ctx context.Context) context.Context {
 	return context.WithValue(ctx, readAuthzKey{}, true)
 }
 
-// readAuthorized reports whether ctx carries a signed-URL read grant.
-func readAuthorized(ctx context.Context) bool {
+// ReadAuthorized reports whether ctx carries a signed-URL read grant. Resolve
+// consults it to decide whether to serve a private blob.
+func ReadAuthorized(ctx context.Context) bool {
 	v, _ := ctx.Value(readAuthzKey{}).(bool)
 	return v
 }
