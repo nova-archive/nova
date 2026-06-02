@@ -49,6 +49,7 @@ type ServerConfig struct {
 	Ready          *handlers.ReadyHandler          // nil ⇒ /readyz returns 200 with no checks
 	SignedURLGuard func(http.Handler) http.Handler // nil ⇒ no signed-URL verification on reads
 	SigningAdmin   *handlers.SigningAdminHandler   // nil ⇒ signed-URL admin endpoints 404
+	AuditAdmin     *handlers.AuditAdminHandler     // nil ⇒ integrity-audit listing 404
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -134,6 +135,10 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 					r.With(bearer.RequireRole("operator")).Post("/keys/rotate-signing", cfg.SigningAdmin.RotateSigning)
 					r.Post("/signed-urls/revoke", cfg.SigningAdmin.RevokeSignedURL)
 					r.Post("/signed-urls/sign", cfg.SigningAdmin.SignSignedURL)
+				}
+				// Integrity-audit listing (M8); read-only, operator+moderator.
+				if cfg.AuditAdmin != nil {
+					r.Get("/audits/integrity", cfg.AuditAdmin.List)
 				}
 				r.Handle("/*", http.HandlerFunc(adminNotFound))
 			})
