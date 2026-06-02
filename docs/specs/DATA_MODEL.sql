@@ -125,11 +125,14 @@ CREATE TYPE dmca_status AS ENUM (
 
 -- Key state values (v2). 'rotating' is a transient state during master-key
 -- rotation; rows in this state are being re-wrapped under the new master key.
+-- For signing keys (signed URLs): 'retired' = rotated out but STILL VERIFIES
+-- until retire_after (the grace window); 'shredded' = past grace, wrapped_key
+-- zeroed. See docs/specs/SIGNED_URL_FORMAT.md "Key rotation".
 CREATE TYPE key_state AS ENUM (
     'active',
     'rotating',
-    'shredded',
-    'retired'      -- signing keys past their grace window
+    'shredded',    -- past grace / crypto-shredded; wrapped_key zeroed
+    'retired'      -- rotated out; signing keys still verify until retire_after
 );
 
 CREATE TYPE audit_kind AS ENUM (

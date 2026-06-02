@@ -1347,7 +1347,65 @@ paths:
                   description: The CID, origin, kid, or path prefix.
       responses:
         '201':
-          description: Revocation recorded.
+          description: Revocation recorded (idempotent on the (kind, value) pair).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kind, value, revoked_at]
+                properties:
+                  kind: { type: string }
+                  value: { type: string }
+                  revoked_at: { type: string, format: date-time }
+        '400':
+          description: Unknown kind (must be cid, aud, kid, or path_prefix) or empty value.
+
+  /api/v1/admin/signed-urls/sign:
+    post:
+      tags: [admin]
+      operationId: signSignedUrl
+      summary: Mint a signed URL for a content path.
+      description: |
+        Server-side minting: the unwrapped HMAC signing key never leaves the
+        coordinator, so signed URLs cannot be minted client-side. The URL is
+        signed with the current active signing key, bound to `aud`, and valid
+        for `ttl_seconds` (clamped to the configured maximum). The matching
+        read endpoints (`/blob/{cid}`, `/i/{cid}/...`) verify it per
+        `docs/specs/SIGNED_URL_FORMAT.md`; a failed verification returns
+        `403` with a `signature_*` code.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, ttl_seconds, aud]
+              properties:
+                path:
+                  type: string
+                  description: Content path to sign (`/blob/{cid}` or `/i/{cid}/...`).
+                ttl_seconds:
+                  type: integer
+                  minimum: 1
+                  description: URL lifetime in seconds; clamped to the configured maximum.
+                aud:
+                  type: string
+                  description: Embedding origin (`scheme://host[:port]`) the URL is bound to.
+      responses:
+        '201':
+          description: Signed URL minted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, kid, exp]
+                properties:
+                  url: { type: string, description: The signed URL (path plus query). }
+                  kid: { type: string }
+                  exp: { type: integer, description: Expiry as a Unix timestamp (seconds). }
+        '400':
+          description: Non-content path, malformed aud, or non-positive ttl.
 
   # =========================================================================
   # Public legal endpoints

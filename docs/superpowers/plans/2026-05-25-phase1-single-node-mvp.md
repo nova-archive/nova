@@ -22,7 +22,7 @@ This master plan summarizes all 14 milestones with their goals and exit criteria
 | M4 | Upload pipeline (write path) | in progress | [m4 plan](2026-05-29-phase1-m4-upload-pipeline.md) |
 | M5 | Image transforms (nova-image) | in progress | [m5 plan](2026-05-29-phase1-m5-image-transforms.md) |
 | M6 | Local JWT issuer + bearer auth | **completed** | [m6 plan](2026-05-30-phase1-m6-auth.md) |
-| M7 | Signed URLs + signing-key rotation | pending | tbd |
+| M7 | Signed URLs + signing-key rotation | **completed** | [m7 plan](2026-06-01-phase1-m7-signed-urls.md) |
 | M8 | Integrity audits | pending | tbd |
 | M9 | Moderation (DMCA + severe-content manual path) | pending | tbd |
 | M10 | Master-key rotation | pending | tbd |
@@ -84,7 +84,7 @@ After M14: Phase 1 release-candidate tag, then Phase 2 planning.
 ### M7 — Signed URLs + signing-key rotation
 **Goal:** Operator mints a signed URL via API; expired or revoked URLs fail; signing-key rotation works with grace window.
 
-**Deliverables:** `internal/auth/signedurl` canonical-string + HMAC verifier + revocation lookup; `POST /api/v1/admin/keys/rotate-signing` (with grace window); `POST /api/v1/admin/signed-urls/revoke` (structured `(kind, value)` revocation); admin novactl subcommand; signing-key shred after grace.
+**Deliverables:** `internal/auth/signedurl` canonical-string + HMAC verifier (fail-through Guard on `/blob` + `/i/*`, request-scoped read grant) + cached revocation lookup; `POST /api/v1/admin/keys/rotate-signing` (with grace window); `POST /api/v1/admin/signed-urls/revoke` (structured `(kind, value)` revocation); `POST /api/v1/admin/signed-urls/sign` (server-side minting) + `novactl signed-url sign`; first-key auto-bootstrap; signing-key shred after grace + `signing_keys` `/readyz` probe.
 
 **Exit:** integration test: mint, verify (origin check), expire, revoke per kind (cid, aud, kid, path_prefix); rotate; verify both old and new signatures work during grace; verify old refuses after grace.
 

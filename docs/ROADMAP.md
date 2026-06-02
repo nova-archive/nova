@@ -131,7 +131,7 @@ the slots here.
 
 | Slot | Deliverable |
 |---|---|
-| **M7** | Signed-URL HMAC verifier (`internal/auth/signedurl`); `signing_keys` rotation via `/api/v1/admin/keys/rotate-signing` with grace window; `signed_url_revocations` lookup; `(kind, value)` revocation API. |
+| **M7** ✅ | Signed-URL HMAC verifier (`internal/auth/signedurl`) gating `/blob` + `/i/*`; `signing_keys` rotation via `/api/v1/admin/keys/rotate-signing` with grace window; structured `(kind, value)` revocation via `/api/v1/admin/signed-urls/revoke`; server-side minting via `/api/v1/admin/signed-urls/sign` + `novactl signed-url sign`. Implemented (tag `m7-signed-urls`). |
 | **M8** | Integrity-audit scheduler + seven audit kinds (per `INTEGRITY_AUDIT.md`); `/api/v1/admin/audits/integrity` paginated listing; failure surfacing. |
 | **M9** | DMCA quarantine + scheduled tombstone job + counter-notice; severe-content manual quarantine with `--legal-hold`; `novactl moderation quarantine`; operator-curated blocklist; `/api/v1/admin/moderation/*`. |
 | **M10** | Master-key rotation (`novactl keys rotate-master`, `/api/v1/admin/keys/rotate-master`); parallel re-wrap worker; reads work against either MK version during rotation. |
