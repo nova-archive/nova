@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -118,4 +119,43 @@ func TestIntegrationRevokeSignedURL(t *testing.T) {
 
 	// Missing value → 400.
 	require.Equal(t, http.StatusBadRequest, revoke(h, `{"kind":"aud","value":""}`).Code)
+}
+
+func sign(h *handlers.SigningAdminHandler, body string) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	h.SignSignedURL(rec, httptest.NewRequest(http.MethodPost, "/api/v1/admin/signed-urls/sign", strings.NewReader(body)))
+	return rec
+}
+
+func TestIntegrationSignSignedURL(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	h, q := newSigningAdminFixture(t, ctx)
+	active, err := q.GetActiveSigningKey(ctx)
+	require.NoError(t, err)
+
+	rec := sign(h, `{"path":"/blob/bafyX","ttl_seconds":300,"aud":"https://embed.example"}`)
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var resp struct {
+		URL string `json:"url"`
+		KID string `json:"kid"`
+		Exp int64  `json:"exp"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, active.Kid, resp.KID, "minted under the active key")
+	require.Greater(t, resp.Exp, time.Now().Unix())
+
+	u, err := url.Parse(resp.URL)
+	require.NoError(t, err)
+	require.Equal(t, "/blob/bafyX", u.Path)
+	qq := u.Query()
+	require.NotEmpty(t, qq.Get("sig"))
+	require.Equal(t, "https://embed.example", qq.Get("aud"))
+	require.Equal(t, resp.KID, qq.Get("kid"))
+
+	require.Equal(t, http.StatusBadRequest, sign(h, `{"path":"/api/v1/x","ttl_seconds":60,"aud":"https://e.example"}`).Code, "non-content path")
+	require.Equal(t, http.StatusBadRequest, sign(h, `{"path":"/blob/bafyX","ttl_seconds":60,"aud":"not-an-origin/path"}`).Code, "bad aud")
+	require.Equal(t, http.StatusBadRequest, sign(h, `{"path":"/blob/bafyX","ttl_seconds":0,"aud":"https://e.example"}`).Code, "non-positive ttl")
 }

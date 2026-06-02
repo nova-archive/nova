@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -150,4 +152,68 @@ func (h *SigningAdminHandler) RevokeSignedURL(w http.ResponseWriter, r *http.Req
 	_ = json.NewEncoder(w).Encode(revokeResponse{
 		Kind: req.Kind, Value: req.Value, RevokedAt: time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+type signRequest struct {
+	Path       string `json:"path"`
+	TTLSeconds int    `json:"ttl_seconds"`
+	Aud        string `json:"aud"`
+}
+
+type signResponse struct {
+	URL string `json:"url"`
+	KID string `json:"kid"`
+	Exp int64  `json:"exp"`
+}
+
+// SignSignedURL mints a signed URL for a content path under the active signing
+// key, valid for ttl_seconds (≥1, capped at the configured max), bound to aud.
+// Minting needs the unwrapped HMAC secret, so it is necessarily server-side.
+func (h *SigningAdminHandler) SignSignedURL(w http.ResponseWriter, r *http.Request) {
+	rid := middleware.RequestIDFromContext(r.Context())
+	ctx := r.Context()
+
+	var req signRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body", rid)
+		return
+	}
+	if !validOrigin(req.Aud) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "aud must be an origin (scheme://host)", rid)
+		return
+	}
+	if req.TTLSeconds < 1 {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "ttl_seconds must be positive", rid)
+		return
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	if ttl > h.maxTTL {
+		ttl = h.maxTTL
+	}
+
+	res, err := signedurl.Mint(ctx, h.keys, req.Path, ttl, req.Aud)
+	if errors.Is(err, signedurl.ErrInvalidPath) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "path must be a content path (/blob/{cid} or /i/{cid}/...)", rid)
+		return
+	}
+	if err != nil {
+		slog.Error("sign: mint", "err", err, "request_id", rid)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", "sign failed", rid)
+		return
+	}
+	slog.Info("signed-url minted", "path", req.Path, "aud", req.Aud, "kid", res.KID, "exp", res.Exp, "request_id", rid)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(signResponse{URL: res.URL, KID: res.KID, Exp: res.Exp})
+}
+
+// validOrigin reports whether s is a bare origin (scheme://host[:port], no path
+// or query) — the shape an embedding context's Origin header carries.
+func validOrigin(s string) bool {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	return (u.Path == "" || u.Path == "/") && u.RawQuery == "" && u.Fragment == ""
 }
