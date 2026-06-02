@@ -1285,6 +1285,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedIntegrityAudits'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/admin/audits/possession:
     get:

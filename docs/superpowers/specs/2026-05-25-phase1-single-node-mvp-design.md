@@ -511,22 +511,27 @@ presets (thumb, og) before the first user-visible read.
 ### Integrity audit loop
 
 ```
-scheduler (in-process, ticks every 10s):
-   for each audit_kind with elapsed-interval-due:
-     ENQUEUE jobs.integrity_audit_run(kind, sample_size)
+scheduler (in-process goroutine, ticks every ~10s):
+   lastRun[kind] seeded at boot from MAX(audited_at) per kind (resume mid-cadence)
+   for each audit_kind that is due (and not already running):
+     run the check INLINE in a bounded goroutine under a context timeout
+       samples N rows from blobs / data_encryption_keys / blob_blocks
+       runs the per-kind check (decode envelope, unwrap key, kubo pin check,
+         block hash recompute, manifest count match, derivative-state cascade)
+       batch-INSERT integrity_audits (cid, audit_kind, result, error)
+       on fail: warn log + FailureSink (the deferred integrity.audit_failed seam)
 
-worker (job consumer):
-   integrity_audit_run handler:
-     samples N rows from blobs / data_encryption_keys / blob_blocks
-     runs the per-kind check (decode envelope, unwrap key, kubo pin check,
-       block hash recompute, manifest count match, derivative-state cascade)
-     INSERT integrity_audits (cid, audit_kind, result, error, audited_at)
-     increment nova_integrity_audit_failures_total{kind=...} on fail
+   NB (reconciled vs INTEGRITY_AUDIT.md, normative): audits run in-process —
+   NOT through the persistent jobs.Queue. There is no in-flight queue, so a
+   restart resumes from each kind's natural cadence. The
+   nova_integrity_audit_failures_total metric is deferred (no metrics surface yet).
 
-partitioning:
+partitioning + retention (Maintainer goroutine, at boot + every 24h):
    integrity_audits is RANGE-partitioned by audited_at (monthly).
-   Pass-row pruning: ALTER TABLE ... DETACH PARTITION after 30d retention.
-   Failure rows retained 1y+ (admin-configurable).
+   Create-ahead: current + next 2 months provisioned so inserts never hit an
+     uncovered range (the committed partitions stop at 2026-07-01).
+   Pass-row pruning: DELETE passes older than 30d.
+   Failure rows retained 1y+ by dropping whole partitions once aged out.
 ```
 
 ### Master-key rotation
@@ -928,7 +933,10 @@ ready to render the surface.
 
 **M8 — Integrity audits (~week 8)**
 - `internal/audit/integrity` scheduler + seven audit kinds + reporting.
-- Background goroutine enqueues; worker pool runs.
+- In-process scheduler runs the checks directly (NOT the jobs.Queue):
+  bounded goroutines under a per-run timeout, resuming from each kind's
+  natural cadence on restart. A Maintainer provisions + prunes the
+  monthly `integrity_audits` partitions.
 - `/api/v1/admin/audits/integrity` returns paginated results.
 - A test that deliberately drops a Kubo pin: next `kubo_pin_present`
   audit reports fail; admin UI surfaces it.

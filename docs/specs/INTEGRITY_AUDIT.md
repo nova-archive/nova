@@ -28,7 +28,7 @@ distinct `audit_kind` enum value (matching the SQL enum in
 |---|---|
 | `envelope_decode` | Sampled blob bytes parse as a valid envelope (magic, version, algo, reserved zero, nonce length) |
 | `key_unwrap` | The corresponding `data_encryption_keys` row's wrapped_key unwraps with the recorded master-key version |
-| `sample_decrypt` | A small random byte range of the decrypted plaintext yields a valid AEAD authentication tag |
+| `sample_decrypt` | A sampled blob's decrypted plaintext yields a valid AEAD authentication tag. Phase-1 v1 is single-shot AEAD, so the whole envelope is decrypted (size-capped); the "random byte range" applies to the Phase-2 streaming codec |
 | `kubo_pin_present` | The local Kubo daemon reports the CID as pinned |
 | `derivative_state_consistent` | A sampled derivative blob's state matches its parent's state (e.g., parent quarantined ⇒ derivative quarantined) |
 | `block_hash_valid` | Recorded `blob_blocks.block_cid` values, when re-fetched and re-hashed, match the stored CID |
@@ -44,7 +44,7 @@ Each `audit_kind` runs on its own cadence:
 | `key_unwrap` | hourly | 100 random keys |
 | `sample_decrypt` | hourly | 50 random blobs |
 | `kubo_pin_present` | every 15 min | 200 random blobs |
-| `derivative_state_consistent` | hourly | every derivative whose parent state changed in the past hour |
+| `derivative_state_consistent` | hourly | sampled derivatives — Phase 1 has no state-change timestamp, so M8 samples derivatives and compares each to its parent's *current* state; the precise "changed in the past hour" filter lands with the M9 state transitions |
 | `block_hash_valid` | daily | 100 random blocks (multi-block blobs) |
 | `manifest_consistent` | daily | 100 random blobs |
 
@@ -64,12 +64,17 @@ VALUES (...);
 
 Failures (`result = 'fail'`) are also:
 
-- Counted in the metric
-  `nova_integrity_audit_failures_total{audit_kind=...}`.
 - Logged at warn level with the affected CID, audit kind, and
   error detail.
+- Counted in the metric
+  `nova_integrity_audit_failures_total{audit_kind=...}` — **deferred to a
+  future observability milestone** (the repo has no metrics surface yet).
+  M8 surfaces failures via the warn log, the `integrity_audits` rows, and
+  the admin listing endpoint below.
 - Optionally emitted via the `integrity.audit_failed` outbound
-  webhook (operator-configured; off by default).
+  webhook (operator-configured; off by default). **Delivery is deferred**;
+  M8 ships the `FailureSink` seam (`internal/audit/integrity`, log-only
+  default) that the webhook implements.
 
 The admin UI surfaces a "recent failures" panel pulling from
 `integrity_audits WHERE result <> 'pass' ORDER BY audited_at DESC`.
@@ -109,10 +114,14 @@ A 1 M-blob deployment running default schedules generates about
 500 audit rows per minute, sampled across the corpus. The runtime
 overhead is negligible (~0.1 % CPU on commodity hardware).
 
-The `integrity_audits` table grows linearly with audit volume.
-Operators retain failures indefinitely for forensic value; passes
-are pruned by a scheduled job to a configurable retention window
-(default 30 days for passes; failures retained ≥ 1 year).
+The `integrity_audits` table is RANGE-partitioned by month. A
+maintenance pass (every 24 h, plus once at boot) creates the current
+plus the next two monthly partitions ahead of time — so inserts never
+hit an uncovered range — deletes `pass` rows older than the
+pass-retention window (default 30 days), and drops whole partitions
+once older than the failure-retention window (default ≥ 1 year, so
+failures survive for forensics). Implemented by the Maintainer in
+`internal/audit/integrity`.
 
 ## Restart behaviour
 
