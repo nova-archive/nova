@@ -1,0 +1,7 @@
+# Signed-URL HMAC-SHA256 test vectors — M7 (internal/auth/signedurl).
+# Independently generated (Python hmac, not this package); row 1 back-fills the
+# placeholder table in docs/specs/SIGNED_URL_FORMAT.md § "Test vectors".
+# Tab-separated: key_utf8 <TAB> canonical(Go-quoted) <TAB> sig(base64url, no pad)
+test-key-do-not-use-in-production	"/blob/bafy/0\n0\n\n"	wCA9mV5qAnke18Afc_IC_w0JGX3GbaCrCtxx6QX6gng
+test-key-do-not-use-in-production	"/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/p/thumb.webp\n1730000000\nhttps://example.com\nk_2026_05"	Z5PRGs6i6Jwykx_rbS3eB1lKKTP_VvtUbknTiW6b2Es
+test-key-do-not-use-in-production	"/blob/bafybeigexamplecidvalue\n2000000000\nhttps://app.example\nk_test"	O93GFW_mH_5EYXYyF91c4-Wu7sSIZCggZ46a0_RrZpY
