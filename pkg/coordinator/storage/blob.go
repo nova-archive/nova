@@ -110,7 +110,11 @@ func (s *Service) Resolve(ctx context.Context, cidStr string) (*BlobView, error)
 		return nil, fmt.Errorf("storage: resolve visibility: %w", err)
 	}
 	visibility := resolveVisibility(vis)
-	if visibility == VisibilityPrivate {
+	// A private blob requires authorization. The signed-URL Guard grants it
+	// per-request via WithReadAuthz after verifying a path-bound signature;
+	// without a grant (and without a bearer path, which does not reach /blob),
+	// the read is refused. M7.
+	if visibility == VisibilityPrivate && !readAuthorized(ctx) {
 		return nil, ErrBlobAuthRequired
 	}
 
