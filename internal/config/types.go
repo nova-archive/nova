@@ -94,6 +94,10 @@ type Federation struct {
 	EvictedAfterSeconds          int `yaml:"evicted_after_seconds"`
 }
 
+// IntegrityAudit mirrors the operator.yaml integrity_audit section. Phase 1
+// (M8) consumes the INTEGRITY_AUDIT.md schedule defaults as code constants via
+// coordinator.Config (integrity.DefaultCadences); the operator.yaml loader maps
+// this section once it is wired into cmd.
 type IntegrityAudit struct {
 	EnvelopeDecode            AuditCadence `yaml:"envelope_decode"`
 	KeyUnwrap                 AuditCadence `yaml:"key_unwrap"`

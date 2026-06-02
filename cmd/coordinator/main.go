@@ -28,6 +28,7 @@
 //	NOVA_SIGNED_URL_REVOCATION_REFRESH_SECONDS  revocation cache refresh (default 30)
 //	NOVA_SIGNED_URL_KEY_CACHE_TTL_SECONDS       unwrapped signing-key cache TTL (default 60)
 //	NOVA_SIGNED_URL_MAX_TTL_SECONDS             minted-URL ttl cap (default 86400)
+//	NOVA_INTEGRITY_AUDIT_ENABLED  "false" disables the M8 integrity-audit scheduler (default enabled)
 package main
 
 import (
@@ -46,6 +47,7 @@ import (
 
 	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/api/httputil"
+	"github.com/nova-archive/nova/internal/audit/integrity"
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/localissuer"
 	"github.com/nova-archive/nova/internal/auth/oidc"
@@ -192,6 +194,12 @@ func run() error {
 			RevocationRefresh: time.Duration(envInt("NOVA_SIGNED_URL_REVOCATION_REFRESH_SECONDS", 30)) * time.Second,
 			KeyCacheTTL:       time.Duration(envInt("NOVA_SIGNED_URL_KEY_CACHE_TTL_SECONDS", 60)) * time.Second,
 			MaxTTL:            time.Duration(envInt("NOVA_SIGNED_URL_MAX_TTL_SECONDS", 86400)) * time.Second,
+		},
+		IntegrityAudit: coordinator.IntegrityAuditConfig{
+			Enabled:       os.Getenv("NOVA_INTEGRITY_AUDIT_ENABLED") != "false",
+			Cadences:      integrity.DefaultCadences(),
+			PassRetention: 30 * 24 * time.Hour,
+			FailRetention: 365 * 24 * time.Hour,
 		},
 	})
 	if err != nil {

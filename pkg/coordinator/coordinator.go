@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -21,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/api/handlers"
+	"github.com/nova-archive/nova/internal/audit/integrity"
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/db/gen"
@@ -94,6 +96,10 @@ type Config struct {
 	// fields take the documented defaults (24h grace, 30s revocation refresh,
 	// 60s key cache, 24h max mint ttl).
 	SignedURLs SignedURLConfig
+
+	// IntegrityAudit tunes the M8 audit scheduler + retention. Built only when
+	// pool+backend+keystore are present.
+	IntegrityAudit IntegrityAuditConfig
 }
 
 // SignedURLConfig tunes the M7 signed-URL stack.
@@ -102,6 +108,18 @@ type SignedURLConfig struct {
 	RevocationRefresh time.Duration // revocation cache refresh interval
 	KeyCacheTTL       time.Duration // unwrapped signing-key cache TTL
 	MaxTTL            time.Duration // mint ttl cap
+}
+
+// IntegrityAuditConfig tunes the M8 integrity-audit scheduler and retention.
+// A nil/empty Cadences map takes integrity.DefaultCadences(); non-positive
+// retentions take the package defaults (30d passes, 365d failures). Enabled
+// gates the scheduler (the Maintainer always runs so partition create-ahead
+// and pruning continue even when audits are paused).
+type IntegrityAuditConfig struct {
+	Enabled       bool
+	Cadences      map[integrity.Kind]integrity.Cadence
+	PassRetention time.Duration
+	FailRetention time.Duration
 }
 
 // Coordinator owns the HTTP server. Build with New; register products before
@@ -132,6 +150,13 @@ type Coordinator struct {
 	signedURLGuard func(http.Handler) http.Handler
 	revocations    *signedurl.DBRevocations
 	revRefresh     time.Duration
+
+	// Integrity-audit wiring (M8). Built when pool + backend + keystore are
+	// present; the scheduler runs in-process (no jobs.Queue) and the maintainer
+	// keeps integrity_audits' partitions provisioned + pruned.
+	auditScheduler  *integrity.Scheduler
+	auditMaintainer *integrity.Maintainer
+	auditEnabled    bool
 }
 
 // New constructs a coordinator from injected dependencies. pool/backend/ks may
@@ -217,6 +242,26 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		c.signedURLGuard = verifier.Guard
 		sc.SignedURLGuard = verifier.Guard
 		sc.SigningAdmin = handlers.NewSigningAdminHandler(pool, ks, keySource, c.revocations, grace, maxTTL)
+	}
+
+	// Integrity-audit subsystem (M8): the in-process scheduler runs the seven
+	// checks on per-kind cadences, the maintainer provisions + prunes the
+	// integrity_audits partitions, and the admin handler serves the listing.
+	// Built when pool + backend + keystore are present.
+	if pool != nil && backend != nil && ks != nil {
+		q := gen.New(pool)
+		cadences := cfg.IntegrityAudit.Cadences
+		if len(cadences) == 0 {
+			cadences = integrity.DefaultCadences()
+		}
+		if err := integrity.EnforceAuditPolicy(cadences); err != nil {
+			return nil, fmt.Errorf("coordinator: integrity audit: %w", err)
+		}
+		rec := integrity.NewRecorder(q, integrity.NewNoopSink(), slog.Default())
+		c.auditScheduler = integrity.NewScheduler(integrity.NewChecks(q, backend, ks), cadences, rec, q, slog.Default())
+		c.auditMaintainer = integrity.NewMaintainer(pool, cfg.IntegrityAudit.PassRetention, cfg.IntegrityAudit.FailRetention, slog.Default())
+		c.auditEnabled = cfg.IntegrityAudit.Enabled
+		sc.AuditAdmin = handlers.NewAuditAdminHandler(q)
 	}
 
 	// /readyz checks. Each is a thin wrapper over the corresponding dep's
@@ -406,6 +451,14 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	if c.workers != nil {
 		c.workers.RegisterHandler(kinds.KindDerivativePrewarm, kinds.NewDerivativePrewarmHandler(c.prewarm))
 		go c.workers.Run(ctx)
+	}
+	// Integrity-audit maintainer always runs (partition create-ahead + pruning);
+	// the scheduler runs only when audits are enabled. M8.
+	if c.auditMaintainer != nil {
+		go c.auditMaintainer.Run(ctx)
+	}
+	if c.auditScheduler != nil && c.auditEnabled {
+		go c.auditScheduler.Run(ctx)
 	}
 	c.srv = &http.Server{Handler: c.mux, ReadHeaderTimeout: 10 * time.Second}
 
