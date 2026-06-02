@@ -45,8 +45,10 @@ type ServerConfig struct {
 	Me             *handlers.MeHandler
 	PublicUploads  bool
 	LoginLimiter   *ratelimit.Limiter
-	TrustedProxies []netip.Prefix // gates XFF trust for rate-limit + source-IP recording
-	Ready          *handlers.ReadyHandler // nil ⇒ /readyz returns 200 with no checks
+	TrustedProxies []netip.Prefix                  // gates XFF trust for rate-limit + source-IP recording
+	Ready          *handlers.ReadyHandler          // nil ⇒ /readyz returns 200 with no checks
+	SignedURLGuard func(http.Handler) http.Handler // nil ⇒ no signed-URL verification on reads
+	SigningAdmin   *handlers.SigningAdminHandler   // nil ⇒ signed-URL admin endpoints 404
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -70,9 +72,17 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 		r.Get("/readyz", cfg.Ready.Serve)
 	}
 
+	// Signed-URL Guard for content reads: when a request carries signed-URL
+	// params it is verified (granting private-read authorization on success, or
+	// 403 on failure); otherwise it passes straight through. M7.
+	readGuard := cfg.SignedURLGuard
+	if readGuard == nil {
+		readGuard = func(next http.Handler) http.Handler { return next }
+	}
+
 	if cfg.Blob != nil {
-		r.Get("/blob/{cid}", cfg.Blob.Serve)
-		r.Head("/blob/{cid}", cfg.Blob.Head)
+		r.With(readGuard).Get("/blob/{cid}", cfg.Blob.Serve)
+		r.With(readGuard).Head("/blob/{cid}", cfg.Blob.Head)
 	}
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -117,6 +127,14 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 			// before reaching adminNotFound (401 without token, 403 wrong role).
 			r.Route("/admin", func(r chi.Router) {
 				r.Use(bearer.RequireRole("operator", "moderator"))
+				if cfg.SigningAdmin != nil {
+					// Key rotation is operator-only; revoke + sign keep the
+					// group's operator+moderator guard (moderators run takedowns
+					// and hand out shares). M7.
+					r.With(bearer.RequireRole("operator")).Post("/keys/rotate-signing", cfg.SigningAdmin.RotateSigning)
+					r.Post("/signed-urls/revoke", cfg.SigningAdmin.RevokeSignedURL)
+					r.Post("/signed-urls/sign", cfg.SigningAdmin.SignSignedURL)
+				}
 				r.Handle("/*", http.HandlerFunc(adminNotFound))
 			})
 

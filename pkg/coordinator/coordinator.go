@@ -22,6 +22,7 @@ import (
 	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/api/handlers"
 	"github.com/nova-archive/nova/internal/auth"
+	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
@@ -88,6 +89,19 @@ type Config struct {
 	// nginx fronts the coordinator on loopback, set this to the proxy's
 	// address (e.g., {127.0.0.1/32, ::1/128}). M6.2 B2.
 	TrustedProxies []netip.Prefix
+
+	// SignedURLs tunes the M7 signed-URL verifier/rotation/minting. Zero-valued
+	// fields take the documented defaults (24h grace, 30s revocation refresh,
+	// 60s key cache, 24h max mint ttl).
+	SignedURLs SignedURLConfig
+}
+
+// SignedURLConfig tunes the M7 signed-URL stack.
+type SignedURLConfig struct {
+	Grace             time.Duration // rotation grace window
+	RevocationRefresh time.Duration // revocation cache refresh interval
+	KeyCacheTTL       time.Duration // unwrapped signing-key cache TTL
+	MaxTTL            time.Duration // mint ttl cap
 }
 
 // Coordinator owns the HTTP server. Build with New; register products before
@@ -111,6 +125,13 @@ type Coordinator struct {
 	// Rate limiters are held for periodic LRU sweep in gcLoop.
 	limiter      *ratelimit.Limiter
 	loginLimiter *ratelimit.Limiter
+
+	// Signed-URL wiring (M7). Built when pool + keystore are present. The Guard
+	// gates the public read paths (/blob, /i/*); revocations is loaded and
+	// refreshed in Run.
+	signedURLGuard func(http.Handler) http.Handler
+	revocations    *signedurl.DBRevocations
+	revRefresh     time.Duration
 }
 
 // New constructs a coordinator from injected dependencies. pool/backend/ks may
@@ -178,6 +199,24 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 	}
 	if pool != nil {
 		sc.Me = handlers.NewMeHandler(gen.New(pool))
+	}
+
+	// Signed-URL verifier + admin handlers (M7). Built when a pool and keystore
+	// are present: the Guard gates public reads, and the admin endpoints
+	// rotate/revoke/mint signed URLs. Zero-valued knobs take their defaults.
+	if pool != nil && ks != nil {
+		q := gen.New(pool)
+		keyTTL := orDefaultDuration(cfg.SignedURLs.KeyCacheTTL, time.Minute)
+		grace := orDefaultDuration(cfg.SignedURLs.Grace, 24*time.Hour)
+		maxTTL := orDefaultDuration(cfg.SignedURLs.MaxTTL, 24*time.Hour)
+		c.revRefresh = orDefaultDuration(cfg.SignedURLs.RevocationRefresh, 30*time.Second)
+
+		keySource := signedurl.NewKeySource(q, ks, keyTTL)
+		c.revocations = signedurl.NewRevocations(q)
+		verifier := signedurl.NewVerifier(keySource, c.revocations)
+		c.signedURLGuard = verifier.Guard
+		sc.SignedURLGuard = verifier.Guard
+		sc.SigningAdmin = handlers.NewSigningAdminHandler(pool, ks, keySource, c.revocations, grace, maxTTL)
 	}
 
 	// /readyz checks. Each is a thin wrapper over the corresponding dep's
@@ -249,6 +288,14 @@ func sizeOrDefault(n int64) int64 {
 	return n
 }
 
+// orDefaultDuration returns d, or def when d is non-positive.
+func orDefaultDuration(d, def time.Duration) time.Duration {
+	if d <= 0 {
+		return def
+	}
+	return d
+}
+
 // reservedPrefixes are namespaces owned by the storage core / coordinator that
 // a product MUST NOT mount routes under.
 var reservedPrefixes = []string{"/api/v1", "/blob", "/health", "/fed/v1", "/legal"}
@@ -285,7 +332,17 @@ func (c *Coordinator) RegisterProduct(p product.Product) error {
 	if collision != nil {
 		return collision
 	}
-	p.RegisterRoutes(c.mux)
+	// Mount product read routes (/i/*) behind the signed-URL Guard when it is
+	// built, so a valid signed URL unlocks private image content the same way
+	// it does for /blob. The Guard passes through when no sig params are present.
+	if c.signedURLGuard != nil {
+		c.mux.Group(func(r chi.Router) {
+			r.Use(c.signedURLGuard)
+			p.RegisterRoutes(r)
+		})
+	} else {
+		p.RegisterRoutes(c.mux)
+	}
 	c.products[p.Name()] = p
 
 	// If this product is image-capable (exposes preset URLs) and the multipart
@@ -339,6 +396,10 @@ func (c *Coordinator) Run(ctx context.Context) error {
 		return err
 	}
 	c.addr.Store(ln.Addr().String())
+	if c.revocations != nil {
+		_ = c.revocations.Load(ctx) // best-effort initial load; refresh retries
+		go c.revocations.RefreshEvery(ctx, c.revRefresh)
+	}
 	if c.uploadStore != nil || c.authQueries != nil {
 		go c.gcLoop(ctx)
 	}

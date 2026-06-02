@@ -17,6 +17,11 @@ type Config struct {
 	// Uploads tunes the M4 write path (tus + multipart).
 	Uploads Uploads `yaml:"uploads"`
 
+	// SignedURLs tunes the M7 signed-URL verifier/rotation/minting. Phase 1
+	// reads these from NOVA_SIGNED_URL_* env in cmd/coordinator; the loader
+	// maps this section once operator.yaml is wired in.
+	SignedURLs SignedURLs `yaml:"signed_urls,omitempty"`
+
 	// Webhook destinations; honored only when paranoid=false.
 	Webhooks []WebhookDestination `yaml:"webhooks,omitempty"`
 
@@ -139,4 +144,14 @@ type Uploads struct {
 	TmpDir                string `yaml:"tmp_dir"`
 	// PublicUploads allows unauthenticated uploads; requires tos_url (T1.20).
 	PublicUploads bool `yaml:"public_uploads,omitempty"`
+}
+
+// SignedURLs configures the M7 signed-URL verifier/rotation/minting. Defaults
+// (applied in cmd/coordinator): 86400s grace, 30s revocation refresh, 60s key
+// cache, 86400s max mint ttl.
+type SignedURLs struct {
+	GraceWindowSeconds       int `yaml:"grace_window_seconds,omitempty"`
+	RevocationRefreshSeconds int `yaml:"revocation_refresh_seconds,omitempty"`
+	KeyCacheTTLSeconds       int `yaml:"key_cache_ttl_seconds,omitempty"`
+	MaxTTLSeconds            int `yaml:"max_ttl_seconds,omitempty"`
 }

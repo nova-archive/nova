@@ -24,6 +24,10 @@
 //	NOVA_AUTH_ISSUER          local-mode token iss/aud base (default "https://<hostname>/")
 //	NOVA_PUBLIC_UPLOADS       "true" allows anonymous uploads (requires NOVA_TOS_URL; T1.20)
 //	NOVA_TOS_URL              ToS URL; required when NOVA_PUBLIC_UPLOADS=true
+//	NOVA_SIGNED_URL_GRACE_SECONDS               signing-key rotation grace (default 86400)
+//	NOVA_SIGNED_URL_REVOCATION_REFRESH_SECONDS  revocation cache refresh (default 30)
+//	NOVA_SIGNED_URL_KEY_CACHE_TTL_SECONDS       unwrapped signing-key cache TTL (default 60)
+//	NOVA_SIGNED_URL_MAX_TTL_SECONDS             minted-URL ttl cap (default 86400)
 package main
 
 import (
@@ -46,6 +50,7 @@ import (
 	"github.com/nova-archive/nova/internal/auth/localissuer"
 	"github.com/nova-archive/nova/internal/auth/oidc"
 	"github.com/nova-archive/nova/internal/auth/password"
+	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/auth/token"
 	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db"
@@ -142,6 +147,11 @@ func run() error {
 	if _, err := ks.Bootstrap(ctx); err != nil {
 		return fmt.Errorf("keystore bootstrap: %w", err)
 	}
+	// Ensure an active signing key exists so signed URLs verify and mint out of
+	// the box (idempotent; mirrors the master-key bootstrap). M7.
+	if err := signedurl.EnsureActiveKey(ctx, gen.New(pool), ks); err != nil {
+		return fmt.Errorf("signing key bootstrap: %w", err)
+	}
 
 	// Build auth (and enforce its refuse-to-start floors) before the expensive
 	// embedded-Kubo boot, so a missing signing key / T1.20 violation fails fast.
@@ -177,6 +187,12 @@ func run() error {
 		RecordSourceIP:        recordIP,
 		TrustedProxies:        trustedProxies,
 		Auth:                  authCfg,
+		SignedURLs: coordinator.SignedURLConfig{
+			Grace:             time.Duration(envInt("NOVA_SIGNED_URL_GRACE_SECONDS", 86400)) * time.Second,
+			RevocationRefresh: time.Duration(envInt("NOVA_SIGNED_URL_REVOCATION_REFRESH_SECONDS", 30)) * time.Second,
+			KeyCacheTTL:       time.Duration(envInt("NOVA_SIGNED_URL_KEY_CACHE_TTL_SECONDS", 60)) * time.Second,
+			MaxTTL:            time.Duration(envInt("NOVA_SIGNED_URL_MAX_TTL_SECONDS", 86400)) * time.Second,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("coordinator: %w", err)
