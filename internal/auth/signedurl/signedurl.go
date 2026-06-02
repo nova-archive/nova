@@ -125,6 +125,12 @@ func (v *Verifier) Verify(ctx context.Context, in VerifyInput) Decision {
 	cid := cidFromPath(in.Path)
 	canonical := Canonical(in.Path, exp, aud, kid)
 
+	// Past the schema stage the parsed fields are known; carry them on every
+	// outcome so the Guard can log kid/aud/cid for both grants and rejections.
+	fail := func(code string) Decision {
+		return Decision{Code: code, CID: cid, Aud: aud, Kid: kid}
+	}
+
 	// 2. Key lookup. On a miss use the dummy key so the HMAC compare below runs
 	//    with identical cost (any lookup error is treated as unknown kid; a
 	//    transient DB error therefore surfaces as a 403, a Phase-1 simplification
@@ -139,23 +145,23 @@ func (v *Verifier) Verify(ctx context.Context, in VerifyInput) Decision {
 	sigOK := subtle.ConstantTimeCompare(hmacSum(secret, canonical), sig) == 1
 
 	if kerr != nil {
-		return deny(CodeUnknownKID)
+		return fail(CodeUnknownKID)
 	}
 	// 3. Revocation.
 	if v.revs.IsRevoked(cid, aud, kid, in.Path) {
-		return deny(CodeRevoked)
+		return fail(CodeRevoked)
 	}
 	// 4. Expiry — strictly greater than now (0 s skew).
 	if exp <= in.Now.Unix() {
-		return deny(CodeExpired)
+		return fail(CodeExpired)
 	}
 	// 5. Signature.
 	if !sigOK {
-		return deny(CodeInvalid)
+		return fail(CodeInvalid)
 	}
 	// 6. Audience.
 	if !audienceMatches(in.Origin, in.Referer, aud) {
-		return deny(CodeAudMismatch)
+		return fail(CodeAudMismatch)
 	}
 	return Decision{OK: true, CID: cid, Aud: aud, Kid: kid}
 }
