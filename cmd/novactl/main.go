@@ -5,6 +5,7 @@
 //	novactl auth login [--url <base>] [--username <u>]
 //	novactl auth whoami
 //	novactl auth logout
+//	novactl signed-url sign --path <p> [--ttl <secs>] --aud <origin>
 package main
 
 import (
@@ -391,38 +392,98 @@ func cmdLogout() error {
 }
 
 // --------------------------------------------------------------------------
+// Subcommand: signed-url sign
+// --------------------------------------------------------------------------
+
+// cmdSignedURLSign POSTs /api/v1/admin/signed-urls/sign with the cached bearer
+// token and prints the resulting absolute signed URL.
+func cmdSignedURLSign(args []string) error {
+	fs := flag.NewFlagSet("signed-url sign", flag.ContinueOnError)
+	path := fs.String("path", "", "content path to sign (/blob/{cid} or /i/{cid}/...)")
+	ttl := fs.Int("ttl", 3600, "URL lifetime in seconds")
+	aud := fs.String("aud", "", "embedding origin, e.g. https://example.com")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" || *aud == "" {
+		return errors.New("both --path and --aud are required")
+	}
+
+	credPath, err := credsPath()
+	if err != nil {
+		return err
+	}
+	c, err := readCredentials(credPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("not logged in — run: novactl auth login")
+		}
+		return err
+	}
+
+	resp, err := postJSON(newClient(), c.BaseURL+"/api/v1/admin/signed-urls/sign", map[string]any{
+		"path":        *path,
+		"ttl_seconds": *ttl,
+		"aud":         *aud,
+	}, c.AccessToken)
+	if err != nil {
+		return fmt.Errorf("sign request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusCreated:
+		var sr struct {
+			URL string `json:"url"`
+			KID string `json:"kid"`
+			Exp int64  `json:"exp"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+			return fmt.Errorf("decode sign response: %w", err)
+		}
+		fmt.Println(c.BaseURL + sr.URL)
+		return nil
+	case http.StatusUnauthorized:
+		return errors.New("unauthorized — run: novactl auth login")
+	case http.StatusForbidden:
+		return errors.New("forbidden — signing requires the operator or moderator role")
+	case http.StatusBadRequest:
+		return fmt.Errorf("invalid request: %s", readAPIError(resp.Body).Message)
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("sign failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+}
+
+// --------------------------------------------------------------------------
 // main
 // --------------------------------------------------------------------------
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novactl auth <login|whoami|logout>")
+	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url> <subcommand>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth login [--url <base>] [--username <u>]")
 	fmt.Fprintln(os.Stderr, "  auth whoami")
 	fmt.Fprintln(os.Stderr, "  auth logout")
+	fmt.Fprintln(os.Stderr, "  signed-url sign --path <p> [--ttl <secs>] --aud <origin>")
 }
 
 func main() {
 	args := os.Args[1:]
-	if len(args) < 2 || args[0] != "auth" {
+	if len(args) < 1 {
 		usage()
 		os.Exit(2)
 	}
 
-	sub := args[1]
-	rest := args[2:]
-
 	var err error
-	switch sub {
-	case "login":
-		err = cmdLogin(rest)
-	case "whoami":
-		err = cmdWhoami()
-	case "logout":
-		err = cmdLogout()
+	switch args[0] {
+	case "auth":
+		err = runAuth(args[1:])
+	case "signed-url":
+		err = runSignedURL(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "novactl: unknown subcommand %q\n\n", sub)
+		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()
 		os.Exit(2)
 	}
@@ -430,5 +491,41 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "novactl: %v\n", err)
 		os.Exit(1)
+	}
+}
+
+func runAuth(args []string) error {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "login":
+		return cmdLogin(args[1:])
+	case "whoami":
+		return cmdWhoami()
+	case "logout":
+		return cmdLogout()
+	default:
+		fmt.Fprintf(os.Stderr, "novactl: unknown subcommand %q\n\n", args[0])
+		usage()
+		os.Exit(2)
+		return nil
+	}
+}
+
+func runSignedURL(args []string) error {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "sign":
+		return cmdSignedURLSign(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "novactl: unknown subcommand %q\n\n", args[0])
+		usage()
+		os.Exit(2)
+		return nil
 	}
 }
