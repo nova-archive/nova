@@ -161,6 +161,25 @@ func TestWorkerPoolRunsPrewarmHandler(t *testing.T) {
 	runCancel()
 }
 
+func TestReadyzReportsMissingSigningKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	c, err := coordinator.New(pool, nil, nil, coordinator.Config{
+		ListenAddr: "127.0.0.1:0",
+		Version:    "test",
+		RateLimit:  coordinator.RateLimitConfig{RatePerSec: 1000, Burst: 1000},
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "no active signing key ⇒ not ready")
+	require.Contains(t, rec.Body.String(), "signing_keys")
+}
+
 // ---------------------------------------------------------------------------
 // Original test
 // ---------------------------------------------------------------------------

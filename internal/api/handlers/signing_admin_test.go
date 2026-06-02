@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/api/handlers"
 	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/db/gen"
@@ -30,7 +31,7 @@ func randHexKey(t *testing.T) string {
 
 // newSigningAdminFixture builds a SigningAdminHandler backed by a fresh
 // migrated Postgres, a bootstrapped keystore, and an initial active signing key.
-func newSigningAdminFixture(t *testing.T, ctx context.Context) (*handlers.SigningAdminHandler, *gen.Queries) {
+func newSigningAdminFixture(t *testing.T, ctx context.Context) (*handlers.SigningAdminHandler, *gen.Queries, *pgxpool.Pool) {
 	t.Helper()
 	pool := dbtest.New(t, ctx)
 	t.Setenv("NOVA_MASTER_KEY_V1", randHexKey(t))
@@ -45,7 +46,7 @@ func newSigningAdminFixture(t *testing.T, ctx context.Context) (*handlers.Signin
 	keys := signedurl.NewKeySource(q, ks, time.Minute)
 	revs := signedurl.NewRevocations(q)
 	h := handlers.NewSigningAdminHandler(pool, ks, keys, revs, 24*time.Hour, 24*time.Hour)
-	return h, q
+	return h, q, pool
 }
 
 func TestIntegrationRotateSigning(t *testing.T) {
@@ -53,7 +54,7 @@ func TestIntegrationRotateSigning(t *testing.T) {
 		t.Skip("integration")
 	}
 	ctx := context.Background()
-	h, q := newSigningAdminFixture(t, ctx)
+	h, q, _ := newSigningAdminFixture(t, ctx)
 
 	before, err := q.GetActiveSigningKey(ctx)
 	require.NoError(t, err)
@@ -96,7 +97,7 @@ func TestIntegrationRevokeSignedURL(t *testing.T) {
 		t.Skip("integration")
 	}
 	ctx := context.Background()
-	h, q := newSigningAdminFixture(t, ctx)
+	h, q, _ := newSigningAdminFixture(t, ctx)
 
 	rec := revoke(h, `{"kind":"cid","value":"bafyX"}`)
 	require.Equal(t, http.StatusCreated, rec.Code)
@@ -132,7 +133,7 @@ func TestIntegrationSignSignedURL(t *testing.T) {
 		t.Skip("integration")
 	}
 	ctx := context.Background()
-	h, q := newSigningAdminFixture(t, ctx)
+	h, q, _ := newSigningAdminFixture(t, ctx)
 	active, err := q.GetActiveSigningKey(ctx)
 	require.NoError(t, err)
 
@@ -158,4 +159,36 @@ func TestIntegrationSignSignedURL(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, sign(h, `{"path":"/api/v1/x","ttl_seconds":60,"aud":"https://e.example"}`).Code, "non-content path")
 	require.Equal(t, http.StatusBadRequest, sign(h, `{"path":"/blob/bafyX","ttl_seconds":60,"aud":"not-an-origin/path"}`).Code, "bad aud")
 	require.Equal(t, http.StatusBadRequest, sign(h, `{"path":"/blob/bafyX","ttl_seconds":0,"aud":"https://e.example"}`).Code, "non-positive ttl")
+}
+
+func TestIntegrationShredExpiredSigningKeys(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	h, q, pool := newSigningAdminFixture(t, ctx)
+
+	before, err := q.GetActiveSigningKey(ctx)
+	require.NoError(t, err)
+
+	// Rotate so the prior key becomes retired (within grace).
+	rec := httptest.NewRecorder()
+	h.RotateSigning(rec, httptest.NewRequest(http.MethodPost, "/api/v1/admin/keys/rotate-signing", strings.NewReader(`{"grace_seconds":3600}`)))
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	// Backdate its grace window into the past, then shred.
+	_, err = pool.Exec(ctx, `UPDATE signing_keys SET retire_after = now() - interval '1 minute' WHERE kid = $1`, before.Kid)
+	require.NoError(t, err)
+	require.NoError(t, q.ShredExpiredRetiredSigningKeys(ctx, make([]byte, 72)))
+
+	shredded, err := q.GetSigningKeyByKID(ctx, before.Kid)
+	require.NoError(t, err)
+	require.Equal(t, gen.KeyStateShredded, shredded.State)
+	require.Equal(t, make([]byte, 72), shredded.WrappedKey, "wrapped_key zeroed on shred")
+
+	// The new active key is untouched.
+	active, err := q.GetActiveSigningKey(ctx)
+	require.NoError(t, err)
+	require.Equal(t, gen.KeyStateActive, active.State)
+	require.NotEqual(t, make([]byte, 72), active.WrappedKey)
 }

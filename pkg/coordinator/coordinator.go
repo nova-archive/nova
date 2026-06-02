@@ -40,6 +40,11 @@ import (
 // from growing without bound.
 const revokedRefreshGrace = 30 * 24 * time.Hour
 
+// signingKeyZeroLen is the byte length a shredded signing-key wrapped_key is
+// zeroed to: a 256-bit secret wraps to 72 bytes (24 nonce + 32 ct + 16 tag),
+// matching the data_encryption_keys convention. M7.
+const signingKeyZeroLen = 72
+
 // RateLimitConfig tunes the in-process per-IP limiter.
 type RateLimitConfig struct {
 	RatePerSec float64
@@ -186,6 +191,24 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		ready = append(ready, handlers.ReadyCheck{
 			Name: "database",
 			Fn:   func(ctx context.Context) error { return pool.Ping(ctx) },
+		})
+	}
+	// Signing-key readiness: at least one active signing key must exist for
+	// signed-URL verification/minting (auto-bootstrapped at startup). M7.
+	if pool != nil {
+		q := gen.New(pool)
+		ready = append(ready, handlers.ReadyCheck{
+			Name: "signing_keys",
+			Fn: func(ctx context.Context) error {
+				n, err := q.CountActiveSigningKeys(ctx)
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					return errors.New("no active signing key")
+				}
+				return nil
+			},
 		})
 	}
 	if backend != nil {
@@ -372,6 +395,8 @@ func (c *Coordinator) gcLoop(ctx context.Context) {
 				_, _ = c.authQueries.DeleteExpiredRefreshTokens(ctx)
 				cutoff := pgtype.Timestamptz{Time: time.Now().Add(-revokedRefreshGrace), Valid: true}
 				_, _ = c.authQueries.DeleteRevokedRefreshTokensOlderThan(ctx, cutoff)
+				// Crypto-shred signing keys past their grace window. M7.
+				_ = c.authQueries.ShredExpiredRetiredSigningKeys(ctx, make([]byte, signingKeyZeroLen))
 			}
 			if c.limiter != nil {
 				c.limiter.Sweep(interval)
