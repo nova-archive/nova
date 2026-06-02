@@ -14,6 +14,7 @@ type Querier interface {
 	AbortUploadSession(ctx context.Context, id pgtype.UUID) error
 	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
+	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
 	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	// Splits the GC across the two partial indexes defined in migration 0006/0007
@@ -48,11 +49,13 @@ type Querier interface {
 	// unique index DO NOTHING ⇒ 0 rows when a concurrent/cross-process writer won
 	// (the caller then unpins its orphan import and reads the winner).
 	InsertDerivativeBlob(ctx context.Context, arg InsertDerivativeBlobParams) (int64, error)
+	InsertIntegrityAudit(ctx context.Context, arg []InsertIntegrityAuditParams) *InsertIntegrityAuditBatchResults
 	InsertManifest(ctx context.Context, arg InsertManifestParams) error
 	InsertRefreshToken(ctx context.Context, arg InsertRefreshTokenParams) (pgtype.UUID, error)
 	InsertRevocation(ctx context.Context, arg InsertRevocationParams) error
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
+	ListIntegrityAudits(ctx context.Context, arg ListIntegrityAuditsParams) ([]ListIntegrityAuditsRow, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// For an original, resolves its own collection memberships; for a derivative
@@ -62,6 +65,16 @@ type Querier interface {
 	RetirePriorActiveSigningKey(ctx context.Context, arg RetirePriorActiveSigningKeyParams) error
 	RevokeRefreshToken(ctx context.Context, id pgtype.UUID) error
 	RevokeRefreshTokenFamily(ctx context.Context, userID pgtype.UUID) error
+	SampleActiveBlobs(ctx context.Context, limit int32) ([]string, error)
+	SampleDerivatives(ctx context.Context, limit int32) ([]SampleDerivativesRow, error)
+	// Integrity-audit queries (M8). See docs/specs/INTEGRITY_AUDIT.md and
+	// docs/superpowers/specs/2026-06-02-phase1-m8-integrity-audit-scheduler-design.md.
+	// No schema change: integrity_audits + the audit_kind/audit_result enums ship
+	// in 0001_init.sql (partitioned in 0003_partitions.sql).
+	SampleEncryptedBlobs(ctx context.Context, limit int32) ([]SampleEncryptedBlobsRow, error)
+	SampleManifestConsistency(ctx context.Context, limit int32) ([]SampleManifestConsistencyRow, error)
+	SampleMultiBlockBlocks(ctx context.Context, limit int32) ([]SampleMultiBlockBlocksRow, error)
+	SeedAuditSchedule(ctx context.Context) ([]SeedAuditScheduleRow, error)
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	ShredExpiredRetiredSigningKeys(ctx context.Context, wrappedKey []byte) error
 }
