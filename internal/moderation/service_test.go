@@ -255,3 +255,84 @@ func TestQuarantineLegalHoldSetsDEKAndNoSchedule(t *testing.T) {
 		"scheduled_tombstone_at IS NULL under legal hold")
 	require.Equal(t, 1, countAudit(t, ctx, pool, "severe.quarantined", s.parentCID))
 }
+
+// --- Task 3: Tombstone -------------------------------------------------------
+
+func TestTombstoneShredsCascadesAndUnpins(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pool := dbtest.New(t, ctx)
+	ks := newKeystore(t, ctx, pool)
+	be := newEmbeddedBackend(t, ctx)
+	s := seedParentWithDerivative(t, ctx, pool, ks, be)
+
+	opID := newOperator(t, ctx, pool)
+	fb := &fakeBackend{}
+	svc := newService(pool, fb, time.Now)
+
+	// Quarantine first (sets the originating scheduled_tombstone_at), then tombstone.
+	require.NoError(t, svc.Quarantine(ctx, moderation.QuarantineCmd{
+		CID: s.parentCID, Rule: "dmca", Reason: "notice", TombstoneAfter: 14 * 24 * time.Hour, Actor: &opID,
+	}))
+	require.True(t, schedTombstoneSet(t, ctx, pool, s.parentCID, "quarantine"))
+
+	require.NoError(t, svc.Tombstone(ctx, moderation.TombstoneCmd{
+		CID: s.parentCID, Rule: "dmca", Reason: "takedown", Actor: &opID,
+	}))
+
+	require.Equal(t, "tombstoned", blobState(t, ctx, pool, s.parentCID))
+	require.Equal(t, "tombstoned", blobState(t, ctx, pool, s.derivCID), "derivative cascades to tombstoned")
+
+	pState, _, pWrapped := dekFor(t, ctx, pool, s.parentCID)
+	require.Equal(t, "shredded", pState, "parent DEK shredded")
+	require.Equal(t, zeros72Test(), pWrapped, "parent wrapped_key zeroed")
+	dState, _, dWrapped := dekFor(t, ctx, pool, s.derivCID)
+	require.Equal(t, "shredded", dState, "derivative DEK shredded")
+	require.Equal(t, zeros72Test(), dWrapped, "derivative wrapped_key zeroed")
+
+	require.False(t, schedTombstoneSet(t, ctx, pool, s.parentCID, "quarantine"),
+		"originating quarantine scheduled_tombstone_at cleared")
+	require.Equal(t, 1, countRevocations(t, ctx, pool, s.parentCID))
+	require.Equal(t, 1, countAudit(t, ctx, pool, "dmca.tombstoned", s.parentCID))
+
+	require.True(t, fb.saw(s.parentCID), "backend unpinned the parent")
+	require.True(t, fb.saw(s.derivCID), "backend unpinned the derivative")
+}
+
+func TestTombstoneRefusedUnderLegalHold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pool := dbtest.New(t, ctx)
+	ks := newKeystore(t, ctx, pool)
+	be := newEmbeddedBackend(t, ctx)
+	s := seedParentWithDerivative(t, ctx, pool, ks, be)
+
+	opID := newOperator(t, ctx, pool)
+	fb := &fakeBackend{}
+	svc := newService(pool, fb, time.Now)
+
+	// Quarantine under legal hold: DEK.legal_hold=true, no schedule.
+	require.NoError(t, svc.Quarantine(ctx, moderation.QuarantineCmd{
+		CID: s.parentCID, Rule: "severe_content", Reason: "severe", LegalHold: true, Actor: &opID,
+	}))
+
+	err := svc.Tombstone(ctx, moderation.TombstoneCmd{CID: s.parentCID, Rule: "severe_content", Reason: "x", Actor: &opID})
+	require.ErrorIs(t, err, moderation.ErrLegalHold, "tombstone must be refused by the no_shred_under_legal_hold CHECK")
+
+	// The whole tx rolled back: nothing tombstoned, nothing shredded.
+	require.Equal(t, "quarantined", blobState(t, ctx, pool, s.parentCID), "state unchanged")
+	require.Equal(t, "quarantined", blobState(t, ctx, pool, s.derivCID))
+	pState, pHold, _ := dekFor(t, ctx, pool, s.parentCID)
+	require.Equal(t, "active", pState, "parent DEK still active (un-shredded)")
+	require.True(t, pHold, "legal_hold still set")
+	require.Equal(t, 0, countAudit(t, ctx, pool, "dmca.tombstoned", s.parentCID), "no tombstone audit row")
+	require.False(t, fb.saw(s.parentCID), "no unpin on a refused tombstone")
+}
+
+func zeros72Test() []byte { return make([]byte, 72) }

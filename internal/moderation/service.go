@@ -144,6 +144,113 @@ func (s *Service) Quarantine(ctx context.Context, cmd QuarantineCmd) error {
 	return tx.Commit(ctx)
 }
 
+// TombstoneCmd describes a tombstone action (manual takedown or the sweep).
+type TombstoneCmd struct {
+	CID, Rule, RuleRef, Reason string
+	Actor                      *uuid.UUID
+}
+
+// Tombstone makes a CID's bytes permanently unrecoverable: it crypto-shreds the
+// parent + derivative DEKs, transitions state to tombstoned, cascades that state
+// to derivatives, inserts a revocation, and (after commit) best-effort unpins
+// the parent and each derivative. If any target DEK carries legal_hold=true the
+// no_shred_under_legal_hold CHECK raises (SQLSTATE 23514); it is mapped to
+// ErrLegalHold and the whole transaction rolls back — nothing is tombstoned.
+func (s *Service) Tombstone(ctx context.Context, cmd TombstoneCmd) error {
+	// Collect derivative CIDs before the tx so the post-commit unpin loop has
+	// them even though the cascade/shred are set-based inside the tx.
+	derivs, err := s.q.ListDerivativeCIDs(ctx, pgtype.Text{String: cmd.CID, Valid: true})
+	if err != nil {
+		return fmt.Errorf("moderation: list derivatives: %w", err)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	if _, err := q.InsertModerationDecision(ctx, gen.InsertModerationDecisionParams{
+		Cid:       cmd.CID,
+		Rule:      gen.ModerationRule(orDefault(cmd.Rule, "operator_manual")),
+		RuleRef:   text(cmd.RuleRef),
+		Action:    gen.ModerationActionTombstone,
+		DecidedBy: uuidPg(cmd.Actor),
+		LegalHold: false,
+		Notes:     text(cmd.Reason),
+	}); err != nil {
+		return fmt.Errorf("moderation: insert decision: %w", err)
+	}
+
+	// Evict the originating quarantine row from the sweep's partial index.
+	if err := q.ClearScheduledTombstone(ctx, cmd.CID); err != nil {
+		return fmt.Errorf("moderation: clear schedule: %w", err)
+	}
+	if err := q.SetBlobState(ctx, gen.SetBlobStateParams{Cid: cmd.CID, State: gen.BlobStateTombstoned}); err != nil {
+		return fmt.Errorf("moderation: set state: %w", err)
+	}
+	if err := s.cascade(ctx, tx, cmd.CID, string(gen.BlobStateTombstoned)); err != nil {
+		return fmt.Errorf("moderation: cascade: %w", err)
+	}
+
+	// The DB is the legal-hold enforcement boundary: let the CHECK raise.
+	if err := q.ShredDEKsForBlobTree(ctx, gen.ShredDEKsForBlobTreeParams{Cid: cmd.CID, Zeros: zeros72}); err != nil {
+		if isLegalHoldViolation(err) {
+			return ErrLegalHold // deferred tx.Rollback undoes everything
+		}
+		return fmt.Errorf("moderation: shred: %w", err)
+	}
+
+	if err := q.InsertRevocation(ctx, gen.InsertRevocationParams{Kind: "cid", Value: cmd.CID}); err != nil {
+		return fmt.Errorf("moderation: revocation: %w", err)
+	}
+	if err := actionCaseRef(ctx, q, cmd.RuleRef); err != nil {
+		return err
+	}
+	info, err := q.GetBlobForModeration(ctx, cmd.CID)
+	if err != nil {
+		return fmt.Errorf("moderation: get blob: %w", err)
+	}
+	if err := strikeOwner(ctx, q, info.OwnerID); err != nil {
+		return err
+	}
+
+	if err := s.audit.WriteTx(ctx, tx, auditlog.Entry{
+		ActorID: cmd.Actor, Action: "dmca.tombstoned", TargetType: "cid", TargetID: cmd.CID,
+		Payload: map[string]any{"reason": cmd.Reason, "case": cmd.RuleRef},
+	}); err != nil {
+		return fmt.Errorf("moderation: audit: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// Best-effort, idempotent, after commit — the bytes are already inert.
+	s.unpin(ctx, cmd.CID)
+	for _, d := range derivs {
+		s.unpin(ctx, d)
+	}
+	return nil
+}
+
+// unpin removes the local Kubo pin for cidStr, best-effort. Decode/Unpin
+// failures are logged, never fatal (Phase 1 is single-node; the federation
+// unpin broadcast lands with the mesh in Phase 2).
+func (s *Service) unpin(ctx context.Context, cidStr string) {
+	if s.backend == nil {
+		return
+	}
+	c, err := cid.Decode(cidStr)
+	if err != nil {
+		s.log.Warn("moderation: bad cid for unpin", "cid", cidStr, "err", err)
+		return
+	}
+	if err := s.backend.Unpin(ctx, c); err != nil {
+		s.log.Warn("moderation: unpin", "cid", cidStr, "err", err)
+	}
+}
+
 // --- shared helpers ----------------------------------------------------------
 
 // actionCaseRef advances a referenced DMCA case to 'actioned' when ruleRef
