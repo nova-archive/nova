@@ -44,7 +44,7 @@ Each `audit_kind` runs on its own cadence:
 | `key_unwrap` | hourly | 100 random keys |
 | `sample_decrypt` | hourly | 50 random blobs |
 | `kubo_pin_present` | every 15 min | 200 random blobs |
-| `derivative_state_consistent` | hourly | sampled derivatives — Phase 1 has no state-change timestamp, so M8 samples derivatives and compares each to its parent's *current* state; the precise "changed in the past hour" filter lands with the M9 state transitions |
+| `derivative_state_consistent` | hourly | sampled derivatives — samples derivatives and compares each to its parent's current state; M9 quarantine/tombstone cascades now give this audit real state transitions to police (live as of M9) |
 | `block_hash_valid` | daily | 100 random blocks (multi-block blobs) |
 | `manifest_consistent` | daily | 100 random blobs |
 

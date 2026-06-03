@@ -1,15 +1,17 @@
 # Severe Content Procedure
 
-Status: **Phase 0 — placeholder; full implementation Phase 4.**
+Status: **Phase 1 — manual operator path ships (M9). Full automation Phase 4.**
 
-This document outlines the intended procedure for handling severe
-illegal content (CSAM-class material) discovered on a Nova
-deployment hosting public uploads. The procedure is **not**
-implemented in Phase 1; the database schema supports it (see
-`legal_hold` flag on `data_encryption_keys`, `blob_state` enum
-including `quarantined`, and `moderation_decisions.legal_hold`),
-but the workflow tooling, NCMEC integration, and operator UI are
-Phase 4 deliverables.
+This document outlines the procedure for handling severe illegal content
+(CSAM-class material) discovered on a Nova deployment. The **manual
+operator path** — `novactl moderation quarantine --legal-hold` and the
+operator-only `novactl moderation clear-legal-hold` — ships in M9. The
+database schema (the `legal_hold` flag on `data_encryption_keys`,
+`blob_state` including `quarantined`, `moderation_decisions.legal_hold`,
+and the `no_shred_under_legal_hold` CHECK constraint) already enforces
+the legal-hold gate at the storage layer. NCMEC integration, automated
+detection, and the admin SPA legal-hold clearance UI remain Phase 4
+deliverables.
 
 This is intentional. Phase 1 is a single-node private MVP with
 no public uploads from anonymous users; the immediate severe-
@@ -127,12 +129,12 @@ revocation entry — but the preservation duty is independent of
 public access. Bytes preserved + access blocked is the legally
 required posture during the preservation window.
 
-## Operator legal-hold-clear procedure (Phase 4)
+## Operator legal-hold-clear procedure
 
 After the statutory preservation window passes and the operator
 has confirmed (typically via counsel and law-enforcement contact)
 that no further preservation is required, the operator may clear
-the hold:
+the hold (ships in M9; **operator role required**):
 
 ```sh
 novactl moderation clear-legal-hold <cid> \
@@ -164,17 +166,22 @@ crypto-shreds on its next pass.
 
 ## Phase 1 scope (current)
 
-Phase 1 includes:
+Phase 1 (M9) includes:
 
 - Database schema support: `legal_hold` flag on
   `data_encryption_keys`, `blob_state` includes `quarantined`,
-  `moderation_decisions.legal_hold`, the no-shred-under-legal-hold
-  CHECK constraint.
-- Crypto-shred procedure refuses to run when `legal_hold = true`
-  (per `ENCRYPTION_ENVELOPE.md` § "Crypto-shredding").
-- Manual operator path: a Phase 1 operator can manually quarantine
-  and set `legal_hold = true` via direct SQL or via
+  `moderation_decisions.legal_hold`, the `no_shred_under_legal_hold`
+  CHECK constraint — **enforced at the DB layer** regardless of any
+  application bug.
+- Crypto-shred procedure refuses to run when `legal_hold = true`;
+  the `no_shred_under_legal_hold` CHECK makes this a storage-layer
+  guarantee (per `ENCRYPTION_ENVELOPE.md` § "Crypto-shredding").
+- Manual quarantine with legal hold:
   `novactl moderation quarantine <cid> --legal-hold`.
+- Operator-only legal-hold clearance:
+  `novactl moderation clear-legal-hold <cid>` — enforces the operator
+  role via the API guard (`403` for a moderator). After clearing, the
+  next ≈1-minute sweep tombstones and shreds the blob.
 
 Phase 1 does NOT include:
 
@@ -223,8 +230,8 @@ treat severe-content handling as a manual operator responsibility.
 
 | Phase | Severe-content capability |
 |---|---|
-| 0 (current) | Schema + this doc; manual operator path documented |
-| 1 | Schema-enforced legal-hold gate on crypto-shred; manual quarantine + legal_hold via novactl |
+| 0 | Schema + this doc; manual operator path documented |
+| 1 ✅ | Schema-enforced `no_shred_under_legal_hold` CHECK (DB-layer guarantee); `novactl moderation quarantine --legal-hold`; operator-only `novactl moderation clear-legal-hold` (M9, tag `m9-moderation`) |
 | 3 | Automated PDQ scan against StopNCII at upload, synchronous reject for clear matches; quarantine + legal_hold for ambiguous matches |
 | 4 | NCMEC CyberTipline report generation, admin SPA legal-hold clearance UI, audit-log export for evidence packaging |
 | 4+ | Multi-jurisdiction reporting (UK CEOP, EU INHOPE, etc.) |

@@ -552,9 +552,11 @@ paths:
       summary: Upload an image with image-specific validation.
       description: |
         Identical to `POST /api/v1/blobs` with `product=image`, but
-        rejects non-image MIME types early and runs the perceptual-
-        hash blocklist scan synchronously so the caller learns
+        rejects non-image MIME types early and checks the CID against
+        the operator-curated CID blocklist so the caller learns
         immediately if the upload was rejected on moderation grounds.
+        The blocklist is a direct indexed lookup; no perceptual scan is
+        performed at upload time (Phase-3 deferral).
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -585,8 +587,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        '422':
-          description: Upload rejected by the moderation blocklist.
+        '451':
+          description: Upload rejected by the CID blocklist.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1084,11 +1086,20 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedPinAssignments'
 
-  /api/v1/admin/moderation/blocklist:
+  /api/v1/admin/moderation/quarantine:
     post:
       tags: [admin]
-      operationId: addBlocklistHash
-      summary: Add a perceptual-hash entry to the moderation blocklist.
+      operationId: moderationQuarantine
+      summary: Quarantine a CID (blocks reads, preserves bytes for counter-notice window).
+      description: |
+        Sets the blob and its derivatives to `quarantined`, inserts a
+        signed-URL revocation, and schedules a tombstone after
+        `tombstone_after` (default 14 days). With `legal_hold: true` the
+        DEK(s) are pinned (`legal_hold = true` in `data_encryption_keys`)
+        and no `scheduled_tombstone_at` is set — crypto-shred is refused
+        at the DB layer until `POST /moderation/clear-legal-hold`.
+
+        Requires `operator` or `moderator` role.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -1096,19 +1107,180 @@ paths:
           application/json:
             schema:
               type: object
-              required: [perceptual_hash, source]
+              required: [cid, reason]
               properties:
-                perceptual_hash:
+                cid: { $ref: '#/components/schemas/Cid' }
+                rule:
                   type: string
-                  format: byte
-                  description: 256-bit PDQ hash, base64-encoded.
-                source:
+                  enum: [dmca, severe_content, operator_manual]
+                case_id:
                   type: string
-                  description: Provenance label (e.g., `stop_ncii`, `operator_manual`).
+                  format: uuid
+                  nullable: true
+                reason: { type: string }
+                tombstone_after:
+                  type: string
+                  description: |
+                    Duration string e.g. `"14d"` or `"336h"`. Default `14d`.
+                  default: '14d'
+                legal_hold:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: CID quarantined.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/moderation/takedown:
+    post:
+      tags: [admin]
+      operationId: moderationTakedown
+      summary: Immediate tombstone + crypto-shred of a CID (local Kubo unpin after commit).
+      description: |
+        Bypasses the counter-notice window: tombstones and shreds the DEK
+        immediately. Returns `409 legal_hold` if the DEK carries a
+        legal-hold flag (use `clear-legal-hold` first). The local Kubo
+        unpin is best-effort after commit; federation unpin broadcast is
+        Phase 2.
+
+        Requires `operator` or `moderator` role.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cid, reason]
+              properties:
+                cid: { $ref: '#/components/schemas/Cid' }
+                case_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                reason: { type: string }
+      responses:
+        '200':
+          description: CID tombstoned and DEK shredded.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Tombstone refused — DEK is under legal hold.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/admin/moderation/clear-legal-hold:
+    post:
+      tags: [admin]
+      operationId: moderationClearLegalHold
+      summary: Clear the legal-hold flag on a CID so the next sweep tombstones it (operator-only).
+      description: |
+        Clears `data_encryption_keys.legal_hold` for the parent and all
+        derivatives, sets `scheduled_tombstone_at = now()` on the originating
+        quarantine decision, and writes an audit row. The ≈1-minute sweep
+        will tombstone and shred on its next tick.
+
+        **Operator role required** — moderators receive `403`.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cid, reason]
+              properties:
+                cid: { $ref: '#/components/schemas/Cid' }
+                case_ref: { type: string, nullable: true }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Legal hold cleared; tombstone scheduled.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/moderation/restore:
+    post:
+      tags: [admin]
+      operationId: moderationRestore
+      summary: Restore a quarantined CID to active (only valid from quarantined state).
+      description: |
+        Sets the blob and its derivatives back to `active` and clears
+        `scheduled_tombstone_at`. The `(cid, cid)` signed-URL revocation
+        is **not** removed (it is indistinguishable from a manual operator
+        revocation; re-mint new signed URLs after restore if needed).
+        Returns `409` if the blob is not in `quarantined` state.
+
+        Requires `operator` or `moderator` role.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cid, reason]
+              properties:
+                cid: { $ref: '#/components/schemas/Cid' }
+                reason: { type: string }
+      responses:
+        '200':
+          description: CID restored to active.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Blob is not in quarantined state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/admin/moderation/counter-notice:
+    post:
+      tags: [admin]
+      operationId: moderationCounterNotice
+      summary: Record a counter-notice and clear the scheduled tombstone.
+      description: |
+        Clears `scheduled_tombstone_at` so the sweep will not auto-tombstone
+        during the counter-notice review window. The blob remains
+        `quarantined`; the operator later restores or lets a renewed schedule
+        proceed to tombstone. Appends `notes` to the associated DMCA case.
+
+        Requires `operator` or `moderator` role.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cid, notes]
+              properties:
+                cid: { $ref: '#/components/schemas/Cid' }
                 notes: { type: string }
       responses:
-        '201':
-          description: Hash added.
+        '200':
+          description: Counter-notice recorded; tombstone schedule cleared.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/admin/moderation/queue:
     get:
@@ -1126,29 +1298,74 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedModerationDecisions'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
-  /api/v1/admin/moderation/{id}/takedown:
-    parameters:
-      - name: id
-        in: path
-        required: true
-        schema: { type: string, format: uuid }
+  /api/v1/admin/moderation/blocklist:
+    get:
+      tags: [admin]
+      operationId: listBlocklist
+      summary: List operator-curated CID blocklist entries.
+      description: |
+        The Phase-1 blocklist is **CID-based** (operator-curated exact-CID
+        deny). Perceptual-hash / visual re-upload prevention is a Phase-3
+        deferral.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+      responses:
+        '200':
+          description: Blocklist entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlocklistEntries'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [admin]
-      operationId: executeModerationTakedown
-      summary: Execute a takedown (tombstone + crypto-shred + unpin broadcast).
+      operationId: addBlocklistEntry
+      summary: Add a CID to the operator-curated blocklist.
+      description: |
+        Adds the exact CID to the deny registry. Enforced at both the read
+        path (`storage.Resolve` → `451`) and the import/commit path
+        (`storage.Put` → `451`). The Phase-1 blocklist is CID-based;
+        perceptual-hash matching is Phase 3.
       security: [{ bearerAuth: [] }]
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [cid, reason]
               properties:
-                notes: { type: string }
+                cid: { $ref: '#/components/schemas/Cid' }
+                reason: { type: string }
       responses:
-        '202':
-          description: Takedown dispatched; cluster-wide unpin broadcast in progress.
+        '201':
+          description: CID added to blocklist.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/moderation/blocklist/{cid}:
+    parameters:
+      - name: cid
+        in: path
+        required: true
+        schema: { $ref: '#/components/schemas/Cid' }
+    delete:
+      tags: [admin]
+      operationId: deleteBlocklistEntry
+      summary: Remove a CID from the operator-curated blocklist.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204':
+          description: CID removed from blocklist.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
   /api/v1/admin/dmca:
@@ -1172,6 +1389,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedDmcaCases'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/dmca/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [admin]
+      operationId: getDmcaCase
+      summary: Get a single DMCA case by id.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: DMCA case detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DmcaCase'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/admin/audit-log:
+    get:
+      tags: [admin]
+      operationId: listAuditLog
+      summary: List operator action audit-log entries (newest-first).
+      description: |
+        Paginated listing of `audit_log` rows. Optional filters:
+        `action` (e.g. `dmca.quarantined`) and `target_type` (e.g. `cid`).
+        The audit log is append-only and monthly-partitioned; rows are never
+        deleted (recommended retention ≥ 7 years).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: action
+          in: query
+          required: false
+          schema: { type: string }
+        - name: target_type
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Audit log entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAuditLogEntries'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/admin/keys/rotate-signing:
     post:
@@ -1430,8 +1704,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/DmcaSubmission' }
       responses:
-        '201':
-          description: Notice received.
+        '202':
+          description: Notice recorded; no action taken automatically.
           content:
             application/json:
               schema:
@@ -1439,6 +1713,7 @@ paths:
                 required: [case_id]
                 properties:
                   case_id: { type: string, format: uuid }
+        '400': { $ref: '#/components/responses/BadRequest' }
 
   /legal/dsar:
     get:
@@ -2153,4 +2428,75 @@ components:
         data:
           type: array
           items: { $ref: '#/components/schemas/DmcaCase' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    BlocklistEntry:
+      type: object
+      required: [cid, reason, rule, created_at]
+      description: |
+        One row from the `blocklist` table. The Phase-1 blocklist is
+        **CID-based** (operator-curated exact-CID deny); perceptual-hash
+        matching is a Phase-3 deferral.
+      properties:
+        cid: { $ref: '#/components/schemas/Cid' }
+        reason: { type: string }
+        rule:
+          type: string
+          enum: [pdq_match, dmca, severe_content, operator_manual, user_report]
+          default: operator_manual
+        added_by:
+          type: string
+          format: uuid
+          nullable: true
+        created_at: { type: string, format: date-time }
+
+    PaginatedBlocklistEntries:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/BlocklistEntry' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    AuditLogEntry:
+      type: object
+      required: [id, action, target_type, target_id, at]
+      description: |
+        One row from the monthly-partitioned `audit_log` table. Written
+        atomically with each moderation action (`WriteTx`) and best-effort
+        for M7 admin actions (`Write`). Append-only; never pruned (legal
+        retention ≥ 7 years recommended).
+      properties:
+        id: { type: integer, format: int64 }
+        actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Operator/moderator UUID; null for system actions (the sweep).
+        action:
+          type: string
+          description: |
+            Dot-namespaced action string, e.g. `dmca.quarantined`,
+            `dmca.tombstoned`, `dmca.restored`, `dmca.counter_received`,
+            `severe.quarantined`, `severe.legal_hold_cleared`,
+            `signing_key.rotated`, `signed_url.revoked`, `signed_url.signed`.
+        target_type:
+          type: string
+          description: E.g. `cid`, `dmca_case`, `signing_key`.
+        target_id: { type: string }
+        payload:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: JSON context (case id, reason, scheduled_tombstone_at, etc). Never contains key material.
+        at: { type: string, format: date-time }
+
+    PaginatedAuditLogEntries:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/AuditLogEntry' }
         pagination: { $ref: '#/components/schemas/Pagination' }

@@ -168,7 +168,9 @@ The encryption key is **not** shredded. It remains in
 remain on donor disks until either the scheduled tombstone fires
 or the operator restores.
 
-A scheduled job runs every minute and tombstones overdue rows:
+An **in-process sweep** runs approximately every minute and tombstones
+overdue rows. It is a sibling goroutine of `gcLoop`, not a persistent
+jobs-queue entry, so it needs no external scheduler:
 
 ```sql
 SELECT md.cid
@@ -180,11 +182,22 @@ SELECT md.cid
    AND dek.legal_hold = false;
 ```
 
-For each result, the job runs the tombstone procedure (state
-transition, crypto-shred, federation unpin broadcast). Because
-`legal_hold` is checked, severe-content rows whose `legal_hold=true`
-will never be tombstoned by this job, even if a malformed schedule
-were ever set.
+For each result, the sweep runs the tombstone procedure (state
+transition, DEK crypto-shred, **local Kubo `Unpin`** — best-effort after
+commit). Because `legal_hold` is checked, severe-content rows whose
+`legal_hold=true` will never be tombstoned by this sweep, even if a
+malformed schedule were ever set.
+
+**Phase-1 note:** the tombstone performs a **local Kubo `backend.Unpin`**
+call after the transaction commits. Federation unpin broadcast (notifying
+peer nodes) is a Phase-2 deliverable that lands with the mesh.
+
+**Index discipline:** when a CID is tombstoned, the sweep also clears
+`scheduled_tombstone_at` on the originating quarantine decision (sets it
+to `NULL`). This evicts the completed row from the partial index
+`moderation_decisions_scheduled_tombstone_idx`, keeping the index —
+and the per-minute scan — `O(pending)` rather than growing unboundedly
+with every auto-tombstone.
 
 ## Action (immediate-tombstone, opt-in)
 
@@ -206,7 +219,8 @@ The transaction:
    `legal_hold=true` (which never holds for routine DMCA).
 4. INSERT `signed_url_revocations (kind='cid', value=<cid>)`.
 5. Cascade to all child derivatives (state, key shred).
-6. INSERT pin-broadcast unpin entries for the federation.
+6. **Local Kubo `Unpin`** (best-effort, after commit). Federation unpin
+   broadcast is Phase 2.
 7. UPDATE `dmca_cases.status='actioned'`.
 8. Increment repeat-infringer strikes.
 9. Audit-log every step.
@@ -334,7 +348,7 @@ role in production.
 - Schema: `docs/specs/DATA_MODEL.sql` (`dmca_cases`,
   `moderation_decisions`, `data_encryption_keys`,
   `signed_url_revocations`)
-- Pin propagation: `docs/specs/FEDERATION_PROTOCOL.md` § "Tombstone propagation"
+- Pin propagation: `docs/specs/FEDERATION_PROTOCOL.md` § "Tombstone propagation" (Phase-2 federation unpin broadcast; Phase 1 performs a local Kubo unpin only)
 - Signed-URL revocation: `docs/specs/SIGNED_URL_FORMAT.md` § "Revocation"
 - Severe content (CSAM-class): `docs/legal/SEVERE_CONTENT_PROCEDURE.md`
 - Operator launch readiness: `OPERATOR_CHECKLIST.md`
