@@ -77,7 +77,7 @@ func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) 
 }
 
 const listAuditLog = `-- name: ListAuditLog :many
-SELECT id, actor_id::text AS actor_id, action, target_type, target_id, payload, at
+SELECT id, coalesce(actor_id::text, '')::text AS actor_id, action, target_type, target_id, payload, at
 FROM audit_log
 WHERE ($1::text IS NULL OR action = $1::text)
   AND ($2::text IS NULL OR target_type = $2::text)
@@ -102,6 +102,9 @@ type ListAuditLogRow struct {
 	At         time.Time
 }
 
+// actor_id is nullable — system actions (e.g. the scheduled-tombstone sweep)
+// record actor_id=NULL; coalesce so the listing never crashes on a NULL actor.
+// ” renders as a null actor in the handler.
 func (q *Queries) ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]ListAuditLogRow, error) {
 	rows, err := q.db.Query(ctx, listAuditLog,
 		arg.Action,

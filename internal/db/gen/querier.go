@@ -79,6 +79,9 @@ type Querier interface {
 	InsertRevocation(ctx context.Context, arg InsertRevocationParams) error
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	IsBlocklisted(ctx context.Context, cid string) (bool, error)
+	// actor_id is nullable — system actions (e.g. the scheduled-tombstone sweep)
+	// record actor_id=NULL; coalesce so the listing never crashes on a NULL actor.
+	// '' renders as a null actor in the handler.
 	ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]ListAuditLogRow, error)
 	// added_by is nullable; coalesce so a system-added entry (NULL) never crashes
 	// the listing. '' renders as a null actor in the handler.
