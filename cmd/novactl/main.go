@@ -6,6 +6,11 @@
 //	novactl auth whoami
 //	novactl auth logout
 //	novactl signed-url sign --path <p> [--ttl <secs>] --aud <origin>
+//	novactl moderation quarantine <cid> [--case <id>] [--reason <s>] [--tombstone-after 14d] [--legal-hold]
+//	novactl moderation takedown <cid> [--case <id>] [--reason <s>] [--no-confirm]
+//	novactl moderation clear-legal-hold <cid> [--case-id <ref>] [--reason <s>] [--no-confirm]
+//	novactl moderation restore <cid> [--reason <s>]
+//	novactl moderation list [--per-page <n>]
 package main
 
 import (
@@ -18,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/term"
@@ -456,17 +462,328 @@ func cmdSignedURLSign(args []string) error {
 }
 
 // --------------------------------------------------------------------------
+// Moderation helpers
+// --------------------------------------------------------------------------
+
+// confirm prints prompt to stderr, reads a line from stdin, and returns true
+// iff the response is "y" or "Y".
+func confirm(prompt string) bool {
+	fmt.Fprint(os.Stderr, prompt)
+	var line string
+	_, _ = fmt.Fscanln(os.Stdin, &line)
+	return line == "y" || line == "Y"
+}
+
+// loadCreds reads the stored credentials and returns a user-friendly error if
+// the file is absent.
+func loadCreds() (credentials, error) {
+	path, err := credsPath()
+	if err != nil {
+		return credentials{}, err
+	}
+	c, err := readCredentials(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return credentials{}, errors.New("not logged in — run: novactl auth login")
+		}
+		return credentials{}, err
+	}
+	return c, nil
+}
+
+// handleModerationResponse handles the common HTTP status codes returned by
+// moderation endpoints and prints a result or error message.
+func handleModerationResponse(resp *http.Response) error {
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		body, _ := io.ReadAll(resp.Body)
+		fmt.Println(string(body))
+		return nil
+	case http.StatusUnauthorized:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return errors.New("unauthorized — run: novactl auth login")
+	case http.StatusForbidden:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return errors.New("forbidden — operator/moderator role required")
+	case http.StatusNotFound:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return errors.New("not found")
+	case http.StatusConflict:
+		ae := readAPIError(resp.Body)
+		return fmt.Errorf("%s", ae.Message)
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("request failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+}
+
+// --------------------------------------------------------------------------
+// Subcommand: moderation quarantine
+// --------------------------------------------------------------------------
+
+func cmdModerationQuarantine(args []string) error {
+	// CID is the first positional arg; flags follow.
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: novactl moderation quarantine <cid> [--case <id>] [--reason <s>] [--tombstone-after 14d] [--legal-hold]")
+		return errors.New("missing required argument: <cid>")
+	}
+	cid := args[0]
+	fs := flag.NewFlagSet("moderation quarantine", flag.ContinueOnError)
+	caseID := fs.String("case", "", "moderation case ID")
+	reason := fs.String("reason", "", "reason for quarantine")
+	tombstoneAfter := fs.String("tombstone-after", "", "tombstone delay, e.g. 14d")
+	legalHold := fs.Bool("legal-hold", false, "place a legal hold (also sets rule to severe_content)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	c, err := loadCreds()
+	if err != nil {
+		return err
+	}
+
+	body := map[string]any{
+		"cid":        cid,
+		"reason":     *reason,
+		"legal_hold": *legalHold,
+	}
+	if *caseID != "" {
+		body["case_id"] = *caseID
+	}
+	if *tombstoneAfter != "" {
+		body["tombstone_after"] = *tombstoneAfter
+	}
+	if *legalHold {
+		body["rule"] = "severe_content"
+	}
+
+	resp, err := postJSON(newClient(), c.BaseURL+"/api/v1/admin/moderation/quarantine", body, c.AccessToken)
+	if err != nil {
+		return fmt.Errorf("quarantine request: %w", err)
+	}
+	return handleModerationResponse(resp)
+}
+
+// --------------------------------------------------------------------------
+// Subcommand: moderation takedown
+// --------------------------------------------------------------------------
+
+func cmdModerationTakedown(args []string) error {
+	// CID is the first positional arg; flags follow.
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: novactl moderation takedown <cid> [--case <id>] [--reason <s>] [--no-confirm]")
+		return errors.New("missing required argument: <cid>")
+	}
+	cid := args[0]
+	fs := flag.NewFlagSet("moderation takedown", flag.ContinueOnError)
+	caseID := fs.String("case", "", "moderation case ID")
+	reason := fs.String("reason", "", "reason for takedown")
+	noConfirm := fs.Bool("no-confirm", false, "skip the destructive-action confirmation prompt")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	if !*noConfirm {
+		if !confirm("This permanently crypto-shreds the blob. Continue? [y/N] ") {
+			fmt.Fprintln(os.Stderr, "aborted")
+			return nil
+		}
+	}
+
+	c, err := loadCreds()
+	if err != nil {
+		return err
+	}
+
+	body := map[string]any{
+		"cid":    cid,
+		"reason": *reason,
+	}
+	if *caseID != "" {
+		body["case_id"] = *caseID
+	}
+
+	resp, err := postJSON(newClient(), c.BaseURL+"/api/v1/admin/moderation/takedown", body, c.AccessToken)
+	if err != nil {
+		return fmt.Errorf("takedown request: %w", err)
+	}
+	return handleModerationResponse(resp)
+}
+
+// --------------------------------------------------------------------------
+// Subcommand: moderation clear-legal-hold
+// --------------------------------------------------------------------------
+
+func cmdModerationClearLegalHold(args []string) error {
+	// CID is the first positional arg; flags follow.
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: novactl moderation clear-legal-hold <cid> [--case-id <ref>] [--reason <s>] [--no-confirm]")
+		return errors.New("missing required argument: <cid>")
+	}
+	cid := args[0]
+	fs := flag.NewFlagSet("moderation clear-legal-hold", flag.ContinueOnError)
+	caseRef := fs.String("case-id", "", "case reference")
+	reason := fs.String("reason", "", "reason for releasing the hold")
+	noConfirm := fs.Bool("no-confirm", false, "skip the destructive-action confirmation prompt")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	if !*noConfirm {
+		if !confirm("This releases the legal hold and allows tombstone. Continue? [y/N] ") {
+			fmt.Fprintln(os.Stderr, "aborted")
+			return nil
+		}
+	}
+
+	c, err := loadCreds()
+	if err != nil {
+		return err
+	}
+
+	body := map[string]any{
+		"cid":    cid,
+		"reason": *reason,
+	}
+	if *caseRef != "" {
+		body["case_ref"] = *caseRef
+	}
+
+	resp, err := postJSON(newClient(), c.BaseURL+"/api/v1/admin/moderation/clear-legal-hold", body, c.AccessToken)
+	if err != nil {
+		return fmt.Errorf("clear-legal-hold request: %w", err)
+	}
+	if resp.StatusCode == http.StatusForbidden {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return errors.New("requires operator role")
+	}
+	return handleModerationResponse(resp)
+}
+
+// --------------------------------------------------------------------------
+// Subcommand: moderation restore
+// --------------------------------------------------------------------------
+
+func cmdModerationRestore(args []string) error {
+	// CID is the first positional arg; flags follow.
+	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: novactl moderation restore <cid> [--reason <s>]")
+		return errors.New("missing required argument: <cid>")
+	}
+	cid := args[0]
+	fs := flag.NewFlagSet("moderation restore", flag.ContinueOnError)
+	reason := fs.String("reason", "", "reason for restoring the blob")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	c, err := loadCreds()
+	if err != nil {
+		return err
+	}
+
+	resp, err := postJSON(newClient(), c.BaseURL+"/api/v1/admin/moderation/restore", map[string]any{
+		"cid":    cid,
+		"reason": *reason,
+	}, c.AccessToken)
+	if err != nil {
+		return fmt.Errorf("restore request: %w", err)
+	}
+	return handleModerationResponse(resp)
+}
+
+// --------------------------------------------------------------------------
+// Subcommand: moderation list
+// --------------------------------------------------------------------------
+
+func cmdModerationList(args []string) error {
+	fs := flag.NewFlagSet("moderation list", flag.ContinueOnError)
+	perPage := fs.Int("per-page", 20, "number of results per page")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	c, err := loadCreds()
+	if err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("%s/api/v1/admin/moderation/queue?per_page=%d", c.BaseURL, *perPage)
+	resp, err := getJSON(newClient(), url, c.AccessToken)
+	if err != nil {
+		return fmt.Errorf("list request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var raw json.RawMessage
+		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+			return fmt.Errorf("decode list response: %w", err)
+		}
+		out, err := json.MarshalIndent(raw, "", "  ")
+		if err != nil {
+			return fmt.Errorf("format list response: %w", err)
+		}
+		fmt.Println(string(out))
+		return nil
+	case http.StatusUnauthorized:
+		return errors.New("unauthorized — run: novactl auth login")
+	case http.StatusForbidden:
+		return errors.New("forbidden — operator/moderator role required")
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("list failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+}
+
+// --------------------------------------------------------------------------
+// Subcommand group: moderation
+// --------------------------------------------------------------------------
+
+func cmdModeration(args []string) error {
+	if len(args) < 1 {
+		usage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "quarantine":
+		return cmdModerationQuarantine(args[1:])
+	case "takedown":
+		return cmdModerationTakedown(args[1:])
+	case "clear-legal-hold":
+		return cmdModerationClearLegalHold(args[1:])
+	case "restore":
+		return cmdModerationRestore(args[1:])
+	case "list":
+		return cmdModerationList(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "novactl: unknown subcommand %q\n\n", args[0])
+		usage()
+		os.Exit(2)
+		return nil
+	}
+}
+
+// --------------------------------------------------------------------------
 // main
 // --------------------------------------------------------------------------
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url> <subcommand>")
+	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation> <subcommand>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth login [--url <base>] [--username <u>]")
 	fmt.Fprintln(os.Stderr, "  auth whoami")
 	fmt.Fprintln(os.Stderr, "  auth logout")
 	fmt.Fprintln(os.Stderr, "  signed-url sign --path <p> [--ttl <secs>] --aud <origin>")
+	fmt.Fprintln(os.Stderr, "  moderation quarantine <cid> [--case <id>] [--reason <s>] [--tombstone-after 14d] [--legal-hold]")
+	fmt.Fprintln(os.Stderr, "  moderation takedown <cid> [--case <id>] [--reason <s>] [--no-confirm]")
+	fmt.Fprintln(os.Stderr, "  moderation clear-legal-hold <cid> [--case-id <ref>] [--reason <s>] [--no-confirm]")
+	fmt.Fprintln(os.Stderr, "  moderation restore <cid> [--reason <s>]")
+	fmt.Fprintln(os.Stderr, "  moderation list [--per-page <n>]")
 }
 
 func main() {
@@ -482,6 +799,8 @@ func main() {
 		err = runAuth(args[1:])
 	case "signed-url":
 		err = runSignedURL(args[1:])
+	case "moderation":
+		err = cmdModeration(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()
