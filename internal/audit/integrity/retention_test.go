@@ -82,3 +82,34 @@ func TestMaintainer(t *testing.T) {
 		require.True(t, partitionExists(t, ctx, pool, "integrity_audits_default"), "default catch-all is never dropped")
 	})
 }
+
+// TestMaintainerAuditLogPartitions covers M9: the Maintainer also create-aheads
+// audit_log's monthly partitions (the committed ones stop at 2026-07-01) and
+// never prunes audit_log (operator-action history is retained for years).
+func TestMaintainerAuditLogPartitions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping maintainer DB test in short mode")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	clk := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	m := NewMaintainer(pool, 30*24*time.Hour, 365*24*time.Hour, nil,
+		WithMaintClock(func() time.Time { return clk }))
+
+	// An old operator-action row that must never be pruned (legal retention).
+	_, err := pool.Exec(ctx,
+		`INSERT INTO audit_log (action, target_type, target_id, at)
+		 VALUES ('test.action','cid','bafyX','2020-01-01 00:00:00+00')`)
+	require.NoError(t, err)
+
+	// A full maintain cycle now also create-aheads audit_log (and must not prune it).
+	m.maintain(ctx)
+
+	require.True(t, partitionExists(t, ctx, pool, "audit_log_2026_07"), "audit_log create-ahead provisions next month")
+	require.True(t, partitionExists(t, ctx, pool, "audit_log_2026_08"))
+
+	var n int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM audit_log WHERE action='test.action'`).Scan(&n))
+	require.Equal(t, 1, n, "audit_log is never pruned (legal retention)")
+}

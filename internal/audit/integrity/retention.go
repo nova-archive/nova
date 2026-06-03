@@ -91,6 +91,12 @@ func (m *Maintainer) maintain(ctx context.Context) {
 	if err := m.ensurePartitions(ctx); err != nil {
 		m.log.WarnContext(ctx, "integrity: ensure partitions", "err", err)
 	}
+	// audit_log is also monthly-partitioned (0003_partitions.sql); M9 provisions
+	// its partitions ahead too, but never prunes it — operator-action history is
+	// retained for years (legal hold), so there is no prune/drop pass for it.
+	if err := m.ensureMonthlyPartitions(ctx, "audit_log"); err != nil {
+		m.log.WarnContext(ctx, "audit_log: ensure partitions", "err", err)
+	}
 	if err := m.prunePasses(ctx); err != nil {
 		m.log.WarnContext(ctx, "integrity: prune passes", "err", err)
 	}
@@ -99,23 +105,30 @@ func (m *Maintainer) maintain(ctx context.Context) {
 	}
 }
 
-// ensurePartitions creates the current month plus partitionLookahead months
-// ahead, idempotently. Names are month-derived (no user input) so the DDL is
-// assembled with fmt.Sprintf; bounds are explicit-UTC to match 0003_partitions.sql.
-func (m *Maintainer) ensurePartitions(ctx context.Context) error {
+// ensureMonthlyPartitions creates the current month plus partitionLookahead
+// months ahead of parent, idempotently. Names are month-derived (no user input)
+// so the DDL is assembled with fmt.Sprintf; bounds are explicit-UTC to match
+// 0003_partitions.sql. Used for both integrity_audits and audit_log (M9).
+func (m *Maintainer) ensureMonthlyPartitions(ctx context.Context, parent string) error {
 	base := monthStart(m.now())
 	for i := 0; i <= partitionLookahead; i++ {
 		start := base.AddDate(0, i, 0)
 		end := start.AddDate(0, 1, 0)
-		name := partitionName(start)
+		name := fmt.Sprintf("%s_%04d_%02d", parent, start.Year(), int(start.Month()))
 		ddl := fmt.Sprintf(
-			`CREATE TABLE IF NOT EXISTS %s PARTITION OF integrity_audits FOR VALUES FROM ('%s') TO ('%s')`,
-			name, boundLiteral(start), boundLiteral(end))
+			`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')`,
+			name, parent, boundLiteral(start), boundLiteral(end))
 		if _, err := m.pool.Exec(ctx, ddl); err != nil {
 			return fmt.Errorf("create %s: %w", name, err)
 		}
 	}
 	return nil
+}
+
+// ensurePartitions provisions integrity_audits' partitions (the retention test
+// drives this directly).
+func (m *Maintainer) ensurePartitions(ctx context.Context) error {
+	return m.ensureMonthlyPartitions(ctx, "integrity_audits")
 }
 
 // prunePasses deletes pass rows older than passRet. Failures are retained.
@@ -175,10 +188,6 @@ func (m *Maintainer) dropAgedPartitions(ctx context.Context) error {
 func monthStart(t time.Time) time.Time {
 	t = t.UTC()
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
-}
-
-func partitionName(start time.Time) string {
-	return fmt.Sprintf("integrity_audits_%04d_%02d", start.Year(), int(start.Month()))
 }
 
 func boundLiteral(t time.Time) string {
