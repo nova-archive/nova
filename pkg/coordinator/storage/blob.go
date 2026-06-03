@@ -84,6 +84,13 @@ func (s *Service) Resolve(ctx context.Context, cidStr string) (*BlobView, error)
 		return nil, ErrBlobNotFound
 	}
 
+	// Operator-curated blocklist (M9): a direct indexed PK lookup, deny-first.
+	if blocked, err := s.q.IsBlocklisted(ctx, cidStr); err != nil {
+		return nil, fmt.Errorf("storage: blocklist check: %w", err)
+	} else if blocked {
+		return nil, ErrBlobBlocklisted
+	}
+
 	core, err := s.q.GetBlobCore(ctx, cidStr)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrBlobNotFound

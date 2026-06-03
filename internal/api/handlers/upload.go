@@ -304,6 +304,8 @@ func (h *UploadHandler) writePutError(w http.ResponseWriter, err error, rid stri
 		httputil.WriteError(w, http.StatusServiceUnavailable, "server_busy", "server at capacity, retry", rid)
 	case errors.Is(err, storage.ErrModerationRejected):
 		httputil.WriteError(w, http.StatusUnprocessableEntity, "moderation_rejected", "upload rejected by moderation", rid)
+	case errors.Is(err, storage.ErrBlobBlocklisted):
+		httputil.WriteError(w, http.StatusUnavailableForLegalReasons, "blocklisted", "content blocked by moderation blocklist", rid)
 	default:
 		httputil.WriteError(w, http.StatusInternalServerError, "internal", "internal server error", rid)
 	}
@@ -374,4 +376,3 @@ func ownerFromContext(ctx context.Context) *uuid.UUID {
 	}
 	return nil
 }
-

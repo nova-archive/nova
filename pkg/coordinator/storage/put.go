@@ -142,6 +142,18 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 		return nil, fmt.Errorf("storage: import: %w", err)
 	}
 
+	// Refuse a blocklisted CID before commit; unpin the just-added orphan. The
+	// CID is only known post-import (encrypted envelopes are nonce-randomised),
+	// so this is pin-then-unpin for the rare blocklisted upload. Effective for
+	// public_archival re-uploads (deterministic CID). M9.
+	if blocked, berr := s.q.IsBlocklisted(ctx, add.CID.String()); berr != nil {
+		_ = s.backend.Unpin(ctx, add.CID)
+		return nil, fmt.Errorf("storage: blocklist check: %w", berr)
+	} else if blocked {
+		_ = s.backend.Unpin(ctx, add.CID)
+		return nil, ErrBlobBlocklisted
+	}
+
 	if err := s.commit(ctx, add, buf, mime, pc, encrypt, wrapped, mkvID, persist); err != nil {
 		if uerr := s.backend.Unpin(ctx, add.CID); uerr != nil {
 			err = fmt.Errorf("%w (unpin also failed: %v)", err, uerr)

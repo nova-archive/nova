@@ -20,6 +20,11 @@ var (
 	// ErrBlobQuarantined: blob is under moderation hold.
 	ErrBlobQuarantined = errors.New("storage: blob quarantined")
 
+	// ErrBlobBlocklisted: the CID is on the operator-curated blocklist (M9).
+	// Denied on both the read path and at import/commit. Effective for
+	// public_archival (deterministic CID); a permanent exact-CID deny otherwise.
+	ErrBlobBlocklisted = errors.New("storage: blob blocklisted")
+
 	// ErrBlobSoftDeleted: blob soft-deleted (bytes may still exist).
 	ErrBlobSoftDeleted = errors.New("storage: blob soft-deleted")
 

@@ -168,6 +168,38 @@ func TestIntegrationPutPublicArchivalPlaintext(t *testing.T) {
 	require.Equal(t, body, fb.store[res.CID], "public_archival stores plaintext, no envelope")
 }
 
+func TestIntegrationBlocklistDeniesReadAndImport(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	ks := bootstrapKS(t, ctx, pool)
+	fb := newFakeBackend()
+	svc := NewService(pool, fb, ks)
+	col := seedCollection(t, ctx, pool, "public", true) // public_archival ⇒ deterministic CID
+
+	body := []byte("blocklisted public archival data")
+	res, err := svc.Put(ctx, bytes.NewReader(body), int64(len(body)),
+		PutContext{MIME: "text/plain", Product: "raw", CollectionID: &col})
+	require.NoError(t, err)
+
+	// Operator blocklists the CID.
+	_, err = pool.Exec(ctx, `INSERT INTO blocklist (cid, reason) VALUES ($1,$2)`, res.CID, "test")
+	require.NoError(t, err)
+
+	// Read is denied.
+	_, err = svc.Resolve(ctx, res.CID)
+	require.ErrorIs(t, err, ErrBlobBlocklisted)
+
+	// Re-import of identical public_archival content (same deterministic CID) is
+	// refused before commit, and the orphaned pin is cleaned up.
+	_, err = svc.Put(ctx, bytes.NewReader(body), int64(len(body)),
+		PutContext{MIME: "text/plain", Product: "raw", CollectionID: &col})
+	require.ErrorIs(t, err, ErrBlobBlocklisted)
+	require.Contains(t, fb.unpinned, res.CID, "blocklisted re-import unpins its orphan")
+}
+
 func TestIntegrationPutRollbackUnpinsOnCommitFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")

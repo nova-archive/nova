@@ -44,6 +44,8 @@ func mapBytesError(err error) (int, string, string) {
 		return 401, "signed_url_required", "signed url or bearer required"
 	case errors.Is(err, storage.ErrBlobQuarantined):
 		return 451, "quarantined", "content under moderation hold"
+	case errors.Is(err, storage.ErrBlobBlocklisted):
+		return 451, "blocklisted", "content blocked"
 	case errors.Is(err, storage.ErrBlobSoftDeleted),
 		errors.Is(err, storage.ErrBlobTombstoned),
 		errors.Is(err, storage.ErrKeyShredded):
@@ -57,7 +59,8 @@ func mapJSONError(err error) (int, string, string) {
 	switch {
 	case errors.Is(err, storage.ErrBlobNotFound),
 		errors.Is(err, storage.ErrBlobAuthRequired),
-		errors.Is(err, storage.ErrBlobQuarantined):
+		errors.Is(err, storage.ErrBlobQuarantined),
+		errors.Is(err, storage.ErrBlobBlocklisted):
 		return 404, "not_found", "blob not found"
 	case errors.Is(err, storage.ErrBlobSoftDeleted),
 		errors.Is(err, storage.ErrBlobTombstoned),
