@@ -35,21 +35,24 @@ type AuthConfigDescriptor struct {
 
 // ServerConfig carries the handlers + knobs the router needs.
 type ServerConfig struct {
-	Version        string
-	Blob           *handlers.BlobHandler
-	Upload         *handlers.UploadHandler
-	Limiter        *ratelimit.Limiter
-	Verifiers      []auth.Verifier
-	Issuer         IssuerHandlers       // nil => external mode (auth/* 404 except config)
-	AuthConfig     AuthConfigDescriptor // always served at /api/v1/auth/config
-	Me             *handlers.MeHandler
-	PublicUploads  bool
-	LoginLimiter   *ratelimit.Limiter
-	TrustedProxies []netip.Prefix                  // gates XFF trust for rate-limit + source-IP recording
-	Ready          *handlers.ReadyHandler          // nil ⇒ /readyz returns 200 with no checks
-	SignedURLGuard func(http.Handler) http.Handler // nil ⇒ no signed-URL verification on reads
-	SigningAdmin   *handlers.SigningAdminHandler   // nil ⇒ signed-URL admin endpoints 404
-	AuditAdmin     *handlers.AuditAdminHandler     // nil ⇒ integrity-audit listing 404
+	Version         string
+	Blob            *handlers.BlobHandler
+	Upload          *handlers.UploadHandler
+	Limiter         *ratelimit.Limiter
+	Verifiers       []auth.Verifier
+	Issuer          IssuerHandlers       // nil => external mode (auth/* 404 except config)
+	AuthConfig      AuthConfigDescriptor // always served at /api/v1/auth/config
+	Me              *handlers.MeHandler
+	PublicUploads   bool
+	LoginLimiter    *ratelimit.Limiter
+	TrustedProxies  []netip.Prefix                   // gates XFF trust for rate-limit + source-IP recording
+	Ready           *handlers.ReadyHandler           // nil ⇒ /readyz returns 200 with no checks
+	SignedURLGuard  func(http.Handler) http.Handler  // nil ⇒ no signed-URL verification on reads
+	SigningAdmin    *handlers.SigningAdminHandler    // nil ⇒ signed-URL admin endpoints 404
+	AuditAdmin      *handlers.AuditAdminHandler      // nil ⇒ integrity-audit listing 404
+	ModerationAdmin *handlers.ModerationAdminHandler // nil ⇒ /api/v1/admin/moderation/* 404
+	AuditLogAdmin   *handlers.AuditLogAdminHandler   // nil ⇒ /api/v1/admin/audit-log 404
+	DMCAIntake      *handlers.DMCAIntakeHandler      // nil ⇒ public /legal/dmca unmounted
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -84,6 +87,12 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 	if cfg.Blob != nil {
 		r.With(readGuard).Get("/blob/{cid}", cfg.Blob.Serve)
 		r.With(readGuard).Head("/blob/{cid}", cfg.Blob.Head)
+	}
+
+	// Public DMCA intake (M9): records a case for the operator to review; takes
+	// no action. Rate-limited by the global limiter applied above.
+	if cfg.DMCAIntake != nil {
+		r.Post("/legal/dmca", cfg.DMCAIntake.Submit)
 	}
 
 	r.Route("/api/v1", func(r chi.Router) {
@@ -139,6 +148,26 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 				// Integrity-audit listing (M8); read-only, operator+moderator.
 				if cfg.AuditAdmin != nil {
 					r.Get("/audits/integrity", cfg.AuditAdmin.List)
+				}
+				// Moderation (M9): takedown actions + queue + DMCA cases + blocklist.
+				// All operator+moderator (moderators run takedowns per the user_role
+				// enum) except clear-legal-hold, which is operator-only.
+				if cfg.ModerationAdmin != nil {
+					r.Post("/moderation/quarantine", cfg.ModerationAdmin.Quarantine)
+					r.Post("/moderation/takedown", cfg.ModerationAdmin.Takedown)
+					r.With(bearer.RequireRole("operator")).Post("/moderation/clear-legal-hold", cfg.ModerationAdmin.ClearLegalHold)
+					r.Post("/moderation/restore", cfg.ModerationAdmin.Restore)
+					r.Post("/moderation/counter-notice", cfg.ModerationAdmin.CounterNotice)
+					r.Get("/moderation/queue", cfg.ModerationAdmin.Queue)
+					r.Get("/moderation/dmca", cfg.ModerationAdmin.DMCAList)
+					r.Get("/moderation/dmca/{id}", cfg.ModerationAdmin.DMCAGet)
+					r.Get("/moderation/blocklist", cfg.ModerationAdmin.BlocklistList)
+					r.Post("/moderation/blocklist", cfg.ModerationAdmin.BlocklistAdd)
+					r.Delete("/moderation/blocklist/{cid}", cfg.ModerationAdmin.BlocklistRemove)
+				}
+				// Audit-log listing (M9); read-only, operator+moderator.
+				if cfg.AuditLogAdmin != nil {
+					r.Get("/audit-log", cfg.AuditLogAdmin.List)
 				}
 				r.Handle("/*", http.HandlerFunc(adminNotFound))
 			})

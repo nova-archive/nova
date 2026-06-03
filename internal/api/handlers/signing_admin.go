@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/api/httputil"
 	"github.com/nova-archive/nova/internal/api/middleware"
+	"github.com/nova-archive/nova/internal/auditlog"
 	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
@@ -30,6 +31,7 @@ type SigningAdminHandler struct {
 	revs   *signedurl.DBRevocations
 	grace  time.Duration
 	maxTTL time.Duration
+	audit  *auditlog.Writer // best-effort operator-action trail (M9 backfill); nil ⇒ no-op
 }
 
 // NewSigningAdminHandler builds the handler. graceDefault is the rotation grace
@@ -40,6 +42,11 @@ func NewSigningAdminHandler(pool *pgxpool.Pool, ks *envelope.Keystore, keys *sig
 		grace: graceDefault, maxTTL: maxTTL,
 	}
 }
+
+// SetAuditWriter wires the M9 audit_log writer for best-effort operator-action
+// logging on rotate/revoke/sign. The coordinator calls this when the writer is
+// available; until then (and in tests) the audit calls are silently skipped.
+func (h *SigningAdminHandler) SetAuditWriter(a *auditlog.Writer) { h.audit = a }
 
 type rotateSigningRequest struct {
 	GraceSeconds int `json:"grace_seconds,omitempty"`
@@ -96,6 +103,13 @@ func (h *SigningAdminHandler) RotateSigning(w http.ResponseWriter, r *http.Reque
 
 	graceExpires := retireAfter.UTC().Format(time.RFC3339)
 	slog.Info("signing-key rotated", "kid", kid, "grace_expires_at", graceExpires, "request_id", rid)
+	if h.audit != nil {
+		h.audit.Write(ctx, auditlog.Entry{
+			ActorID: ownerFromContext(ctx), Action: "signing_key.rotated",
+			TargetType: "signing_key", TargetID: kid,
+			Payload: map[string]any{"grace_expires_at": graceExpires},
+		})
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -146,6 +160,13 @@ func (h *SigningAdminHandler) RevokeSignedURL(w http.ResponseWriter, r *http.Req
 		slog.Warn("revoke: cache invalidate", "err", err, "request_id", rid)
 	}
 	slog.Info("signed-url revoked", "kind", req.Kind, "value", req.Value, "request_id", rid)
+	if h.audit != nil {
+		h.audit.Write(ctx, auditlog.Entry{
+			ActorID: ownerFromContext(ctx), Action: "signed_url.revoked",
+			TargetType: "signed_url", TargetID: req.Value,
+			Payload: map[string]any{"kind": req.Kind},
+		})
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -202,6 +223,13 @@ func (h *SigningAdminHandler) SignSignedURL(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	slog.Info("signed-url minted", "path", req.Path, "aud", req.Aud, "kid", res.KID, "exp", res.Exp, "request_id", rid)
+	if h.audit != nil {
+		h.audit.Write(ctx, auditlog.Entry{
+			ActorID: ownerFromContext(ctx), Action: "signed_url.signed",
+			TargetType: "signed_url", TargetID: req.Path,
+			Payload: map[string]any{"aud": req.Aud, "kid": res.KID, "exp": res.Exp},
+		})
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
