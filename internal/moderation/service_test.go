@@ -225,6 +225,40 @@ func TestQuarantineCascadesAndAudits(t *testing.T) {
 	require.Equal(t, 1, countAudit(t, ctx, pool, "dmca.quarantined", s.parentCID))
 }
 
+// An anonymous / public_archival upload has owner_id NULL. Quarantine and
+// tombstone must not crash on the NULL owner projection (GetBlobForModeration)
+// and must skip the repeat-infringer strike. Actor is nil here too, exercising
+// the system-action path the scheduled-tombstone sweep uses.
+func TestQuarantineAndTombstoneOwnerlessBlob(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pool := dbtest.New(t, ctx)
+	ks := newKeystore(t, ctx, pool)
+	be := newEmbeddedBackend(t, ctx)
+
+	b, err := blobfixture.Seed(ctx, blobfixture.Deps{Pool: pool, Backend: be, Keystore: ks},
+		blobfixture.Spec{Plaintext: []byte("ownerless bytes"), MIME: "image/png", Visibility: "private"})
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `UPDATE blobs SET owner_id=NULL WHERE cid=$1`, b.CID)
+	require.NoError(t, err)
+
+	svc := newService(pool, &fakeBackend{}, time.Now)
+	require.NoError(t, svc.Quarantine(ctx, moderation.QuarantineCmd{
+		CID: b.CID, Rule: "dmca", Reason: "ownerless", TombstoneAfter: time.Hour,
+	}))
+	require.Equal(t, "quarantined", blobState(t, ctx, pool, b.CID))
+
+	var strikeRows int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM takedown_repeat_infringers`).Scan(&strikeRows))
+	require.Equal(t, 0, strikeRows, "no strike when the blob has no owner")
+
+	require.NoError(t, svc.Tombstone(ctx, moderation.TombstoneCmd{CID: b.CID, Rule: "dmca", Reason: "ownerless"}))
+	require.Equal(t, "tombstoned", blobState(t, ctx, pool, b.CID))
+}
+
 func TestQuarantineLegalHoldSetsDEKAndNoSchedule(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")

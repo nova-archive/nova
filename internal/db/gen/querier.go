@@ -43,6 +43,11 @@ type Querier interface {
 	// docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md.
 	// Schema: moderation_decisions, dmca_cases, takedown_repeat_infringers,
 	// and blocklist (0008_moderation.sql) + enums from 0001_init.sql.
+	// owner_id is nullable (anonymous / public_archival uploads); coalesce so the
+	// scan never fails on a NULL owner. '' means "no owner" → the caller skips the
+	// repeat-infringer strike.
+	// The outer ::text pins the sqlc-inferred Go type to a non-null string (a bare
+	// coalesce confuses sqlc into interface{}); coalesce makes it non-null at runtime.
 	GetBlobForModeration(ctx context.Context, cid string) (GetBlobForModerationRow, error)
 	GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (GetCollectionForWriteRow, error)
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
@@ -75,11 +80,16 @@ type Querier interface {
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	IsBlocklisted(ctx context.Context, cid string) (bool, error)
 	ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]ListAuditLogRow, error)
+	// added_by is nullable; coalesce so a system-added entry (NULL) never crashes
+	// the listing. '' renders as a null actor in the handler.
 	ListBlocklist(ctx context.Context, arg ListBlocklistParams) ([]ListBlocklistRow, error)
 	ListDMCACases(ctx context.Context, arg ListDMCACasesParams) ([]ListDMCACasesRow, error)
 	ListDerivativeCIDs(ctx context.Context, parentCid pgtype.Text) ([]string, error)
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
 	ListIntegrityAudits(ctx context.Context, arg ListIntegrityAuditsParams) ([]ListIntegrityAuditsRow, error)
+	// decided_by is nullable — the scheduled-tombstone sweep records system actions
+	// with decided_by=NULL; coalesce so the listing never crashes after an
+	// auto-tombstone. '' renders as a null actor in the handler.
 	ListModerationDecisions(ctx context.Context, arg ListModerationDecisionsParams) ([]ListModerationDecisionsRow, error)
 	ListOverdueTombstones(ctx context.Context) ([]ListOverdueTombstonesRow, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)

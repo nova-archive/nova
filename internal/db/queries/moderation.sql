@@ -4,7 +4,12 @@
 -- and blocklist (0008_moderation.sql) + enums from 0001_init.sql.
 
 -- name: GetBlobForModeration :one
-SELECT owner_id::text AS owner_id, state::text AS state, (encryption_key_id IS NOT NULL) AS encrypted
+-- owner_id is nullable (anonymous / public_archival uploads); coalesce so the
+-- scan never fails on a NULL owner. '' means "no owner" → the caller skips the
+-- repeat-infringer strike.
+-- The outer ::text pins the sqlc-inferred Go type to a non-null string (a bare
+-- coalesce confuses sqlc into interface{}); coalesce makes it non-null at runtime.
+SELECT coalesce(owner_id::text, '')::text AS owner_id, state::text AS state, (encryption_key_id IS NOT NULL) AS encrypted
 FROM blobs WHERE cid = $1;
 
 -- name: SetBlobState :exec
@@ -51,7 +56,10 @@ WHERE md.scheduled_tombstone_at IS NOT NULL
   AND (k.legal_hold IS NULL OR k.legal_hold = false);
 
 -- name: ListModerationDecisions :many
-SELECT id, cid, rule::text AS rule, rule_ref, action::text AS action, decided_by::text AS decided_by,
+-- decided_by is nullable — the scheduled-tombstone sweep records system actions
+-- with decided_by=NULL; coalesce so the listing never crashes after an
+-- auto-tombstone. '' renders as a null actor in the handler.
+SELECT id, cid, rule::text AS rule, rule_ref, action::text AS action, coalesce(decided_by::text, '')::text AS decided_by,
        decided_at, scheduled_tombstone_at, legal_hold, notes
 FROM moderation_decisions
 ORDER BY decided_at DESC, id DESC
@@ -93,7 +101,9 @@ ON CONFLICT (cid) DO NOTHING;
 DELETE FROM blocklist WHERE cid = $1;
 
 -- name: ListBlocklist :many
-SELECT cid, reason, rule::text AS rule, added_by::text AS added_by, created_at
+-- added_by is nullable; coalesce so a system-added entry (NULL) never crashes
+-- the listing. '' renders as a null actor in the handler.
+SELECT cid, reason, rule::text AS rule, coalesce(added_by::text, '')::text AS added_by, created_at
 FROM blocklist ORDER BY created_at DESC LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
 
 -- name: CountBlocklist :one

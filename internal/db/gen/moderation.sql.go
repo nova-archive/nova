@@ -76,7 +76,7 @@ func (q *Queries) DeleteBlocklist(ctx context.Context, cid string) error {
 
 const getBlobForModeration = `-- name: GetBlobForModeration :one
 
-SELECT owner_id::text AS owner_id, state::text AS state, (encryption_key_id IS NOT NULL) AS encrypted
+SELECT coalesce(owner_id::text, '')::text AS owner_id, state::text AS state, (encryption_key_id IS NOT NULL) AS encrypted
 FROM blobs WHERE cid = $1
 `
 
@@ -90,6 +90,11 @@ type GetBlobForModerationRow struct {
 // docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md.
 // Schema: moderation_decisions, dmca_cases, takedown_repeat_infringers,
 // and blocklist (0008_moderation.sql) + enums from 0001_init.sql.
+// owner_id is nullable (anonymous / public_archival uploads); coalesce so the
+// scan never fails on a NULL owner. ” means "no owner" → the caller skips the
+// repeat-infringer strike.
+// The outer ::text pins the sqlc-inferred Go type to a non-null string (a bare
+// coalesce confuses sqlc into interface{}); coalesce makes it non-null at runtime.
 func (q *Queries) GetBlobForModeration(ctx context.Context, cid string) (GetBlobForModerationRow, error) {
 	row := q.db.QueryRow(ctx, getBlobForModeration, cid)
 	var i GetBlobForModerationRow
@@ -221,7 +226,7 @@ func (q *Queries) IsBlocklisted(ctx context.Context, cid string) (bool, error) {
 }
 
 const listBlocklist = `-- name: ListBlocklist :many
-SELECT cid, reason, rule::text AS rule, added_by::text AS added_by, created_at
+SELECT cid, reason, rule::text AS rule, coalesce(added_by::text, '')::text AS added_by, created_at
 FROM blocklist ORDER BY created_at DESC LIMIT $2 OFFSET $1
 `
 
@@ -238,6 +243,8 @@ type ListBlocklistRow struct {
 	CreatedAt time.Time
 }
 
+// added_by is nullable; coalesce so a system-added entry (NULL) never crashes
+// the listing. ” renders as a null actor in the handler.
 func (q *Queries) ListBlocklist(ctx context.Context, arg ListBlocklistParams) ([]ListBlocklistRow, error) {
 	rows, err := q.db.Query(ctx, listBlocklist, arg.Off, arg.Lim)
 	if err != nil {
@@ -338,7 +345,7 @@ func (q *Queries) ListDerivativeCIDs(ctx context.Context, parentCid pgtype.Text)
 }
 
 const listModerationDecisions = `-- name: ListModerationDecisions :many
-SELECT id, cid, rule::text AS rule, rule_ref, action::text AS action, decided_by::text AS decided_by,
+SELECT id, cid, rule::text AS rule, rule_ref, action::text AS action, coalesce(decided_by::text, '')::text AS decided_by,
        decided_at, scheduled_tombstone_at, legal_hold, notes
 FROM moderation_decisions
 ORDER BY decided_at DESC, id DESC
@@ -363,6 +370,9 @@ type ListModerationDecisionsRow struct {
 	Notes                pgtype.Text
 }
 
+// decided_by is nullable — the scheduled-tombstone sweep records system actions
+// with decided_by=NULL; coalesce so the listing never crashes after an
+// auto-tombstone. ” renders as a null actor in the handler.
 func (q *Queries) ListModerationDecisions(ctx context.Context, arg ListModerationDecisionsParams) ([]ListModerationDecisionsRow, error) {
 	rows, err := q.db.Query(ctx, listModerationDecisions, arg.Off, arg.Lim)
 	if err != nil {
