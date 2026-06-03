@@ -234,6 +234,99 @@ func (s *Service) Tombstone(ctx context.Context, cmd TombstoneCmd) error {
 	return nil
 }
 
+// ClearLegalHold releases a severe-content hold (operator-only at the HTTP
+// layer; not enforced here): it flips the DEK tree's legal_hold to false and
+// sets the originating decision's legal_hold=false, scheduled_tombstone_at=now()
+// so the next sweep tombstones it. This is the SEVERE_CONTENT_PROCEDURE.md
+// "Operator legal-hold-clear" procedure.
+func (s *Service) ClearLegalHold(ctx context.Context, cidStr, caseRef, reason string, actor *uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	if err := q.SetDEKLegalHoldForBlobTree(ctx, gen.SetDEKLegalHoldForBlobTreeParams{Cid: cidStr, Hold: false}); err != nil {
+		return fmt.Errorf("moderation: clear dek legal hold: %w", err)
+	}
+	if err := q.ClearModerationLegalHold(ctx, cidStr); err != nil {
+		return fmt.Errorf("moderation: clear decision legal hold: %w", err)
+	}
+	if err := s.audit.WriteTx(ctx, tx, auditlog.Entry{
+		ActorID: actor, Action: "severe.legal_hold_cleared", TargetType: "cid", TargetID: cidStr,
+		Payload: map[string]any{"reason": reason, "case": caseRef},
+	}); err != nil {
+		return fmt.Errorf("moderation: audit: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// Restore reverses a quarantine (a tombstone is final): it sets the blob and its
+// derivatives back to active and clears the schedule. It deliberately does NOT
+// delete the ('cid', cid) revocation — signed_url_revocations has no issuer
+// column, so a blind delete could clobber a manual M7 operator revocation;
+// re-minting after restore is the intended posture (design review decision).
+func (s *Service) Restore(ctx context.Context, cidStr, reason string, actor *uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	info, err := q.GetBlobForModeration(ctx, cidStr)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrBlobNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("moderation: get blob: %w", err)
+	}
+	if info.State != string(gen.BlobStateQuarantined) {
+		return ErrNotQuarantined
+	}
+
+	if err := q.SetBlobState(ctx, gen.SetBlobStateParams{Cid: cidStr, State: gen.BlobStateActive}); err != nil {
+		return fmt.Errorf("moderation: set state: %w", err)
+	}
+	if err := s.cascade(ctx, tx, cidStr, string(gen.BlobStateActive)); err != nil {
+		return fmt.Errorf("moderation: cascade: %w", err)
+	}
+	if err := q.ClearScheduledTombstone(ctx, cidStr); err != nil {
+		return fmt.Errorf("moderation: clear schedule: %w", err)
+	}
+	if err := s.audit.WriteTx(ctx, tx, auditlog.Entry{
+		ActorID: actor, Action: "dmca.restored", TargetType: "cid", TargetID: cidStr,
+		Payload: map[string]any{"reason": reason},
+	}); err != nil {
+		return fmt.Errorf("moderation: audit: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// CounterNotice pauses the scheduled tombstone while a counter-notification is
+// reviewed. The blob stays quarantined (reversibility preserved through the
+// window); the operator later Restores it or lets a renewed schedule tombstone.
+func (s *Service) CounterNotice(ctx context.Context, cidStr, notes string, actor *uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	if err := q.ClearScheduledTombstone(ctx, cidStr); err != nil {
+		return fmt.Errorf("moderation: clear schedule: %w", err)
+	}
+	if err := s.audit.WriteTx(ctx, tx, auditlog.Entry{
+		ActorID: actor, Action: "dmca.counter_received", TargetType: "cid", TargetID: cidStr,
+		Payload: map[string]any{"notes": notes},
+	}); err != nil {
+		return fmt.Errorf("moderation: audit: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
 // unpin removes the local Kubo pin for cidStr, best-effort. Decode/Unpin
 // failures are logged, never fatal (Phase 1 is single-node; the federation
 // unpin broadcast lands with the mesh in Phase 2).

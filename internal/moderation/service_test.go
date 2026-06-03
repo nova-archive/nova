@@ -336,3 +336,125 @@ func TestTombstoneRefusedUnderLegalHold(t *testing.T) {
 }
 
 func zeros72Test() []byte { return make([]byte, 72) }
+
+// --- Task 4: ClearLegalHold / Restore / CounterNotice ------------------------
+
+func TestClearLegalHoldThenTombstoneSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pool := dbtest.New(t, ctx)
+	ks := newKeystore(t, ctx, pool)
+	be := newEmbeddedBackend(t, ctx)
+	s := seedParentWithDerivative(t, ctx, pool, ks, be)
+
+	opID := newOperator(t, ctx, pool)
+	svc := newService(pool, &fakeBackend{}, time.Now)
+
+	require.NoError(t, svc.Quarantine(ctx, moderation.QuarantineCmd{
+		CID: s.parentCID, Rule: "severe_content", Reason: "severe", LegalHold: true, Actor: &opID,
+	}))
+	// Tombstone is refused while held.
+	require.ErrorIs(t, svc.Tombstone(ctx, moderation.TombstoneCmd{CID: s.parentCID, Reason: "x", Actor: &opID}),
+		moderation.ErrLegalHold)
+
+	require.NoError(t, svc.ClearLegalHold(ctx, s.parentCID, "", "released after review", &opID))
+
+	// DEK legal_hold cleared on the tree, decision schedule set to now, audit row.
+	_, pHold, _ := dekFor(t, ctx, pool, s.parentCID)
+	require.False(t, pHold, "parent DEK legal_hold cleared")
+	_, dHold, _ := dekFor(t, ctx, pool, s.derivCID)
+	require.False(t, dHold, "derivative DEK legal_hold cleared")
+	require.True(t, schedTombstoneSet(t, ctx, pool, s.parentCID, "quarantine"),
+		"clear-legal-hold sets scheduled_tombstone_at=now()")
+	var stillHeld bool
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT legal_hold FROM moderation_decisions WHERE cid=$1 AND action='quarantine'`,
+		s.parentCID).Scan(&stillHeld))
+	require.False(t, stillHeld, "decision legal_hold cleared")
+	require.Equal(t, 1, countAudit(t, ctx, pool, "severe.legal_hold_cleared", s.parentCID))
+
+	// Now the same tombstone shreds (exit criterion #3).
+	require.NoError(t, svc.Tombstone(ctx, moderation.TombstoneCmd{CID: s.parentCID, Reason: "tombstone after clear", Actor: &opID}))
+	require.Equal(t, "tombstoned", blobState(t, ctx, pool, s.parentCID))
+	pState, _, _ := dekFor(t, ctx, pool, s.parentCID)
+	require.Equal(t, "shredded", pState)
+}
+
+func TestRestoreReactivatesAndKeepsRevocation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pool := dbtest.New(t, ctx)
+	ks := newKeystore(t, ctx, pool)
+	be := newEmbeddedBackend(t, ctx)
+	s := seedParentWithDerivative(t, ctx, pool, ks, be)
+
+	opID := newOperator(t, ctx, pool)
+	svc := newService(pool, &fakeBackend{}, time.Now)
+
+	require.NoError(t, svc.Quarantine(ctx, moderation.QuarantineCmd{
+		CID: s.parentCID, Rule: "dmca", Reason: "notice", TombstoneAfter: 14 * 24 * time.Hour, Actor: &opID,
+	}))
+	require.Equal(t, 1, countRevocations(t, ctx, pool, s.parentCID))
+
+	require.NoError(t, svc.Restore(ctx, s.parentCID, "counter-notice upheld", &opID))
+
+	require.Equal(t, "active", blobState(t, ctx, pool, s.parentCID))
+	require.Equal(t, "active", blobState(t, ctx, pool, s.derivCID), "derivative cascades back to active")
+	require.False(t, schedTombstoneSet(t, ctx, pool, s.parentCID, "quarantine"),
+		"restore clears scheduled_tombstone_at")
+	require.Equal(t, 1, countRevocations(t, ctx, pool, s.parentCID),
+		"restore must NOT delete the ('cid', cid) revocation (no issuer column)")
+	require.Equal(t, 1, countAudit(t, ctx, pool, "dmca.restored", s.parentCID))
+}
+
+func TestRestoreNonQuarantinedFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pool := dbtest.New(t, ctx)
+	ks := newKeystore(t, ctx, pool)
+	be := newEmbeddedBackend(t, ctx)
+	s := seedParentWithDerivative(t, ctx, pool, ks, be)
+
+	opID := newOperator(t, ctx, pool)
+	svc := newService(pool, &fakeBackend{}, time.Now)
+
+	// Blob is still active (never quarantined) → restore is a conflict.
+	require.ErrorIs(t, svc.Restore(ctx, s.parentCID, "noop", &opID), moderation.ErrNotQuarantined)
+	require.Equal(t, "active", blobState(t, ctx, pool, s.parentCID))
+}
+
+func TestCounterNoticeClearsScheduleKeepsQuarantined(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pool := dbtest.New(t, ctx)
+	ks := newKeystore(t, ctx, pool)
+	be := newEmbeddedBackend(t, ctx)
+	s := seedParentWithDerivative(t, ctx, pool, ks, be)
+
+	opID := newOperator(t, ctx, pool)
+	svc := newService(pool, &fakeBackend{}, time.Now)
+
+	require.NoError(t, svc.Quarantine(ctx, moderation.QuarantineCmd{
+		CID: s.parentCID, Rule: "dmca", Reason: "notice", TombstoneAfter: 14 * 24 * time.Hour, Actor: &opID,
+	}))
+	require.True(t, schedTombstoneSet(t, ctx, pool, s.parentCID, "quarantine"))
+
+	require.NoError(t, svc.CounterNotice(ctx, s.parentCID, "user disputes the claim", &opID))
+
+	require.False(t, schedTombstoneSet(t, ctx, pool, s.parentCID, "quarantine"),
+		"counter-notice clears scheduled_tombstone_at")
+	require.Equal(t, "quarantined", blobState(t, ctx, pool, s.parentCID), "blob stays quarantined")
+	require.Equal(t, 1, countAudit(t, ctx, pool, "dmca.counter_received", s.parentCID))
+}
