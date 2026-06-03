@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nova-archive/nova/pkg/coordinator/product"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 )
@@ -54,6 +55,20 @@ func (h *productHook) OnCommitted(ctx context.Context, ref storage.CommittedRef)
 	if p, ok := h.products[ref.Product]; ok {
 		_ = p.OnCommitted(ctx, &ref, nil)
 	}
+}
+
+// OnDelete cascades a parent's new lifecycle state to its derivatives across all
+// registered products — the seam internal/moderation wires for quarantine /
+// tombstone / restore (moderation must not import the product package). Each
+// product's OnDelete is the generic derivative-state cascade; a raw parent with
+// no product simply has nothing to dispatch to. Runs inside the moderation tx.
+func (h *productHook) OnDelete(ctx context.Context, tx pgx.Tx, parentCID, newState string) error {
+	for _, p := range h.products {
+		if err := p.OnDelete(ctx, tx, parentCID, newState); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var _ storage.WriteHook = (*productHook)(nil)

@@ -23,6 +23,7 @@ import (
 	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/api/handlers"
 	"github.com/nova-archive/nova/internal/audit/integrity"
+	"github.com/nova-archive/nova/internal/auditlog"
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/db/gen"
@@ -30,6 +31,7 @@ import (
 	"github.com/nova-archive/nova/internal/ipfs"
 	"github.com/nova-archive/nova/internal/jobs"
 	"github.com/nova-archive/nova/internal/jobs/kinds"
+	"github.com/nova-archive/nova/internal/moderation"
 	"github.com/nova-archive/nova/internal/ratelimit"
 	"github.com/nova-archive/nova/internal/upload"
 	"github.com/nova-archive/nova/pkg/coordinator/product"
@@ -100,6 +102,10 @@ type Config struct {
 	// IntegrityAudit tunes the M8 audit scheduler + retention. Built only when
 	// pool+backend+keystore are present.
 	IntegrityAudit IntegrityAuditConfig
+
+	// Moderation tunes the M9 scheduled-tombstone sweep. The admin API, intake,
+	// and blocklist are built when pool+backend are present regardless.
+	Moderation ModerationConfig
 }
 
 // SignedURLConfig tunes the M7 signed-URL stack.
@@ -120,6 +126,14 @@ type IntegrityAuditConfig struct {
 	Cadences      map[integrity.Kind]integrity.Cadence
 	PassRetention time.Duration
 	FailRetention time.Duration
+}
+
+// ModerationConfig tunes the M9 scheduled-tombstone sweep. SweepEnabled gates the
+// in-process loop (the admin API, intake, and blocklist work regardless); a
+// non-positive SweepInterval takes the one-minute default.
+type ModerationConfig struct {
+	SweepEnabled  bool
+	SweepInterval time.Duration
 }
 
 // Coordinator owns the HTTP server. Build with New; register products before
@@ -157,6 +171,10 @@ type Coordinator struct {
 	auditScheduler  *integrity.Scheduler
 	auditMaintainer *integrity.Maintainer
 	auditEnabled    bool
+
+	// Moderation wiring (M9). The in-process Sweeper tombstones overdue
+	// quarantines; built when pool + backend are present.
+	modSweeper *moderation.Sweeper
 }
 
 // New constructs a coordinator from injected dependencies. pool/backend/ks may
@@ -187,6 +205,9 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		Limiter:        limiter,
 		TrustedProxies: cfg.TrustedProxies,
 	}
+	// auditW is the M9 audit_log writer; built when a pool is present and shared
+	// by the moderation stack (atomic WriteTx) and the M7 admin backfill (Write).
+	var auditW *auditlog.Writer
 	if pool != nil && backend != nil && ks != nil {
 		svc := storage.NewService(pool, backend, ks,
 			storage.WithWriteLimits(cfg.MaxUploadSizeBytes, cfg.MaxConcurrentAssembly),
@@ -210,6 +231,7 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		c.queue = jobs.NewQueue(pool)
 		c.workers = jobs.NewWorkerPool(c.queue, jobs.WorkerOptions{})
 		c.authQueries = gen.New(pool)
+		auditW = auditlog.NewWriter(gen.New(pool), slog.Default())
 	}
 
 	sc.Verifiers = cfg.Auth.Verifiers
@@ -242,6 +264,9 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		c.signedURLGuard = verifier.Guard
 		sc.SignedURLGuard = verifier.Guard
 		sc.SigningAdmin = handlers.NewSigningAdminHandler(pool, ks, keySource, c.revocations, grace, maxTTL)
+		if auditW != nil {
+			sc.SigningAdmin.SetAuditWriter(auditW) // M9 best-effort operator-action trail
+		}
 	}
 
 	// Integrity-audit subsystem (M8): the in-process scheduler runs the seven
@@ -262,6 +287,21 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		c.auditMaintainer = integrity.NewMaintainer(pool, cfg.IntegrityAudit.PassRetention, cfg.IntegrityAudit.FailRetention, slog.Default())
 		c.auditEnabled = cfg.IntegrityAudit.Enabled
 		sc.AuditAdmin = handlers.NewAuditAdminHandler(q)
+	}
+
+	// Moderation subsystem (M9): the Service runs quarantine / tombstone /
+	// clear-legal-hold / restore / counter-notice transactions (auditing each
+	// in-tx via auditW); the Sweeper tombstones overdue quarantines; the admin +
+	// public handlers expose the surface. Built when pool + backend are present
+	// (tombstone shreds DEKs and unpins). hook.OnDelete is the derivative-state
+	// cascade seam; products registered later are dispatched at call time.
+	if pool != nil && backend != nil {
+		q := gen.New(pool)
+		modSvc := moderation.NewService(q, pool, backend, hook.OnDelete, auditW, slog.Default(), time.Now)
+		c.modSweeper = moderation.NewSweeper(modSvc, cfg.Moderation.SweepInterval, cfg.Moderation.SweepEnabled, slog.Default())
+		sc.ModerationAdmin = handlers.NewModerationAdminHandler(modSvc, q)
+		sc.DMCAIntake = handlers.NewDMCAIntakeHandler(q)
+		sc.AuditLogAdmin = handlers.NewAuditLogAdminHandler(q)
 	}
 
 	// /readyz checks. Each is a thin wrapper over the corresponding dep's
@@ -459,6 +499,10 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	}
 	if c.auditScheduler != nil && c.auditEnabled {
 		go c.auditScheduler.Run(ctx)
+	}
+	// Scheduled-tombstone sweep (M9); a disabled sweeper's Run returns at once.
+	if c.modSweeper != nil {
+		go c.modSweeper.Run(ctx)
 	}
 	c.srv = &http.Server{Handler: c.mux, ReadHeaderTimeout: 10 * time.Second}
 

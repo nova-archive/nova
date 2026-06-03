@@ -29,6 +29,7 @@
 //	NOVA_SIGNED_URL_KEY_CACHE_TTL_SECONDS       unwrapped signing-key cache TTL (default 60)
 //	NOVA_SIGNED_URL_MAX_TTL_SECONDS             minted-URL ttl cap (default 86400)
 //	NOVA_INTEGRITY_AUDIT_ENABLED  "false" disables the M8 integrity-audit scheduler (default enabled)
+//	NOVA_MODERATION_SWEEP_ENABLED "false" disables the M9 scheduled-tombstone sweep (default enabled)
 package main
 
 import (
@@ -200,6 +201,10 @@ func run() error {
 			Cadences:      integrity.DefaultCadences(),
 			PassRetention: 30 * 24 * time.Hour,
 			FailRetention: 365 * 24 * time.Hour,
+		},
+		Moderation: coordinator.ModerationConfig{
+			SweepEnabled:  os.Getenv("NOVA_MODERATION_SWEEP_ENABLED") != "false",
+			SweepInterval: time.Minute,
 		},
 	})
 	if err != nil {
