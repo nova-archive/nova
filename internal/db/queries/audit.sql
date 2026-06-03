@@ -68,3 +68,23 @@ WHERE (sqlc.narg('result')::audit_result IS NULL OR result = sqlc.narg('result')
 SELECT audit_kind::text AS audit_kind, max(audited_at)::timestamptz AS last_run
 FROM integrity_audits
 GROUP BY audit_kind;
+
+-- Audit-log write + query queries (M9). See docs/specs/DATA_MODEL.sql.
+-- The audit_log table is monthly-partitioned (0003_partitions.sql).
+
+-- name: InsertAuditLog :exec
+INSERT INTO audit_log (actor_id, action, target_type, target_id, payload)
+VALUES (sqlc.narg('actor_id'), sqlc.arg('action'), sqlc.arg('target_type'), sqlc.arg('target_id'), sqlc.arg('payload'));
+
+-- name: ListAuditLog :many
+SELECT id, actor_id::text AS actor_id, action, target_type, target_id, payload, at
+FROM audit_log
+WHERE (sqlc.narg('action')::text IS NULL OR action = sqlc.narg('action')::text)
+  AND (sqlc.narg('target_type')::text IS NULL OR target_type = sqlc.narg('target_type')::text)
+ORDER BY at DESC, id DESC
+LIMIT sqlc.arg('lim') OFFSET sqlc.arg('off');
+
+-- name: CountAuditLog :one
+SELECT count(*) FROM audit_log
+WHERE (sqlc.narg('action')::text IS NULL OR action = sqlc.narg('action')::text)
+  AND (sqlc.narg('target_type')::text IS NULL OR target_type = sqlc.narg('target_type')::text);

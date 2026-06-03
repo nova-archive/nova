@@ -13,10 +13,17 @@ import (
 type Querier interface {
 	AbortUploadSession(ctx context.Context, id pgtype.UUID) error
 	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
+	ClearModerationLegalHold(ctx context.Context, cid string) error
+	ClearScheduledTombstone(ctx context.Context, cid string) error
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
+	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
+	CountBlocklist(ctx context.Context) (int64, error)
+	CountDMCACases(ctx context.Context) (int64, error)
 	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
+	CountModerationDecisions(ctx context.Context) (int64, error)
 	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
+	DeleteBlocklist(ctx context.Context, cid string) error
 	// Splits the GC across the two partial indexes defined in migration 0006/0007
 	// (refresh_tokens_gc_idx, refresh_tokens_revoked_gc_idx). The AND revoked_at
 	// IS NULL filter matches the partial-index predicate, so the planner can use
@@ -32,8 +39,14 @@ type Querier interface {
 	FinalizeUploadSession(ctx context.Context, arg FinalizeUploadSessionParams) error
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
 	GetBlobCore(ctx context.Context, cid string) (GetBlobCoreRow, error)
+	// Moderation queries (M9). See docs/specs/DATA_MODEL.sql and
+	// docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md.
+	// Schema: moderation_decisions, dmca_cases, takedown_repeat_infringers,
+	// and blocklist (0008_moderation.sql) + enums from 0001_init.sql.
+	GetBlobForModeration(ctx context.Context, cid string) (GetBlobForModerationRow, error)
 	GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (GetCollectionForWriteRow, error)
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
+	GetDMCACase(ctx context.Context, id pgtype.UUID) (GetDMCACaseRow, error)
 	GetDerivativeCID(ctx context.Context, arg GetDerivativeCIDParams) (string, error)
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)
@@ -41,21 +54,34 @@ type Querier interface {
 	GetUploadSession(ctx context.Context, id pgtype.UUID) (GetUploadSessionRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
+	// Audit-log write + query queries (M9). See docs/specs/DATA_MODEL.sql.
+	// The audit_log table is monthly-partitioned (0003_partitions.sql).
+	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	InsertBlob(ctx context.Context, arg InsertBlobParams) error
 	InsertBlock(ctx context.Context, arg InsertBlockParams) error
+	InsertBlocklist(ctx context.Context, arg InsertBlocklistParams) error
 	InsertCollectionItem(ctx context.Context, arg InsertCollectionItemParams) error
 	InsertDEK(ctx context.Context, arg InsertDEKParams) (pgtype.UUID, error)
+	InsertDMCACase(ctx context.Context, arg InsertDMCACaseParams) (pgtype.UUID, error)
 	// Inserts a derivative blob. ON CONFLICT on the (parent,preset,format) partial
 	// unique index DO NOTHING ⇒ 0 rows when a concurrent/cross-process writer won
 	// (the caller then unpins its orphan import and reads the winner).
 	InsertDerivativeBlob(ctx context.Context, arg InsertDerivativeBlobParams) (int64, error)
 	InsertIntegrityAudit(ctx context.Context, arg []InsertIntegrityAuditParams) *InsertIntegrityAuditBatchResults
 	InsertManifest(ctx context.Context, arg InsertManifestParams) error
+	InsertModerationDecision(ctx context.Context, arg InsertModerationDecisionParams) (pgtype.UUID, error)
 	InsertRefreshToken(ctx context.Context, arg InsertRefreshTokenParams) (pgtype.UUID, error)
 	InsertRevocation(ctx context.Context, arg InsertRevocationParams) error
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
+	IsBlocklisted(ctx context.Context, cid string) (bool, error)
+	ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]ListAuditLogRow, error)
+	ListBlocklist(ctx context.Context, arg ListBlocklistParams) ([]ListBlocklistRow, error)
+	ListDMCACases(ctx context.Context, arg ListDMCACasesParams) ([]ListDMCACasesRow, error)
+	ListDerivativeCIDs(ctx context.Context, parentCid pgtype.Text) ([]string, error)
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
 	ListIntegrityAudits(ctx context.Context, arg ListIntegrityAuditsParams) ([]ListIntegrityAuditsRow, error)
+	ListModerationDecisions(ctx context.Context, arg ListModerationDecisionsParams) ([]ListModerationDecisionsRow, error)
+	ListOverdueTombstones(ctx context.Context) ([]ListOverdueTombstonesRow, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// For an original, resolves its own collection memberships; for a derivative
@@ -75,8 +101,13 @@ type Querier interface {
 	SampleManifestConsistency(ctx context.Context, limit int32) ([]SampleManifestConsistencyRow, error)
 	SampleMultiBlockBlocks(ctx context.Context, limit int32) ([]SampleMultiBlockBlocksRow, error)
 	SeedAuditSchedule(ctx context.Context) ([]SeedAuditScheduleRow, error)
+	SetBlobState(ctx context.Context, arg SetBlobStateParams) error
+	SetDEKLegalHoldForBlobTree(ctx context.Context, arg SetDEKLegalHoldForBlobTreeParams) error
+	SetDMCACaseActioned(ctx context.Context, id pgtype.UUID) error
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
+	ShredDEKsForBlobTree(ctx context.Context, arg ShredDEKsForBlobTreeParams) error
 	ShredExpiredRetiredSigningKeys(ctx context.Context, wrappedKey []byte) error
+	UpsertRepeatInfringer(ctx context.Context, userID pgtype.UUID) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -699,6 +699,14 @@ type BlobManifest struct {
 	CreatedAt     time.Time
 }
 
+type Blocklist struct {
+	Cid       string
+	Reason    string
+	Rule      ModerationRule
+	AddedBy   pgtype.UUID
+	CreatedAt time.Time
+}
+
 type Collection struct {
 	ID             pgtype.UUID
 	OwnerID        pgtype.UUID

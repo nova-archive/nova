@@ -12,6 +12,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countAuditLog = `-- name: CountAuditLog :one
+SELECT count(*) FROM audit_log
+WHERE ($1::text IS NULL OR action = $1::text)
+  AND ($2::text IS NULL OR target_type = $2::text)
+`
+
+type CountAuditLogParams struct {
+	Action     pgtype.Text
+	TargetType pgtype.Text
+}
+
+func (q *Queries) CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuditLog, arg.Action, arg.TargetType)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countIntegrityAudits = `-- name: CountIntegrityAudits :one
 SELECT count(*)
 FROM integrity_audits
@@ -29,6 +47,92 @@ func (q *Queries) CountIntegrityAudits(ctx context.Context, arg CountIntegrityAu
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const insertAuditLog = `-- name: InsertAuditLog :exec
+
+INSERT INTO audit_log (actor_id, action, target_type, target_id, payload)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertAuditLogParams struct {
+	ActorID    pgtype.UUID
+	Action     string
+	TargetType string
+	TargetID   string
+	Payload    []byte
+}
+
+// Audit-log write + query queries (M9). See docs/specs/DATA_MODEL.sql.
+// The audit_log table is monthly-partitioned (0003_partitions.sql).
+func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error {
+	_, err := q.db.Exec(ctx, insertAuditLog,
+		arg.ActorID,
+		arg.Action,
+		arg.TargetType,
+		arg.TargetID,
+		arg.Payload,
+	)
+	return err
+}
+
+const listAuditLog = `-- name: ListAuditLog :many
+SELECT id, actor_id::text AS actor_id, action, target_type, target_id, payload, at
+FROM audit_log
+WHERE ($1::text IS NULL OR action = $1::text)
+  AND ($2::text IS NULL OR target_type = $2::text)
+ORDER BY at DESC, id DESC
+LIMIT $4 OFFSET $3
+`
+
+type ListAuditLogParams struct {
+	Action     pgtype.Text
+	TargetType pgtype.Text
+	Off        int32
+	Lim        int32
+}
+
+type ListAuditLogRow struct {
+	ID         int64
+	ActorID    string
+	Action     string
+	TargetType string
+	TargetID   string
+	Payload    []byte
+	At         time.Time
+}
+
+func (q *Queries) ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]ListAuditLogRow, error) {
+	rows, err := q.db.Query(ctx, listAuditLog,
+		arg.Action,
+		arg.TargetType,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAuditLogRow
+	for rows.Next() {
+		var i ListAuditLogRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ActorID,
+			&i.Action,
+			&i.TargetType,
+			&i.TargetID,
+			&i.Payload,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listIntegrityAudits = `-- name: ListIntegrityAudits :many

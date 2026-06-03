@@ -556,6 +556,26 @@ CREATE TABLE takedown_repeat_infringers (
 );
 
 -- ----------------------------------------------------------------------------
+-- Blocklist (M9 — operator/scanner-maintained CID blocklist)
+--
+-- Entries here are checked on every blob read (storage layer). A CID that
+-- appears in this table is blocked regardless of blob.state; the read
+-- handler returns 451 and logs an audit event. Distinct from
+-- moderation_decisions: blocklist is a fast set-membership check; decisions
+-- carry the full audit trail and scheduling state.
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE blocklist (
+    cid         text PRIMARY KEY,
+    reason      text NOT NULL,
+    rule        moderation_rule NOT NULL DEFAULT 'operator_manual',
+    added_by    uuid REFERENCES users (id),
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX blocklist_created_at_idx ON blocklist (created_at DESC);
+
+-- ----------------------------------------------------------------------------
 -- Signed-URL revocations (v2 — structured)
 --
 -- The original prefix-string-against-canonical scheme was broken: the
