@@ -312,3 +312,15 @@ func TestModerationClearLegalHold403OperatorMessage(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "operator")
 }
+
+func TestKeysDispatch(t *testing.T) {
+	if err := cmdKeys(nil); err == nil {
+		t.Fatal("keys with no subcommand must error")
+	}
+	if err := cmdKeys([]string{"rotate-master", "--from", "v1"}); err == nil {
+		t.Fatal("rotate-master without --to must error")
+	}
+	if err := cmdKeys([]string{"bogus"}); err == nil {
+		t.Fatal("unknown subcommand must error")
+	}
+}

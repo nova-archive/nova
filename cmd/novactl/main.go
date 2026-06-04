@@ -11,6 +11,8 @@
 //	novactl moderation clear-legal-hold <cid> [--case-id <ref>] [--reason <s>] [--no-confirm]
 //	novactl moderation restore <cid> [--reason <s>]
 //	novactl moderation list [--per-page <n>]
+//	novactl keys rotate-master --from v1 --to v2 [--no-confirm]
+//	novactl keys status
 package main
 
 import (
@@ -768,11 +770,195 @@ func cmdModeration(args []string) error {
 }
 
 // --------------------------------------------------------------------------
+// Keys response structs
+// --------------------------------------------------------------------------
+
+// rotateMasterResp is the 202 body returned by POST /api/v1/admin/keys/rotate-master.
+type rotateMasterResp struct {
+	From             string `json:"from"`
+	To               string `json:"to"`
+	TotalDEKs        int    `json:"total_deks"`
+	TotalSigningKeys int    `json:"total_signing_keys"`
+	Status           any    `json:"status"`
+}
+
+// progressResp is the in_progress object within rotationStatusResp (null when idle).
+type progressResp struct {
+	From                 string `json:"from"`
+	RemainingDEKs        int    `json:"remaining_deks"`
+	RemainingSigningKeys int    `json:"remaining_signing_keys"`
+	Stalled              bool   `json:"stalled"`
+	StallReason          string `json:"stall_reason"`
+}
+
+// versionInfoResp is one entry in the versions array of rotationStatusResp.
+type versionInfoResp struct {
+	Label        string  `json:"label"`
+	State        string  `json:"state"`
+	DEKCount     int     `json:"dek_count"`
+	SigningCount int     `json:"signing_count"`
+	RetiredAt    *string `json:"retired_at"`
+}
+
+// rotationStatusResp is the body returned by GET /api/v1/admin/keys/rotation-status.
+type rotationStatusResp struct {
+	Active     string            `json:"active"`
+	InProgress *progressResp     `json:"in_progress"`
+	Versions   []versionInfoResp `json:"versions"`
+}
+
+// --------------------------------------------------------------------------
+// Subcommand: keys rotate-master
+// --------------------------------------------------------------------------
+
+func cmdKeysRotateMaster(args []string) error {
+	fs := flag.NewFlagSet("keys rotate-master", flag.ContinueOnError)
+	from := fs.String("from", "", "retiring version label (e.g. v1)")
+	to := fs.String("to", "", "new active version label (e.g. v2)")
+	noConfirm := fs.Bool("no-confirm", false, "skip the confirmation prompt")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Validate required flags before touching credentials or network.
+	if *from == "" || *to == "" {
+		return errors.New("rotate-master requires --from and --to")
+	}
+
+	c, err := loadCreds()
+	if err != nil {
+		return err
+	}
+
+	if !*noConfirm {
+		prompt := fmt.Sprintf("Re-wrap every key from %s to %s? This re-encrypts all DEKs and signing keys. [y/N] ", *from, *to)
+		if !confirm(prompt) {
+			fmt.Fprintln(os.Stderr, "aborted")
+			return nil
+		}
+	}
+
+	resp, err := postJSON(newClient(), c.BaseURL+"/api/v1/admin/keys/rotate-master",
+		map[string]any{"from_version": *from, "to_version": *to}, c.AccessToken)
+	if err != nil {
+		return fmt.Errorf("rotate-master request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("rotate-master failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var rmr rotateMasterResp
+	if err := json.NewDecoder(resp.Body).Decode(&rmr); err != nil {
+		return fmt.Errorf("decode rotate-master response: %w", err)
+	}
+
+	fmt.Printf("rotation started: %s → %s (%d DEKs, %d signing keys); polling…\n",
+		*from, *to, rmr.TotalDEKs, rmr.TotalSigningKeys)
+
+	return pollRotation(c, *from)
+}
+
+// pollRotation loops calling the rotation-status endpoint, printing progress
+// until in_progress is nil (complete) or stalled (error).
+func pollRotation(c credentials, from string) error {
+	for {
+		resp, err := getJSON(newClient(), c.BaseURL+"/api/v1/admin/keys/rotation-status", c.AccessToken)
+		if err != nil {
+			return fmt.Errorf("rotation-status request: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("rotation-status failed (HTTP %d): %s", resp.StatusCode, string(body))
+		}
+
+		var st rotationStatusResp
+		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+			return fmt.Errorf("decode rotation-status: %w", err)
+		}
+
+		if st.InProgress == nil {
+			fmt.Println("rotation complete.")
+			return nil
+		}
+		if st.InProgress.Stalled {
+			return fmt.Errorf("rotation STALLED: %s (restore the %q master key and restart the coordinator)",
+				st.InProgress.StallReason, from)
+		}
+		fmt.Printf("  remaining: %d DEKs, %d signing keys\n",
+			st.InProgress.RemainingDEKs, st.InProgress.RemainingSigningKeys)
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Subcommand: keys status
+// --------------------------------------------------------------------------
+
+func cmdKeysStatus(args []string) error {
+	_ = args // no flags for status
+
+	c, err := loadCreds()
+	if err != nil {
+		return err
+	}
+
+	resp, err := getJSON(newClient(), c.BaseURL+"/api/v1/admin/keys/rotation-status", c.AccessToken)
+	if err != nil {
+		return fmt.Errorf("rotation-status request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("rotation-status failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var st rotationStatusResp
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return fmt.Errorf("decode rotation-status: %w", err)
+	}
+
+	fmt.Printf("active: %s\n", st.Active)
+	fmt.Printf("%-12s %-12s %10s %14s\n", "label", "state", "dek_count", "signing_count")
+	for _, v := range st.Versions {
+		fmt.Printf("%-12s %-12s %10d %14d\n", v.Label, v.State, v.DEKCount, v.SigningCount)
+	}
+	if st.InProgress != nil {
+		fmt.Printf("in_progress: from=%s remaining_deks=%d remaining_signing_keys=%d stalled=%v\n",
+			st.InProgress.From, st.InProgress.RemainingDEKs, st.InProgress.RemainingSigningKeys, st.InProgress.Stalled)
+	}
+
+	return nil
+}
+
+// --------------------------------------------------------------------------
+// Subcommand group: keys
+// --------------------------------------------------------------------------
+
+func cmdKeys(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: novactl keys <rotate-master|status> ...")
+	}
+	switch args[0] {
+	case "rotate-master":
+		return cmdKeysRotateMaster(args[1:])
+	case "status":
+		return cmdKeysStatus(args[1:])
+	default:
+		return fmt.Errorf("unknown keys subcommand %q", args[0])
+	}
+}
+
+// --------------------------------------------------------------------------
 // main
 // --------------------------------------------------------------------------
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation> <subcommand>")
+	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys> <subcommand>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth login [--url <base>] [--username <u>]")
@@ -784,6 +970,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  moderation clear-legal-hold <cid> [--case-id <ref>] [--reason <s>] [--no-confirm]")
 	fmt.Fprintln(os.Stderr, "  moderation restore <cid> [--reason <s>]")
 	fmt.Fprintln(os.Stderr, "  moderation list [--per-page <n>]")
+	fmt.Fprintln(os.Stderr, "  keys rotate-master --from <label> --to <label> [--no-confirm]")
+	fmt.Fprintln(os.Stderr, "  keys status")
 }
 
 func main() {
@@ -801,6 +989,8 @@ func main() {
 		err = runSignedURL(args[1:])
 	case "moderation":
 		err = cmdModeration(args[1:])
+	case "keys":
+		err = cmdKeys(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()
