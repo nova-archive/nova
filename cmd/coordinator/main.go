@@ -30,6 +30,9 @@
 //	NOVA_SIGNED_URL_MAX_TTL_SECONDS             minted-URL ttl cap (default 86400)
 //	NOVA_INTEGRITY_AUDIT_ENABLED  "false" disables the M8 integrity-audit scheduler (default enabled)
 //	NOVA_MODERATION_SWEEP_ENABLED "false" disables the M9 scheduled-tombstone sweep (default enabled)
+//	NOVA_MASTER_KEY_REWRAP_CONCURRENCY   M10 re-wrap worker goroutines (default 4)
+//	NOVA_MASTER_KEY_REWRAP_BATCH         M10 re-wrap ids claimed per tx (default 256)
+//	NOVA_MASTER_KEY_REWRAP_PACE_MS       M10 re-wrap inter-batch pace ms (default 50)
 package main
 
 import (
@@ -205,6 +208,11 @@ func run() error {
 		Moderation: coordinator.ModerationConfig{
 			SweepEnabled:  os.Getenv("NOVA_MODERATION_SWEEP_ENABLED") != "false",
 			SweepInterval: time.Minute,
+		},
+		MasterKeyRotation: coordinator.MasterKeyRotationConfig{
+			RewrapConcurrency: envInt("NOVA_MASTER_KEY_REWRAP_CONCURRENCY", 4),
+			RewrapBatchSize:   envInt("NOVA_MASTER_KEY_REWRAP_BATCH", 256),
+			RewrapPace:        time.Duration(envInt("NOVA_MASTER_KEY_REWRAP_PACE_MS", 50)) * time.Millisecond,
 		},
 	})
 	if err != nil {

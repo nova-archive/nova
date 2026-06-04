@@ -49,6 +49,7 @@ type ServerConfig struct {
 	Ready           *handlers.ReadyHandler           // nil ⇒ /readyz returns 200 with no checks
 	SignedURLGuard  func(http.Handler) http.Handler  // nil ⇒ no signed-URL verification on reads
 	SigningAdmin    *handlers.SigningAdminHandler    // nil ⇒ signed-URL admin endpoints 404
+	MasterKeyAdmin  *handlers.MasterKeyAdminHandler  // nil ⇒ master-key rotation endpoints 404
 	AuditAdmin      *handlers.AuditAdminHandler      // nil ⇒ integrity-audit listing 404
 	ModerationAdmin *handlers.ModerationAdminHandler // nil ⇒ /api/v1/admin/moderation/* 404
 	AuditLogAdmin   *handlers.AuditLogAdminHandler   // nil ⇒ /api/v1/admin/audit-log 404
@@ -144,6 +145,11 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 					r.With(bearer.RequireRole("operator")).Post("/keys/rotate-signing", cfg.SigningAdmin.RotateSigning)
 					r.Post("/signed-urls/revoke", cfg.SigningAdmin.RevokeSignedURL)
 					r.Post("/signed-urls/sign", cfg.SigningAdmin.SignSignedURL)
+				}
+				// Master-key rotation (M10); operator-only.
+				if cfg.MasterKeyAdmin != nil {
+					r.With(bearer.RequireRole("operator")).Post("/keys/rotate-master", cfg.MasterKeyAdmin.RotateMaster)
+					r.With(bearer.RequireRole("operator")).Get("/keys/rotation-status", cfg.MasterKeyAdmin.RotationStatus)
 				}
 				// Integrity-audit listing (M8); read-only, operator+moderator.
 				if cfg.AuditAdmin != nil {

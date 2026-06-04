@@ -31,6 +31,7 @@ import (
 	"github.com/nova-archive/nova/internal/ipfs"
 	"github.com/nova-archive/nova/internal/jobs"
 	"github.com/nova-archive/nova/internal/jobs/kinds"
+	"github.com/nova-archive/nova/internal/masterkey"
 	"github.com/nova-archive/nova/internal/moderation"
 	"github.com/nova-archive/nova/internal/ratelimit"
 	"github.com/nova-archive/nova/internal/upload"
@@ -106,6 +107,10 @@ type Config struct {
 	// Moderation tunes the M9 scheduled-tombstone sweep. The admin API, intake,
 	// and blocklist are built when pool+backend are present regardless.
 	Moderation ModerationConfig
+
+	// MasterKeyRotation tunes the M10 re-wrap worker. Zero-valued fields take the
+	// documented defaults (4 workers, 256 ids/batch, 50ms inter-batch pace).
+	MasterKeyRotation MasterKeyRotationConfig
 }
 
 // SignedURLConfig tunes the M7 signed-URL stack.
@@ -134,6 +139,13 @@ type IntegrityAuditConfig struct {
 type ModerationConfig struct {
 	SweepEnabled  bool
 	SweepInterval time.Duration
+}
+
+// MasterKeyRotationConfig tunes the M10 re-wrap worker (concurrency/batch/pace).
+type MasterKeyRotationConfig struct {
+	RewrapConcurrency int
+	RewrapBatchSize   int
+	RewrapPace        time.Duration
 }
 
 // Coordinator owns the HTTP server. Build with New; register products before
@@ -175,6 +187,10 @@ type Coordinator struct {
 	// Moderation wiring (M9). The in-process Sweeper tombstones overdue
 	// quarantines; built when pool + backend are present.
 	modSweeper *moderation.Sweeper
+
+	// Master-key rotation wiring (M10). Built when pool + keystore are present;
+	// the Rotator re-wraps DEKs and signing keys to the active master-key version.
+	masterKeyRotator *masterkey.Rotator
 }
 
 // New constructs a coordinator from injected dependencies. pool/backend/ks may
@@ -267,6 +283,20 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		if auditW != nil {
 			sc.SigningAdmin.SetAuditWriter(auditW) // M9 best-effort operator-action trail
 		}
+
+		// Master-key Rotator (M10): re-wraps all DEKs and signing keys from a
+		// retiring version to the active one. OnSigningRewrap invalidates the
+		// signing-key cache defensively (re-wrap doesn't change the secret, but
+		// the version ID changes, so cached entries may become stale).
+		mkr := masterkey.NewRotator(masterkey.Config{
+			Q: q, Pool: pool, Keystore: ks, Audit: auditW, Logger: slog.Default(),
+			Concurrency:     cfg.MasterKeyRotation.RewrapConcurrency,
+			BatchSize:       cfg.MasterKeyRotation.RewrapBatchSize,
+			Pace:            cfg.MasterKeyRotation.RewrapPace,
+			OnSigningRewrap: func() { keySource.Invalidate() },
+		})
+		c.masterKeyRotator = mkr
+		sc.MasterKeyAdmin = handlers.NewMasterKeyAdminHandler(mkr, auditW)
 	}
 
 	// Integrity-audit subsystem (M8): the in-process scheduler runs the seven
@@ -333,6 +363,15 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 				}
 				return nil
 			},
+		})
+	}
+	// Master-key rotation stall detection (M10): degrades when a rotation is in
+	// progress but the source key is not loaded.
+	if c.masterKeyRotator != nil {
+		mkr := c.masterKeyRotator
+		ready = append(ready, handlers.ReadyCheck{
+			Name: "master_key_rotation",
+			Fn:   func(ctx context.Context) error { return mkr.Readyz(ctx) },
 		})
 	}
 	if backend != nil {
@@ -503,6 +542,11 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	// Scheduled-tombstone sweep (M9); a disabled sweeper's Run returns at once.
 	if c.modSweeper != nil {
 		go c.modSweeper.Run(ctx)
+	}
+	// Master-key re-wrap worker (M10): resumes any interrupted rotation on boot,
+	// then drains on each operator-triggered Start call.
+	if c.masterKeyRotator != nil {
+		go c.masterKeyRotator.Run(ctx)
 	}
 	c.srv = &http.Server{Handler: c.mux, ReadHeaderTimeout: 10 * time.Second}
 

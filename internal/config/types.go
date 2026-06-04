@@ -3,6 +3,8 @@
 // live in operator_yaml.go (loader) and paranoid.go (mode overrides).
 package config
 
+import "time"
+
 // Config is the root of operator.yaml.
 type Config struct {
 	Operator       Operator       `yaml:"operator"`
@@ -21,6 +23,10 @@ type Config struct {
 	// reads these from NOVA_SIGNED_URL_* env in cmd/coordinator; the loader
 	// maps this section once operator.yaml is wired in.
 	SignedURLs SignedURLs `yaml:"signed_urls,omitempty"`
+
+	// MasterKeyRotation tunes the M10 re-wrap worker. Zero-valued fields take the
+	// documented defaults (4 workers, 256 ids/batch, 50ms inter-batch pace).
+	MasterKeyRotation MasterKeyRotation `yaml:"master_key_rotation,omitempty"`
 
 	// Webhook destinations; honored only when paranoid=false.
 	Webhooks []WebhookDestination `yaml:"webhooks,omitempty"`
@@ -158,4 +164,12 @@ type SignedURLs struct {
 	RevocationRefreshSeconds int `yaml:"revocation_refresh_seconds,omitempty"`
 	KeyCacheTTLSeconds       int `yaml:"key_cache_ttl_seconds,omitempty"`
 	MaxTTLSeconds            int `yaml:"max_ttl_seconds,omitempty"`
+}
+
+// MasterKeyRotation tunes the M10 re-wrap worker. Zero-valued fields take the
+// documented defaults (4 workers, 256 ids/batch, 50ms inter-batch pace).
+type MasterKeyRotation struct {
+	RewrapConcurrency int           `yaml:"rewrap_concurrency"`
+	RewrapBatchSize   int           `yaml:"rewrap_batch_size"`
+	RewrapPace        time.Duration `yaml:"rewrap_pace"`
 }
