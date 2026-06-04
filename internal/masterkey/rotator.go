@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/auditlog"
@@ -217,3 +218,120 @@ func (r *Rotator) drainBatch(ctx context.Context, fromID pgtype.UUID) (int, erro
 	}
 	return len(rows), nil
 }
+
+// rewrapSigningKeys re-wraps active + within-grace retired signing keys for
+// `from` to the active version. Few rows; no batching required.
+func (r *Rotator) rewrapSigningKeys(ctx context.Context, from string) error {
+	fromUUID, ok := r.ks.VersionID(from)
+	if !ok {
+		return fmt.Errorf("masterkey: version id for %q not cached", from)
+	}
+	fromID := pgtype.UUID{Bytes: fromUUID, Valid: true}
+	rows, err := r.q.ListSigningKeysForRewrap(ctx, fromID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		secret, err := r.ks.Unwrap(ctx, row.WrappedKey, fromUUID)
+		if err != nil {
+			return fmt.Errorf("masterkey: unwrap signing key %s: %w", row.Kid, err)
+		}
+		wrapped, toUUID, err := r.ks.Wrap(secret)
+		zero(secret)
+		if err != nil {
+			return fmt.Errorf("masterkey: wrap signing key %s: %w", row.Kid, err)
+		}
+		if _, err := r.q.RewrapSigningKey(ctx, gen.RewrapSigningKeyParams{
+			WrappedKey:   wrapped,
+			NewVersionID: pgtype.UUID{Bytes: toUUID, Valid: true},
+			Kid:          row.Kid,
+			OldVersionID: fromID,
+		}); err != nil {
+			return fmt.Errorf("masterkey: rewrap signing key %s: %w", row.Kid, err)
+		}
+	}
+	return nil
+}
+
+// drain runs a full rotation: DEKs → signing keys → retire. Stalls (returns,
+// leaving the version 'rotating') if the source key is not loaded.
+func (r *Rotator) drain(ctx context.Context, from, to string) {
+	if !r.ks.HasLabel(from) {
+		r.log.Warn("master-key rotation stalled: source key not loaded", "from", from)
+		return
+	}
+	start := r.now()
+	if err := r.drainDEKs(ctx, from); err != nil {
+		r.log.Error("master-key rotation: drain DEKs", "from", from, "err", err)
+		return
+	}
+	if err := r.rewrapSigningKeys(ctx, from); err != nil {
+		r.log.Error("master-key rotation: rewrap signing keys", "from", from, "err", err)
+		return
+	}
+	if err := r.q.RetireVersion(ctx, from); err != nil {
+		r.log.Error("master-key rotation: retire version", "from", from, "err", err)
+		return
+	}
+	if r.onSign != nil {
+		r.onSign()
+	}
+	r.log.Info("master-key rotation completed", "from", from, "to", to, "duration", r.now().Sub(start))
+	if r.audit != nil {
+		r.audit.Write(ctx, auditlog.Entry{
+			Action:     "master_key.rotation_completed",
+			TargetType: "master_key_version",
+			TargetID:   from,
+			Payload:    map[string]any{"from": from, "to": to, "duration_ms": r.now().Sub(start).Milliseconds()},
+		})
+	}
+}
+
+// Run drives the Rotator: resume any interrupted rotation, then drain on each
+// trigger until ctx is cancelled. Start exactly once (coordinator.Run, Task 7).
+func (r *Rotator) Run(ctx context.Context) {
+	r.resumeIfRotating(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case j := <-r.trigger:
+			r.drain(ctx, j.from, j.to)
+		}
+	}
+}
+
+// resumeIfRotating finishes a rotation interrupted by a restart. Target is the
+// current active version. No-op when nothing rotating or source == active;
+// stalls (logs) when the source key is not loaded.
+func (r *Rotator) resumeIfRotating(ctx context.Context) {
+	row, err := r.q.GetRotatingVersion(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return
+	}
+	if err != nil {
+		r.log.Error("master-key rotation: resume probe", "err", err)
+		return
+	}
+	from, to := row.VersionLabel, r.ks.ActiveLabel()
+	if from == to {
+		r.log.Warn("master-key rotation: rotating version equals active; skipping resume", "version", from)
+		return
+	}
+	if !r.ks.HasLabel(from) {
+		r.log.Warn("master-key rotation stalled on resume: source key not loaded", "from", from)
+		return
+	}
+	if r.audit != nil {
+		r.audit.Write(ctx, auditlog.Entry{
+			Action:     "master_key.rotation_resumed",
+			TargetType: "master_key_version",
+			TargetID:   from,
+			Payload:    map[string]any{"from": from, "to": to},
+		})
+	}
+	r.drain(ctx, from, to)
+}
+
+// drainOnceForTest runs a single synchronous drain. Test-only.
+func (r *Rotator) drainOnceForTest(ctx context.Context, from, to string) { r.drain(ctx, from, to) }
