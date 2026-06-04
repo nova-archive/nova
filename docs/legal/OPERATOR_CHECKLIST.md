@@ -218,14 +218,90 @@ incidents arise.
 - Rotate signing keys (HMAC for signed URLs) at your declared
   cadence (default every 90 days; `POST /api/v1/admin/keys/rotate-signing`).
 
+## Master-key rotation runbook
+
+Use this procedure when you want to replace the active master key (e.g. on
+schedule, after suspected compromise, or for operational hygiene). The
+coordinator stays online throughout; reads work against either version during
+the drain.
+
+**⚠ CRITICAL: Back up EVERY master-key version out-of-band before proceeding.**
+Loss of all versions = permanent, unrecoverable loss of every blob in the
+federation. This applies to the new version too. An untested backup is no
+backup — test restoration on a clean environment before relying on it.
+
+### Five-step procedure
+
+1. **Generate v2 and store it out-of-band.**
+   ```sh
+   openssl rand -hex 32 > /run/secrets/master-key-v2
+   ```
+   (Or use a secret manager. Store an off-box backup immediately.)
+
+2. **Add v2 to the secret mount, keep v1, set active, restart.**
+   - Both `NOVA_MASTER_KEY_V1` (or `_FILE` / default mount) and
+     `NOVA_MASTER_KEY_V2` (or `_FILE` / default mount) must be present.
+   - Set `NOVA_MASTER_KEY_ACTIVE=v2`.
+   - Restart the coordinator. On boot it loads both versions; new uploads
+     already wrap DEKs under v2. Old blobs still read (v1 is loaded).
+
+3. **Trigger the rotation.**
+   ```sh
+   novactl keys rotate-master --from v1 --to v2
+   ```
+   The CLI prompts for confirmation (use `--no-confirm` to skip), then polls
+   `GET /api/v1/admin/keys/rotation-status` printing remaining DEK and
+   signing-key counts until the drain completes or stalls. The endpoint
+   validates that `to_version` equals the active label; if not, it returns
+   `400 to_not_active` and the restart from step 2 is missing.
+
+4. **Wait for completion.**
+   ```sh
+   novactl keys status
+   ```
+   Wait until `v1` shows `state: retired` with `dek_count: 0` and
+   `signing_count: 0`.
+
+   **Do not remove v1 until this step confirms it.** If v1 is dropped while
+   its drain is still in progress, the rotation stalls: the `v1` version stays
+   `rotating`, `/readyz` degrades (readiness, not liveness — a restart cannot
+   fix a missing key), and `rotation-status.stalled` becomes `true`. To
+   recover, temporarily restore the v1 key and restart the coordinator.
+
+5. **Drop v1 on the next deploy.**
+   Once step 4 confirms `v1 retired, dek_count=0`, remove the v1 secret from
+   mounts and env on your next deploy. Do not drop it before then.
+
+### Autovacuum guidance for large deployments
+
+Each DEK re-wrap is a Postgres `UPDATE` (delete + insert under MVCC), so
+re-wrapping a million DEKs generates a million dead tuples. On large
+deployments, consider:
+
+- Temporarily setting a more aggressive `autovacuum_vacuum_scale_factor` on
+  `data_encryption_keys` (e.g. `0.01` instead of the default `0.2`) for the
+  duration of the rotation so autovacuum keeps up with the dead-tuple load.
+  Restore the default after rotation completes.
+  ```sql
+  ALTER TABLE data_encryption_keys
+    SET (autovacuum_vacuum_scale_factor = 0.01);
+  -- ... after rotation ...
+  ALTER TABLE data_encryption_keys
+    RESET (autovacuum_vacuum_scale_factor);
+  ```
+- Setting `NOVA_MASTER_KEY_REWRAP_PACE_MS` higher (e.g. `200`–`500`) to
+  smooth WAL and disk I/O on storage-constrained hosts. The default of 50 ms
+  is conservative for most deployments; small instances may benefit from more
+  breathing room.
+
 ## Annual maintenance (RECOMMENDED)
 
 - Re-read this checklist; flag items that have drifted from current
   practice.
 - Renew DMCA agent registration if applicable (three-year window).
 - Refresh consultation with counsel if jurisdictional law has changed.
-- Rotate the operator master key
-  (`POST /api/v1/admin/keys/rotate-master`).
+- Rotate the operator master key (follow the "Master-key rotation runbook"
+  above; `POST /api/v1/admin/keys/rotate-master` is the API endpoint).
 - Verify backups still restore cleanly.
 
 ## On incident (REQUIRED action when the incident occurs)

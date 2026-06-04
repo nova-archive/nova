@@ -1481,47 +1481,78 @@ paths:
     post:
       tags: [admin]
       operationId: rotateMasterKey
-      summary: Rotate the operator master key.
+      summary: Trigger a master-key rotation (operator-only).
       description: |
-        Walks every active per-blob and signing key, unwraps with the
-        retiring master-key version, re-wraps with the new version,
-        and updates the row's master_key_version_id. Rotation is
-        online (no read-path downtime). See
+        Validates that `to_version` equals the currently-active master-key label,
+        marks the `from_version` as `rotating`, and starts the background worker
+        that re-wraps every DEK and non-shredded signing key from the old version
+        to the new one via atomic, version-guarded UPDATEs. Rotation is online;
+        reads work against either version during the drain.
+
+        **Prerequisites.** The operator must:
+        1. Deploy the new key to the secret mount (e.g. `NOVA_MASTER_KEY_V2_FILE`),
+           keeping the old key present.
+        2. Set `NOVA_MASTER_KEY_ACTIVE=<to_version>` and restart the coordinator.
+        3. Only then call this endpoint.
+
+        `to_version` MUST equal the active label at the time of the call or the
+        endpoint returns `400 to_not_active`. See
         `docs/specs/ENCRYPTION_ENVELOPE.md` § "Rotation procedure".
-
-        The new master-key value MUST already be loaded into the
-        coordinator's environment as `NOVA_MASTER_KEY_<new_version>`
-        before this endpoint is called.
-
-        This is the Phase 1 deliverable promoted from Phase 5; a
-        deployment that cannot rotate the master key after suspected
-        compromise is not safe.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [from_version, to_version]
-              properties:
-                from_version:
-                  type: string
-                  description: Label of the master-key version to rotate away from.
-                to_version:
-                  type: string
-                  description: Label of the new master-key version (must already be loaded into env).
+              $ref: '#/components/schemas/RotateMasterRequest'
       responses:
         '202':
-          description: Rotation accepted; progress reported via webhook and metrics.
+          description: |
+            Rotation accepted. The `total_deks` and `total_signing_keys` counts are
+            the initial totals (returned once here); the CLI derives progress from
+            `initial − remaining` by polling `GET /api/v1/admin/keys/rotation-status`.
           content:
             application/json:
               schema:
-                type: object
-                required: [job_id, total_rows]
-                properties:
-                  job_id: { type: string, format: uuid }
-                  total_rows: { type: integer }
+                $ref: '#/components/schemas/RotateMasterStarted'
+        '400':
+          description: |
+            Validation failure. `code` is one of:
+            - `to_not_active`: `to_version` is not the current active label (restart required).
+            - `invalid_from_version`: `from_version` is not loaded, unknown, already retired, or equals `to_version`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Another master-key version is already `rotating`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/admin/keys/rotation-status:
+    get:
+      tags: [admin]
+      operationId: getMasterKeyRotationStatus
+      summary: Get master-key rotation progress (operator-only).
+      description: |
+        Returns the active master-key label, the current in-progress rotation
+        (if any), and a per-version summary. When idle, `in_progress` is `null`.
+
+        The CLI (`novactl keys status`) uses this to poll until the rotation
+        completes or stalls. A stalled rotation means the `from` key was
+        removed before the drain finished; `/readyz` will also degrade.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Current rotation status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotationStatus'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /api/v1/admin/audits/integrity:
     get:
@@ -1952,6 +1983,114 @@ components:
         details:
           type: object
           additionalProperties: true
+
+    RotateMasterRequest:
+      type: object
+      required: [from_version, to_version]
+      properties:
+        from_version:
+          type: string
+          description: |
+            Label of the master-key version to rotate away from (e.g. `v1`).
+            Must be loaded, not already retired, and not equal to `to_version`.
+        to_version:
+          type: string
+          description: |
+            Label of the new master-key version (e.g. `v2`). Must equal the
+            current active master-key label (`NOVA_MASTER_KEY_ACTIVE`).
+
+    RotateMasterStarted:
+      type: object
+      required: [from, to, total_deks, total_signing_keys, status]
+      properties:
+        from:
+          type: string
+          description: The version being rotated away from.
+        to:
+          type: string
+          description: The version being rotated to (the current active label).
+        total_deks:
+          type: integer
+          description: |
+            Total DEK rows to be re-wrapped (initial count, returned once here).
+            The CLI derives progress from `total_deks − remaining_deks` by polling
+            `GET /api/v1/admin/keys/rotation-status`.
+        total_signing_keys:
+          type: integer
+          description: |
+            Total signing key rows to be re-wrapped (initial count, returned once here).
+        status:
+          type: string
+          enum: [accepted]
+          description: Rotation accepted; background worker started.
+
+    RotationStatus:
+      type: object
+      required: [active, in_progress, versions]
+      properties:
+        active:
+          type: string
+          description: The current active master-key label.
+        in_progress:
+          description: |
+            The rotation in progress, or `null` when idle. The initial totals
+            (`total_deks`/`total_signing_keys`) are returned once in the 202 body;
+            progress is derived from `initial − remaining`.
+          nullable: true
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/RotationProgress'
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/MasterKeyVersionInfo'
+
+    RotationProgress:
+      type: object
+      required: [from, remaining_deks, remaining_signing_keys, stalled]
+      properties:
+        from:
+          type: string
+          description: The version being drained (in `rotating` state).
+        remaining_deks:
+          type: integer
+          description: DEK rows not yet re-wrapped.
+        remaining_signing_keys:
+          type: integer
+          description: Signing-key rows not yet re-wrapped.
+        stalled:
+          type: boolean
+          description: |
+            True when the `from` key is no longer loaded (prematurely removed).
+            `/readyz` degrades while stalled; the operator must restore the key
+            and restart to resume.
+        stall_reason:
+          type: string
+          nullable: true
+          description: Human-readable reason the rotation stalled, or null if not stalled.
+
+    MasterKeyVersionInfo:
+      type: object
+      required: [label, state, dek_count, signing_count]
+      properties:
+        label:
+          type: string
+          description: The version label (e.g. `v1`, `v2`).
+        state:
+          type: string
+          enum: [active, rotating, retired]
+          description: Current state of this master-key version row.
+        dek_count:
+          type: integer
+          description: Number of DEK rows currently referencing this version.
+        signing_count:
+          type: integer
+          description: Number of signing-key rows currently referencing this version.
+        retired_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When this version was retired, or null if still active/rotating.
 
     LoginRequest:
       type: object

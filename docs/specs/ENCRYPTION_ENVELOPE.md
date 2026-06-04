@@ -19,7 +19,7 @@ This spec covers four layers:
 
 1. The on-IPFS envelope wire format.
 2. Per-blob key generation and key wrapping with the operator master key.
-3. Master-key versioning and rotation (Phase 1 deliverable).
+3. Master-key versioning and rotation (implemented in M10 (`internal/masterkey`)).
 4. Crypto-shredding for deletion, with legal-hold gates.
 
 ## Envelope wire format
@@ -181,39 +181,83 @@ Constraints:
   is equivalent to permanent loss of every blob in the federation.
   Document this prominently in `OPERATOR_CHECKLIST.md`.
 
-### Rotation procedure (Phase 1 deliverable)
+### Rotation procedure (implemented in M10 (`internal/masterkey`))
+
+**Precondition.** The new master key must be loaded into the coordinator
+*before* rotation is triggered. Deploy v2 to the secret mount (e.g.
+`NOVA_MASTER_KEY_V2_FILE` or `/run/secrets/master-key-v2`), keep v1
+present, set `NOVA_MASTER_KEY_ACTIVE=v2`, and **restart** the coordinator.
+On boot the keystore loads both v1 and v2; new uploads already wrap DEKs
+under v2. The rotation command then drains all remaining v1-wrapped rows
+to v2.
+
+**Invariant.** `rotate-master` requires `to_version == NOVA_MASTER_KEY_ACTIVE`.
+This is enforced by the endpoint. If `to` is not the active label the
+endpoint refuses with `400 to_not_active` and instructs the operator to
+set the env var and restart first.
+
+**CLI:**
 
 ```
-novactl keys rotate-master \
-    --from-version v1 \
-    --to-version v2 \
-    --new-key-env NOVA_MASTER_KEY_V2
+novactl keys rotate-master --from v1 --to v2 [--no-confirm]
 ```
 
-Algorithm:
+The CLI prompts for confirmation (bypassed by `--no-confirm`), then polls
+`GET /api/v1/admin/keys/rotation-status` printing remaining DEK and signing
+key counts until the rotation completes or stalls.
 
-1. INSERT new row in `master_key_versions` with `state = 'active'`.
-2. Mark old row `state = 'rotating'`.
-3. For each `data_encryption_keys` row with `master_key_version_id = old.id` and `state = 'active'`:
-   a. Mark row `state = 'rotating'`.
-   b. Unwrap `wrapped_key` with old `MK`.
-   c. Re-wrap with new `MK`, generating a fresh wrap nonce.
-   d. UPDATE `wrapped_key`, `master_key_version_id = new.id`, `state = 'active'`.
-4. Same for `signing_keys`, but with the filter `state IN ('active', 'retired')`
-   — active keys **and** retired keys still inside their grace window must be
-   re-wrapped, because both still verify signed URLs (see
-   `docs/specs/SIGNED_URL_FORMAT.md` § "Key rotation"). `shredded` signing keys
-   are skipped: their `wrapped_key` is already zeroed. Missing the `retired`
-   rows would orphan in-grace keys and break signed-URL verification for URLs
-   minted just before the rotation. (Signing-key wrapping lands in M7; this
-   re-wrap step is realised in M10.)
-5. Mark old row `state = 'retired'`, set `retired_at = now()`.
-6. Operator removes the old `MK` env var on next deploy.
+**Algorithm:**
 
-Rotation is online: reads continue against the old version until each
-row is updated, then continue against the new version. There is no
-read-path downtime. A 1 M-blob deployment rotates in a small number
-of minutes on commodity hardware.
+1. Endpoint validates: `to == active label`, both labels loaded, `from` has a
+   `master_key_versions` row, `from` is not retired, no other version already
+   `rotating`. Returns `400` or `409` on any violation.
+2. Mark the `from` version's `master_key_versions` row `state = 'rotating'`
+   (atomic; fails if any other version is already `rotating`). The `rotating`
+   state marks the **version row**, not individual DEK rows — DEK `state` stays
+   `'active'` throughout.
+3. Endpoint returns `202 {from, to, total_deks, total_signing_keys}` and
+   starts the background worker pool non-blocking.
+4. Worker claims batches of `data_encryption_keys` rows where
+   `master_key_version_id = from.id AND state IN ('active','rotating')`
+   (`FOR UPDATE SKIP LOCKED`, default 256 rows/batch). For each row:
+   unwrap `wrapped_key` with the old `MK`; re-wrap with the new `MK`
+   (fresh wrap nonce); perform one **atomic, version-guarded `UPDATE`**:
+   ```sql
+   UPDATE data_encryption_keys
+      SET wrapped_key = $new_wrapped, master_key_version_id = $new_id
+    WHERE id = $row_id AND master_key_version_id = $old_id;
+   ```
+   `wrapped_key` and `master_key_version_id` flip together in a single
+   statement. A concurrent reader always sees a consistent `(wrapped, version)`
+   pair. The `WHERE master_key_version_id = $old_id` guard makes each update
+   **idempotent and race-safe**: a re-run or a concurrent worker matches 0 rows
+   on an already-migrated row. `legal_hold` DEKs are re-wrapped normally
+   (re-wrap is not a shred; the `no_shred_under_legal_hold` CHECK is unaffected).
+   An inter-batch pace (default 50 ms, `NOVA_MASTER_KEY_REWRAP_PACE_MS`) keeps
+   WAL and I/O headroom.
+5. After all DEKs drain, re-wrap `signing_keys` with
+   `master_key_version_id = from.id AND state IN ('active', 'retired')` — the
+   active key **and all non-shredded retired keys** (a retired-but-not-yet-shredded
+   key still holds real bytes and still verifies signed URLs; omitting it would
+   orphan it). `shredded` signing keys are skipped: their `wrapped_key` is
+   already zeroed. The same atomic guarded `UPDATE` applies. After re-wrapping,
+   the signing-key cache is invalidated.
+6. Mark the `from` version `state = 'retired'`, `retired_at = now()`.
+7. **Operator confirms** `novactl keys status` shows `from` retired with 0
+   referencing rows, then removes the old `MK` from env/mounts on the **next
+   deploy**.
+
+Rotation is online: reads continue against whichever version a row is currently
+wrapped under (the keystore resolves version by `master_key_version_id`, and both
+keys are loaded). There is no read-path downtime. A 1 M-blob deployment drains
+in a few minutes on commodity hardware.
+
+**Resume on restart.** If the coordinator restarts mid-rotation, `ResumeIfRotating`
+picks up any `rotating` version on boot and continues draining. The guarded
+`UPDATE` makes resumption idempotent. If the `from` key was prematurely removed,
+the rotation **stalls**: the version stays `rotating`, `/readyz` degrades (readiness,
+not liveness — a restart cannot conjure a missing key), and `rotation-status.stalled`
+is `true`. The operator must restore the `from` key and restart to resume.
 
 ## Crypto-shredding
 

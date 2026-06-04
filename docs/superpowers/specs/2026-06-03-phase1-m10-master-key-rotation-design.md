@@ -200,8 +200,9 @@ Rotator worker pool (N goroutines):
    then  SetMasterVersionState(from, 'retired', retired_at=now); audit master_key.rotation_completed
 
 GET /api/v1/admin/keys/rotation-status (operator):
-   { active, in_progress?: {from, remaining_deks, remaining_signing, total_deks, total_signing, started_at,
-     stalled}, versions: [{label, state, dek_count, signing_count, retired_at}] }
+   { active, in_progress?: {from, remaining_deks, remaining_signing_keys, stalled, stall_reason},
+     versions: [{label, state, dek_count, signing_count, retired_at}] }
+   (total_deks/total_signing_keys are returned once in the 202 body; the CLI derives progress from initial−remaining)
 ```
 
 The rotation core **owns the write side of the key-version lifecycle**. It performs its mutations through
@@ -298,11 +299,13 @@ key is never written to disk, logs, or any cache.
 ### Signing keys (the M7 forward dependency)
 
 After the DEKs drain, the worker re-wraps `signing_keys` with `master_key_version_id = from AND state IN
-('active','retired')` — **active and within-grace retired**, both of which still verify signed URLs.
-`shredded` signing keys are skipped (their `wrapped_key` is already zeroed). These are few (one active + a
-handful of retired), so no `SKIP LOCKED` batching is needed. Each is the same unwrap/zero/wrap/guarded-update.
-After re-wrapping, the worker calls the M7 `DBKeySource.Invalidate()` defensively — re-wrap does not change
-the secret value, but this clears any cached version association so subsequent unwraps use the fresh row.
+('active','retired')` — **active and all non-shredded retired keys**. Both states still hold real key bytes
+and still verify signed URLs; a retired-but-not-yet-shredded key would be orphaned (unreadable) if its
+wrapped bytes were not migrated. `shredded` signing keys are skipped (their `wrapped_key` is already zeroed).
+These are few (one active + a handful of retired), so no `SKIP LOCKED` batching is needed. Each is the same
+unwrap/zero/wrap/guarded-update. After re-wrapping, the worker calls the M7 `DBKeySource.Invalidate()`
+defensively — re-wrap does not change the secret value, but this clears any cached version association so
+subsequent unwraps use the fresh row.
 
 ### Parallelism, bounding, and WAL/bloat pacing
 
@@ -415,9 +418,8 @@ like `SigningAdmin`/`AuditAdmin`). The handler is built only when `pool + ks` ar
 {
   "active": "v2",
   "in_progress": {
-    "from": "v1", "remaining_deks": 4123, "total_deks": 1000000,
-    "remaining_signing_keys": 1, "total_signing_keys": 3,
-    "started_at": "2026-06-03T12:00:00Z", "stalled": false
+    "from": "v1", "remaining_deks": 4123, "remaining_signing_keys": 1,
+    "stalled": false, "stall_reason": null
   },
   "versions": [
     {"label": "v2", "state": "active",  "dek_count": 995877, "signing_count": 2, "retired_at": null},
@@ -427,6 +429,8 @@ like `SigningAdmin`/`AuditAdmin`). The handler is built only when `pool + ks` ar
 ```
 
 `in_progress` is `null` when idle. `stalled` is `true` when the in-progress version's key is not loaded.
+`total_deks` and `total_signing_keys` are **not** in `in_progress` — they are returned once in the `202`
+body on rotation start; the CLI derives progress from `initial − remaining`.
 
 ### Error → status
 
@@ -515,7 +519,7 @@ the coordinator's lifecycle context, not a request — writes `rotation_resumed`
 
 1. After `rotate-master v1→v2` completes, **every** active DEK (parents *and* derivatives) references v2, and
    **0** active/rotating DEKs reference v1.
-2. Signing keys in state `active` + within-grace `retired` are re-wrapped to v2; signed-URL verify **and**
+2. Signing keys in state `active` + non-shredded `retired` are re-wrapped to v2; signed-URL verify **and**
    mint keep working across the rotation (the M7 forward dependency satisfied).
 3. Reads succeed against **both** versions *during* rotation — a not-yet-rewrapped blob decrypts under v1, a
    rewrapped blob under v2 — with no read-path downtime.

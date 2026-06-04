@@ -123,8 +123,11 @@ CREATE TYPE dmca_status AS ENUM (
     'rejected'
 );
 
--- Key state values (v2). 'rotating' is a transient state during master-key
--- rotation; rows in this state are being re-wrapped under the new master key.
+-- Key state values (v2). 'rotating' marks the in-progress SOURCE master_key_versions
+-- row during a master-key rotation (M10: internal/masterkey). Individual DEK rows do
+-- NOT get a per-row 'rotating' state; their state stays 'active' throughout. The
+-- rotation worker's per-row update is one atomic, version-guarded UPDATE that flips
+-- wrapped_key + master_key_version_id together (WHERE master_key_version_id = old).
 -- For signing keys (signed URLs): 'retired' = rotated out but STILL VERIFIES
 -- until retire_after (the grace window); 'shredded' = past grace, wrapped_key
 -- zeroed. See docs/specs/SIGNED_URL_FORMAT.md "Key rotation".
@@ -163,11 +166,13 @@ CREATE TABLE users (
 -- Master key versions (v2)
 --
 -- Tracks the operator master key (NOVA_MASTER_KEY) over its rotation
--- history. Each per-blob and per-signing key rows reference the
--- master-key version they were wrapped under. Rotation creates a new
--- 'active' row, marks the previous 'retired', and re-wraps every
--- referenced wrapped_key under the new master key in a single
--- transaction.
+-- history. Each per-blob and per-signing key row references the
+-- master-key version it was wrapped under. Rotation (M10: internal/masterkey)
+-- sets the source version's state to 'rotating', re-wraps every referenced
+-- wrapped_key under the new master key via atomic guarded UPDATEs, then
+-- marks the source version 'retired'. A version row is NEVER deleted — a
+-- 'shredded' DEK keeps its FK to it forever — only 'retired'. The 'rotating'
+-- state therefore marks the in-progress source version, not individual DEK rows.
 --
 -- The actual master-key bytes are never stored in this table. They live
 -- in process memory loaded from NOVA_MASTER_KEY.
@@ -190,12 +195,20 @@ CREATE INDEX master_key_versions_state_idx ON master_key_versions (state);
 -- wrapped (encrypted) with the operator master key (loaded from
 -- environment) and persisted as bytea. The master_key_version_id
 -- foreign key records which master-key version wrapped this row, so
--- rotation can find rows that need re-wrapping.
+-- the M10 re-wrap worker can find rows that need migrating.
+--
+-- dek_master_version_idx (master_key_version_id) WHERE state IN ('active','rotating')
+-- is the M10 re-wrap worker's claim index (designed ahead for M10).
+-- The worker uses FOR UPDATE SKIP LOCKED on this index to claim batches,
+-- then performs one atomic, version-guarded UPDATE per row (flipping
+-- wrapped_key + master_key_version_id together; no per-row 'rotating' state
+-- is used). legal_hold rows are re-wrapped normally — re-wrap is not a shred
+-- and the no_shred_under_legal_hold CHECK remains the floor.
 --
 -- legal_hold = true prevents crypto-shredding (the wrapped_key is not
--- zeroed and state remains 'active' or 'rotating') regardless of
--- blob.state. This is required for severe-content preservation flows
--- where evidence must be retained under statutory obligation.
+-- zeroed and state remains 'active') regardless of blob.state. This is
+-- required for severe-content preservation flows where evidence must be
+-- retained under statutory obligation.
 --
 -- Crypto-shred procedure:
 --   1. Verify legal_hold = false. If true, refuse and audit-log.
@@ -232,10 +245,11 @@ CREATE INDEX dek_legal_hold_idx ON data_encryption_keys (legal_hold) WHERE legal
 --
 -- Like data_encryption_keys, wrapped_key is encrypted under the operator
 -- master key (master_key_version_id records which version). Master-key
--- rotation (M10) MUST therefore re-wrap signing_keys rows in state
--- 'active' AND within-grace 'retired' (both still verify), not just the
--- blob DEKs — otherwise every signing key is orphaned on rotation. See
--- ENCRYPTION_ENVELOPE.md "Rotation procedure" step 4. (Verifier: M7.)
+-- rotation (M10: internal/masterkey) MUST therefore re-wrap signing_keys rows
+-- in state 'active' AND non-shredded 'retired' (both still hold real bytes
+-- and still verify signed URLs), not just the blob DEKs — otherwise every
+-- signing key is orphaned on rotation. 'shredded' rows are skipped (wrapped_key
+-- already zeroed). See ENCRYPTION_ENVELOPE.md "Rotation procedure". (M7.)
 -- ----------------------------------------------------------------------------
 
 CREATE TABLE signing_keys (
