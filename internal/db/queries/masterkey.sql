@@ -19,7 +19,7 @@ WHERE mkv.version_label = $1
   AND mkv.state = 'active'
   AND NOT EXISTS (SELECT 1 FROM master_key_versions r WHERE r.state = 'rotating');
 
--- name: RetireVersion :exec
+-- name: RetireVersion :execrows
 UPDATE master_key_versions
 SET state = 'retired', retired_at = now()
 WHERE version_label = $1 AND state = 'rotating';
@@ -59,6 +59,9 @@ SELECT count(*) FROM data_encryption_keys
 WHERE master_key_version_id = $1 AND state IN ('active','rotating');
 
 -- name: ListSigningKeysForRewrap :many
+-- Deliberately re-wraps ALL non-shredded retired keys (not only within-grace):
+-- a retired-but-not-yet-shredded key still holds real wrapped bytes that would
+-- be orphaned if left under the retiring version.
 SELECT kid, wrapped_key
 FROM signing_keys
 WHERE master_key_version_id = $1 AND state IN ('active','retired');

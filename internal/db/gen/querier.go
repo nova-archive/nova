@@ -108,6 +108,9 @@ type Querier interface {
 	ListModerationDecisions(ctx context.Context, arg ListModerationDecisionsParams) ([]ListModerationDecisionsRow, error)
 	ListOverdueTombstones(ctx context.Context) ([]ListOverdueTombstonesRow, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)
+	// Deliberately re-wraps ALL non-shredded retired keys (not only within-grace):
+	// a retired-but-not-yet-shredded key still holds real wrapped bytes that would
+	// be orphaned if left under the retiring version.
 	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// For an original, resolves its own collection memberships; for a derivative
@@ -115,7 +118,7 @@ type Querier interface {
 	// parent visibility and hold no membership of their own. One query, no N+1.
 	ResolveEffectiveVisibility(ctx context.Context, cid string) ([]string, error)
 	RetirePriorActiveSigningKey(ctx context.Context, arg RetirePriorActiveSigningKeyParams) error
-	RetireVersion(ctx context.Context, versionLabel string) error
+	RetireVersion(ctx context.Context, versionLabel string) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id pgtype.UUID) error
 	RevokeRefreshTokenFamily(ctx context.Context, userID pgtype.UUID) error
 	// Atomic, version-guarded re-wrap: wrapped_key + master_key_version_id flip

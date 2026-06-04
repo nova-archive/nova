@@ -193,6 +193,9 @@ type ListSigningKeysForRewrapRow struct {
 	WrappedKey []byte
 }
 
+// Deliberately re-wraps ALL non-shredded retired keys (not only within-grace):
+// a retired-but-not-yet-shredded key still holds real wrapped bytes that would
+// be orphaned if left under the retiring version.
 func (q *Queries) ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error) {
 	rows, err := q.db.Query(ctx, listSigningKeysForRewrap, masterKeyVersionID)
 	if err != nil {
@@ -213,15 +216,18 @@ func (q *Queries) ListSigningKeysForRewrap(ctx context.Context, masterKeyVersion
 	return items, nil
 }
 
-const retireVersion = `-- name: RetireVersion :exec
+const retireVersion = `-- name: RetireVersion :execrows
 UPDATE master_key_versions
 SET state = 'retired', retired_at = now()
 WHERE version_label = $1 AND state = 'rotating'
 `
 
-func (q *Queries) RetireVersion(ctx context.Context, versionLabel string) error {
-	_, err := q.db.Exec(ctx, retireVersion, versionLabel)
-	return err
+func (q *Queries) RetireVersion(ctx context.Context, versionLabel string) (int64, error) {
+	result, err := q.db.Exec(ctx, retireVersion, versionLabel)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const rewrapDEK = `-- name: RewrapDEK :execrows

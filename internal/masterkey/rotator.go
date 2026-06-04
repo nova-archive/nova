@@ -269,20 +269,27 @@ func (r *Rotator) drain(ctx context.Context, from, to string) {
 		r.log.Error("master-key rotation: rewrap signing keys", "from", from, "err", err)
 		return
 	}
-	if err := r.q.RetireVersion(ctx, from); err != nil {
+	n, err := r.q.RetireVersion(ctx, from)
+	if err != nil {
 		r.log.Error("master-key rotation: retire version", "from", from, "err", err)
+		return
+	}
+	if n == 0 {
+		// Redundant drain (version already retired by a prior/boot-resume pass);
+		// skip the duplicate completion signal.
 		return
 	}
 	if r.onSign != nil {
 		r.onSign()
 	}
-	r.log.Info("master-key rotation completed", "from", from, "to", to, "duration", r.now().Sub(start))
+	elapsed := r.now().Sub(start)
+	r.log.Info("master-key rotation completed", "from", from, "to", to, "duration", elapsed)
 	if r.audit != nil {
 		r.audit.Write(ctx, auditlog.Entry{
 			Action:     "master_key.rotation_completed",
 			TargetType: "master_key_version",
 			TargetID:   from,
-			Payload:    map[string]any{"from": from, "to": to, "duration_ms": r.now().Sub(start).Milliseconds()},
+			Payload:    map[string]any{"from": from, "to": to, "duration_ms": elapsed.Milliseconds()},
 		})
 	}
 }
