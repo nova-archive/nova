@@ -181,3 +181,54 @@ func TestKeystoreRefusesActiveWithoutLoadedKey(t *testing.T) {
 	_, err := envelope.NewKeystoreFromEnv(nil)
 	require.Error(t, err)
 }
+
+func TestKeystoreAccessors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	pool := dbtest.New(t, ctx)
+
+	// Load v1 and v2; active = v2.
+	t.Setenv("NOVA_MASTER_KEY_V1", mustHexKey())
+	t.Setenv("NOVA_MASTER_KEY_V2", mustHexKey())
+	t.Setenv("NOVA_MASTER_KEY_ACTIVE", "v2")
+
+	ks, err := envelope.NewKeystoreFromEnv(pool)
+	require.NoError(t, err)
+	_, err = ks.Bootstrap(ctx)
+	require.NoError(t, err)
+
+	// HasLabel
+	require.True(t, ks.HasLabel("v1"), "v1 should be loaded")
+	require.True(t, ks.HasLabel("v2"), "v2 should be loaded")
+	require.False(t, ks.HasLabel("v3"), "v3 was never loaded")
+
+	// LoadedLabels
+	require.Len(t, ks.LoadedLabels(), 2)
+
+	// VersionID — v1 row exists because Bootstrap / loadVersions loaded it from DB
+	// (loadVersions scans all rows; v1 is present from a prior Bootstrap if it exists,
+	// otherwise only the active v2 row is inserted; for this test we insert v1 first).
+	// Insert v1 so loadVersions can cache it, then verify.
+	_, err = pool.Exec(ctx,
+		`INSERT INTO master_key_versions (version_label, state) VALUES ('v1', 'retired') ON CONFLICT DO NOTHING`)
+	require.NoError(t, err)
+
+	// Re-Bootstrap to populate idByLabel for both labels.
+	_, err = ks.Bootstrap(ctx)
+	require.NoError(t, err)
+
+	v1id, ok := ks.VersionID("v1")
+	require.True(t, ok, "VersionID(v1) must resolve after Bootstrap")
+	require.NotEqual(t, uuid.Nil, v1id)
+
+	// ActiveVersionID == VersionID("v2")
+	v2id, ok := ks.VersionID("v2")
+	require.True(t, ok)
+	activeID, ok := ks.ActiveVersionID()
+	require.True(t, ok)
+	require.Equal(t, v2id, activeID, "ActiveVersionID must match VersionID(v2)")
+}

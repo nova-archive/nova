@@ -140,6 +140,33 @@ func NewKeystoreFromEnv(pool *pgxpool.Pool) (*Keystore, error) {
 // ActiveLabel returns the active version label (lowercase).
 func (k *Keystore) ActiveLabel() string { return k.activeLabel }
 
+// HasLabel reports whether this version's master key is loaded in memory.
+func (k *Keystore) HasLabel(label string) bool {
+	_, ok := k.masters[strings.ToLower(label)]
+	return ok
+}
+
+// LoadedLabels returns every loaded version label (lowercased).
+func (k *Keystore) LoadedLabels() []string {
+	out := make([]string, 0, len(k.masters))
+	for l := range k.masters {
+		out = append(out, l)
+	}
+	return out
+}
+
+// VersionID returns the master_key_versions.id for a label, if cached
+// (Bootstrap / loadVersions populates the cache).
+func (k *Keystore) VersionID(label string) (uuid.UUID, bool) {
+	id, ok := k.idByLabel[strings.ToLower(label)]
+	return id, ok
+}
+
+// ActiveVersionID returns the active version's id.
+func (k *Keystore) ActiveVersionID() (uuid.UUID, bool) {
+	return k.VersionID(k.activeLabel)
+}
+
 // Bootstrap ensures master_key_versions has a row for every label in
 // k.masters that is not yet recorded. The active row is created with
 // state='active'; non-active labels are not auto-inserted (operators
