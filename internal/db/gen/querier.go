@@ -13,14 +13,23 @@ import (
 type Querier interface {
 	AbortUploadSession(ctx context.Context, id pgtype.UUID) error
 	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
+	// Atomically mark the source version 'rotating' iff it is currently 'active'
+	// and no other version is already rotating. 0 rows => caller maps to 409/400.
+	BeginVersionRotation(ctx context.Context, versionLabel string) (int64, error)
+	// Claim a batch of re-wrappable DEK ids for a version. FOR UPDATE SKIP LOCKED
+	// gives clean N-worker parallelism; run inside the per-batch tx so the locks
+	// are held until commit. Served by dek_master_version_idx.
+	ClaimDEKsForRewrap(ctx context.Context, arg ClaimDEKsForRewrapParams) ([]ClaimDEKsForRewrapRow, error)
 	ClearModerationLegalHold(ctx context.Context, cid string) error
 	ClearScheduledTombstone(ctx context.Context, cid string) error
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
 	CountBlocklist(ctx context.Context) (int64, error)
+	CountDEKsForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
 	CountDMCACases(ctx context.Context) (int64, error)
 	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
 	CountModerationDecisions(ctx context.Context) (int64, error)
+	CountSigningKeysForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
 	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	DeleteBlocklist(ctx context.Context, cid string) error
@@ -54,7 +63,9 @@ type Querier interface {
 	GetDMCACase(ctx context.Context, id pgtype.UUID) (GetDMCACaseRow, error)
 	GetDerivativeCID(ctx context.Context, arg GetDerivativeCIDParams) (string, error)
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
+	GetMasterVersionByLabel(ctx context.Context, versionLabel string) (MasterKeyVersion, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)
+	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
 	GetSigningKeyByKID(ctx context.Context, kid string) (GetSigningKeyByKIDRow, error)
 	GetUploadSession(ctx context.Context, id pgtype.UUID) (GetUploadSessionRow, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
@@ -90,20 +101,27 @@ type Querier interface {
 	ListDerivativeCIDs(ctx context.Context, parentCid pgtype.Text) ([]string, error)
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
 	ListIntegrityAudits(ctx context.Context, arg ListIntegrityAuditsParams) ([]ListIntegrityAuditsRow, error)
+	ListMasterVersions(ctx context.Context) ([]ListMasterVersionsRow, error)
 	// decided_by is nullable — the scheduled-tombstone sweep records system actions
 	// with decided_by=NULL; coalesce so the listing never crashes after an
 	// auto-tombstone. '' renders as a null actor in the handler.
 	ListModerationDecisions(ctx context.Context, arg ListModerationDecisionsParams) ([]ListModerationDecisionsRow, error)
 	ListOverdueTombstones(ctx context.Context) ([]ListOverdueTombstonesRow, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)
+	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
 	// parent visibility and hold no membership of their own. One query, no N+1.
 	ResolveEffectiveVisibility(ctx context.Context, cid string) ([]string, error)
 	RetirePriorActiveSigningKey(ctx context.Context, arg RetirePriorActiveSigningKeyParams) error
+	RetireVersion(ctx context.Context, versionLabel string) error
 	RevokeRefreshToken(ctx context.Context, id pgtype.UUID) error
 	RevokeRefreshTokenFamily(ctx context.Context, userID pgtype.UUID) error
+	// Atomic, version-guarded re-wrap: wrapped_key + master_key_version_id flip
+	// together; the old-version guard makes it idempotent and race-safe.
+	RewrapDEK(ctx context.Context, arg RewrapDEKParams) (int64, error)
+	RewrapSigningKey(ctx context.Context, arg RewrapSigningKeyParams) (int64, error)
 	SampleActiveBlobs(ctx context.Context, limit int32) ([]string, error)
 	SampleDerivatives(ctx context.Context, limit int32) ([]SampleDerivativesRow, error)
 	// Integrity-audit queries (M8). See docs/specs/INTEGRITY_AUDIT.md and
