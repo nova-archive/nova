@@ -9,8 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/auditlog"
 	"github.com/nova-archive/nova/internal/db/gen"
@@ -117,4 +120,100 @@ func zero(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// SetCaptureKeyForTest installs the zeroing test seam. Test-only.
+func (r *Rotator) SetCaptureKeyForTest(fn func([]byte)) { r.captureKey = fn }
+
+// drainDEKs re-wraps every active/rotating DEK for `from` to the active version
+// using r.conc parallel workers. Returns when drained or ctx ends / a worker errs.
+func (r *Rotator) drainDEKs(ctx context.Context, from string) error {
+	fromUUID, ok := r.ks.VersionID(from)
+	if !ok {
+		return fmt.Errorf("masterkey: version id for %q not cached", from)
+	}
+	fromID := pgtype.UUID{Bytes: fromUUID, Valid: true}
+	var wg sync.WaitGroup
+	errc := make(chan error, r.conc)
+	for i := 0; i < r.conc; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				if ctx.Err() != nil {
+					return
+				}
+				n, err := r.drainBatch(ctx, fromID)
+				if err != nil {
+					errc <- err
+					return
+				}
+				if n == 0 {
+					return
+				}
+				if r.pace > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(r.pace):
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	select {
+	case err := <-errc:
+		return err
+	default:
+		return nil
+	}
+}
+
+// drainBatch claims and re-wraps up to r.batch DEKs in one transaction. The
+// RewrapDEK guard (WHERE master_key_version_id = old) makes it idempotent and
+// race-safe; wrapped_key + version flip atomically.
+func (r *Rotator) drainBatch(ctx context.Context, fromID pgtype.UUID) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	q := r.q.WithTx(tx)
+
+	rows, err := q.ClaimDEKsForRewrap(ctx, gen.ClaimDEKsForRewrapParams{
+		MasterKeyVersionID: fromID, Limit: int32(r.batch),
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	for _, row := range rows {
+		pbk, err := r.ks.Unwrap(ctx, row.WrappedKey, uuid.UUID(fromID.Bytes))
+		if err != nil {
+			return 0, fmt.Errorf("masterkey: unwrap dek %x: %w", row.ID.Bytes, err)
+		}
+		wrapped, toUUID, err := r.ks.Wrap(pbk)
+		if r.captureKey != nil {
+			r.captureKey(pbk)
+		}
+		zero(pbk)
+		if err != nil {
+			return 0, fmt.Errorf("masterkey: wrap dek %x: %w", row.ID.Bytes, err)
+		}
+		if _, err := q.RewrapDEK(ctx, gen.RewrapDEKParams{
+			WrappedKey:   wrapped,
+			NewVersionID: pgtype.UUID{Bytes: toUUID, Valid: true},
+			ID:           row.ID,
+			OldVersionID: fromID,
+		}); err != nil {
+			return 0, fmt.Errorf("masterkey: rewrap dek %x: %w", row.ID.Bytes, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return len(rows), nil
 }
