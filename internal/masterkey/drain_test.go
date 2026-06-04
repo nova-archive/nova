@@ -344,6 +344,73 @@ func TestFullDrainRetiresAndRewrapsSigning(t *testing.T) {
 	}
 }
 
+// --- Task 5 tests ------------------------------------------------------------
+
+// TestStatusAndReadyz covers the Status projection and Readyz stall-detection:
+//   - idle (no rotation in progress): InProgress == nil, Readyz == nil
+//   - rotating with key loaded: InProgress populated, Stalled=false, Readyz == nil
+//   - rotating with key NOT loaded: Stalled=true, Readyz returns an error
+func TestStatusAndReadyz(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	r, pool, _ := newInternalTestRotator(t)
+	ctx := context.Background()
+
+	// --- idle: no rotation in progress ---
+	st, err := r.Status(ctx)
+	if err != nil {
+		t.Fatalf("idle Status: %v", err)
+	}
+	if st.InProgress != nil {
+		t.Fatalf("idle: InProgress must be nil, got %+v", st.InProgress)
+	}
+	if err := r.Readyz(ctx); err != nil {
+		t.Fatalf("idle Readyz: %v", err)
+	}
+
+	// --- rotating with key loaded ---
+	seedDEKUnderV1(t, pool, false)
+	markVersionRotating(t, pool, "v1")
+
+	st, err = r.Status(ctx)
+	if err != nil {
+		t.Fatalf("rotating(loaded) Status: %v", err)
+	}
+	if st.InProgress == nil {
+		t.Fatal("rotating(loaded): InProgress must not be nil")
+	}
+	if st.InProgress.From != "v1" {
+		t.Fatalf("rotating(loaded): From = %q, want %q", st.InProgress.From, "v1")
+	}
+	if st.InProgress.Stalled {
+		t.Fatalf("rotating(loaded): Stalled must be false, got %+v", st.InProgress)
+	}
+	if st.InProgress.RemainingDEKs < 1 {
+		t.Fatalf("rotating(loaded): RemainingDEKs = %d, want >= 1", st.InProgress.RemainingDEKs)
+	}
+	if err := r.Readyz(ctx); err != nil {
+		t.Fatalf("loaded Readyz must pass: %v", err)
+	}
+
+	// --- rotating with key NOT loaded ---
+	// Build a v2-only keystore over the same DB pool (v1 row is already marked rotating).
+	ks2 := seedKeystoreV2Only(t, pool)
+	r2 := NewRotator(Config{Q: gen.New(pool), Pool: pool, Keystore: ks2})
+
+	st2, err := r2.Status(ctx)
+	if err != nil {
+		t.Fatalf("rotating(unloaded) Status: %v", err)
+	}
+	if st2.InProgress == nil || !st2.InProgress.Stalled {
+		t.Fatalf("rotating(unloaded): Stalled must be true, got %+v", st2.InProgress)
+	}
+	if err := r2.Readyz(ctx); err == nil {
+		t.Fatal("unloaded Readyz must degrade (return error)")
+	}
+}
+
 // TestResumeStallsWhenKeyMissing verifies that resumeIfRotating gracefully
 // stalls (logs + returns) when the source version's key is not loaded, leaving
 // the version in 'rotating' state.

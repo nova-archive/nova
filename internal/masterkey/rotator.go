@@ -335,3 +335,83 @@ func (r *Rotator) resumeIfRotating(ctx context.Context) {
 
 // drainOnceForTest runs a single synchronous drain. Test-only.
 func (r *Rotator) drainOnceForTest(ctx context.Context, from, to string) { r.drain(ctx, from, to) }
+
+// --- Task 5: Status projection + Readyz stall-detection ---------------------
+
+// VersionInfo carries a snapshot of one master-key version for the Status response.
+type VersionInfo struct {
+	Label        string     `json:"label"`
+	State        string     `json:"state"`
+	DEKCount     int64      `json:"dek_count"`
+	SigningCount int64      `json:"signing_count"`
+	RetiredAt    *time.Time `json:"retired_at"`
+}
+
+// Progress describes an in-progress rotation (a version in 'rotating' state).
+type Progress struct {
+	From                 string `json:"from"`
+	RemainingDEKs        int64  `json:"remaining_deks"`
+	RemainingSigningKeys int64  `json:"remaining_signing_keys"`
+	Stalled              bool   `json:"stalled"`
+	StallReason          string `json:"stall_reason,omitempty"`
+}
+
+// Status is the top-level rotation-status snapshot returned by Status(ctx).
+type Status struct {
+	Active     string        `json:"active"`
+	InProgress *Progress     `json:"in_progress"`
+	Versions   []VersionInfo `json:"versions"`
+}
+
+// Status returns a point-in-time snapshot of every master-key version and any
+// in-progress rotation. It never mutates state.
+func (r *Rotator) Status(ctx context.Context) (Status, error) {
+	out := Status{Active: r.ks.ActiveLabel()}
+	rows, err := r.q.ListMasterVersions(ctx)
+	if err != nil {
+		return out, err
+	}
+	for _, v := range rows {
+		vi := VersionInfo{
+			Label:        v.VersionLabel,
+			State:        string(v.State),
+			DEKCount:     v.DekCount,
+			SigningCount: v.SigningCount,
+		}
+		if v.RetiredAt.Valid {
+			t := v.RetiredAt.Time
+			vi.RetiredAt = &t
+		}
+		out.Versions = append(out.Versions, vi)
+		if v.State == gen.KeyStateRotating {
+			p := &Progress{
+				From:                 v.VersionLabel,
+				RemainingDEKs:        v.DekCount,
+				RemainingSigningKeys: v.SigningCount,
+			}
+			if !r.ks.HasLabel(v.VersionLabel) {
+				p.Stalled = true
+				p.StallReason = "source master key not loaded"
+			}
+			out.InProgress = p
+		}
+	}
+	return out, nil
+}
+
+// Readyz degrades when a rotation is stalled (a 'rotating' version whose key is
+// not loaded). Wire as a /readyz ReadyCheck — NOT a liveness probe; a restart
+// cannot fix a missing key.
+func (r *Rotator) Readyz(ctx context.Context) error {
+	row, err := r.q.GetRotatingVersion(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return nil // a transient query error is not a rotation stall
+	}
+	if !r.ks.HasLabel(row.VersionLabel) {
+		return fmt.Errorf("master-key rotation stalled: version %q key not loaded", row.VersionLabel)
+	}
+	return nil
+}
