@@ -677,6 +677,7 @@ type Blob struct {
 	SourceIp         *netip.Addr
 	Product          BlobProduct
 	EnvelopeVersion  int16
+	SoftDeletedAt    pgtype.Timestamptz
 }
 
 type BlobBlock struct {

@@ -8,7 +8,30 @@ package gen
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const countBlobs = `-- name: CountBlobs :one
+SELECT count(*)
+FROM blobs
+WHERE ($1::text   IS NULL OR state::text   = $1)
+  AND ($2::text IS NULL OR product::text = $2)
+  AND ($3::uuid    IS NULL OR owner_id      = $3)
+`
+
+type CountBlobsParams struct {
+	State   pgtype.Text
+	Product pgtype.Text
+	Owner   pgtype.UUID
+}
+
+func (q *Queries) CountBlobs(ctx context.Context, arg CountBlobsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countBlobs, arg.State, arg.Product, arg.Owner)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const getBlobCore = `-- name: GetBlobCore :one
 SELECT
@@ -51,6 +74,61 @@ func (q *Queries) GetBlobCore(ctx context.Context, cid string) (GetBlobCoreRow, 
 	return i, err
 }
 
+const getBlobMeta = `-- name: GetBlobMeta :one
+SELECT
+    cid,
+    coalesce(owner_id::text, '')::text AS owner_id,
+    parent_cid,
+    derivative_preset,
+    derivative_format,
+    mime_type,
+    byte_size,
+    uploaded_at,
+    soft_deleted_at,
+    state::text                       AS state,
+    product::text                     AS product
+FROM blobs
+WHERE cid = $1
+`
+
+type GetBlobMetaRow struct {
+	Cid              string
+	OwnerID          string
+	ParentCid        pgtype.Text
+	DerivativePreset pgtype.Text
+	DerivativeFormat pgtype.Text
+	MimeType         string
+	ByteSize         int64
+	UploadedAt       time.Time
+	SoftDeletedAt    pgtype.Timestamptz
+	State            string
+	Product          string
+}
+
+// State-agnostic metadata read for the owner/admin detail view (M11). Unlike
+// GetBlobCore (the public read path, which Resolve rejects on non-active states),
+// this returns the row in ANY state so an operator/owner can inspect a
+// soft_deleted / quarantined / tombstoned blob. owner_id coalesced to ” (the
+// GetBlobForModeration precedent) so a NULL owner never crashes the scan.
+func (q *Queries) GetBlobMeta(ctx context.Context, cid string) (GetBlobMetaRow, error) {
+	row := q.db.QueryRow(ctx, getBlobMeta, cid)
+	var i GetBlobMetaRow
+	err := row.Scan(
+		&i.Cid,
+		&i.OwnerID,
+		&i.ParentCid,
+		&i.DerivativePreset,
+		&i.DerivativeFormat,
+		&i.MimeType,
+		&i.ByteSize,
+		&i.UploadedAt,
+		&i.SoftDeletedAt,
+		&i.State,
+		&i.Product,
+	)
+	return i, err
+}
+
 const getDEKByBlob = `-- name: GetDEKByBlob :one
 SELECT
     k.wrapped_key,
@@ -85,4 +163,137 @@ func (q *Queries) GetManifestSize(ctx context.Context, cid string) (int64, error
 	var plaintext_size int64
 	err := row.Scan(&plaintext_size)
 	return plaintext_size, err
+}
+
+const listBlobs = `-- name: ListBlobs :many
+SELECT
+    cid,
+    coalesce(owner_id::text, '')::text AS owner_id,
+    parent_cid,
+    mime_type,
+    byte_size,
+    uploaded_at,
+    state::text                       AS state,
+    product::text                     AS product
+FROM blobs
+WHERE ($1::text   IS NULL OR state::text   = $1)
+  AND ($2::text IS NULL OR product::text = $2)
+  AND ($3::uuid    IS NULL OR owner_id      = $3)
+ORDER BY uploaded_at DESC, cid
+LIMIT $5 OFFSET $4
+`
+
+type ListBlobsParams struct {
+	State   pgtype.Text
+	Product pgtype.Text
+	Owner   pgtype.UUID
+	Off     int32
+	Lim     int32
+}
+
+type ListBlobsRow struct {
+	Cid        string
+	OwnerID    string
+	ParentCid  pgtype.Text
+	MimeType   string
+	ByteSize   int64
+	UploadedAt time.Time
+	State      string
+	Product    string
+}
+
+// Operator-wide listing for GET /api/v1/admin/blobs (M11). Optional state /
+// product / owner filters via sqlc.narg (NULL ⇒ no filter), newest-first. Served
+// by blobs_product_state_idx / blobs_owner_state_idx / blobs_uploaded_at_idx.
+func (q *Queries) ListBlobs(ctx context.Context, arg ListBlobsParams) ([]ListBlobsRow, error) {
+	rows, err := q.db.Query(ctx, listBlobs,
+		arg.State,
+		arg.Product,
+		arg.Owner,
+		arg.Off,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBlobsRow
+	for rows.Next() {
+		var i ListBlobsRow
+		if err := rows.Scan(
+			&i.Cid,
+			&i.OwnerID,
+			&i.ParentCid,
+			&i.MimeType,
+			&i.ByteSize,
+			&i.UploadedAt,
+			&i.State,
+			&i.Product,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOverdueSoftDeletes = `-- name: ListOverdueSoftDeletes :many
+SELECT b.cid
+FROM blobs b
+LEFT JOIN data_encryption_keys k ON k.id = b.encryption_key_id
+WHERE b.state = 'soft_deleted'
+  AND b.soft_deleted_at IS NOT NULL
+  AND b.soft_deleted_at < $1
+  AND (k.legal_hold IS NULL OR k.legal_hold = false)
+ORDER BY b.soft_deleted_at
+LIMIT $2
+`
+
+type ListOverdueSoftDeletesParams struct {
+	Cutoff pgtype.Timestamptz
+	Lim    int32
+}
+
+// The lifecycle sweep's claim (M11): soft-deletes older than the grace cutoff,
+// excluding legal-held trees. Mirrors ListOverdueTombstones' legal-hold filter
+// (holds are set tree-wide, so the blob's own DEK reflects the hold); the
+// no_shred_under_legal_hold CHECK is the hard backstop.
+func (q *Queries) ListOverdueSoftDeletes(ctx context.Context, arg ListOverdueSoftDeletesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listOverdueSoftDeletes, arg.Cutoff, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			return nil, err
+		}
+		items = append(items, cid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markSoftDeleted = `-- name: MarkSoftDeleted :execrows
+UPDATE blobs
+SET state = 'soft_deleted', soft_deleted_at = now()
+WHERE cid = $1 AND state = 'active'
+`
+
+// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
+// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
+// distinguishes 404 vs 409 via GetBlobMeta).
+func (q *Queries) MarkSoftDeleted(ctx context.Context, cid string) (int64, error) {
+	result, err := q.db.Exec(ctx, markSoftDeleted, cid)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

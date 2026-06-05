@@ -24,6 +24,7 @@ type Querier interface {
 	ClearScheduledTombstone(ctx context.Context, cid string) error
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
+	CountBlobs(ctx context.Context, arg CountBlobsParams) (int64, error)
 	CountBlocklist(ctx context.Context) (int64, error)
 	CountDEKsForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
 	CountDMCACases(ctx context.Context) (int64, error)
@@ -58,6 +59,12 @@ type Querier interface {
 	// The outer ::text pins the sqlc-inferred Go type to a non-null string (a bare
 	// coalesce confuses sqlc into interface{}); coalesce makes it non-null at runtime.
 	GetBlobForModeration(ctx context.Context, cid string) (GetBlobForModerationRow, error)
+	// State-agnostic metadata read for the owner/admin detail view (M11). Unlike
+	// GetBlobCore (the public read path, which Resolve rejects on non-active states),
+	// this returns the row in ANY state so an operator/owner can inspect a
+	// soft_deleted / quarantined / tombstoned blob. owner_id coalesced to '' (the
+	// GetBlobForModeration precedent) so a NULL owner never crashes the scan.
+	GetBlobMeta(ctx context.Context, cid string) (GetBlobMetaRow, error)
 	GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (GetCollectionForWriteRow, error)
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
 	GetDMCACase(ctx context.Context, id pgtype.UUID) (GetDMCACaseRow, error)
@@ -94,6 +101,10 @@ type Querier interface {
 	// record actor_id=NULL; coalesce so the listing never crashes on a NULL actor.
 	// '' renders as a null actor in the handler.
 	ListAuditLog(ctx context.Context, arg ListAuditLogParams) ([]ListAuditLogRow, error)
+	// Operator-wide listing for GET /api/v1/admin/blobs (M11). Optional state /
+	// product / owner filters via sqlc.narg (NULL ⇒ no filter), newest-first. Served
+	// by blobs_product_state_idx / blobs_owner_state_idx / blobs_uploaded_at_idx.
+	ListBlobs(ctx context.Context, arg ListBlobsParams) ([]ListBlobsRow, error)
 	// added_by is nullable; coalesce so a system-added entry (NULL) never crashes
 	// the listing. '' renders as a null actor in the handler.
 	ListBlocklist(ctx context.Context, arg ListBlocklistParams) ([]ListBlocklistRow, error)
@@ -106,6 +117,11 @@ type Querier interface {
 	// with decided_by=NULL; coalesce so the listing never crashes after an
 	// auto-tombstone. '' renders as a null actor in the handler.
 	ListModerationDecisions(ctx context.Context, arg ListModerationDecisionsParams) ([]ListModerationDecisionsRow, error)
+	// The lifecycle sweep's claim (M11): soft-deletes older than the grace cutoff,
+	// excluding legal-held trees. Mirrors ListOverdueTombstones' legal-hold filter
+	// (holds are set tree-wide, so the blob's own DEK reflects the hold); the
+	// no_shred_under_legal_hold CHECK is the hard backstop.
+	ListOverdueSoftDeletes(ctx context.Context, arg ListOverdueSoftDeletesParams) ([]string, error)
 	ListOverdueTombstones(ctx context.Context) ([]ListOverdueTombstonesRow, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)
 	// Deliberately re-wraps ALL non-shredded retired keys (not only within-grace):
@@ -113,6 +129,10 @@ type Querier interface {
 	// be orphaned if left under the retiring version.
 	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
+	// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
+	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
+	// distinguishes 404 vs 409 via GetBlobMeta).
+	MarkSoftDeleted(ctx context.Context, cid string) (int64, error)
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
 	// parent visibility and hold no membership of their own. One query, no N+1.
