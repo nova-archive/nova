@@ -31,6 +31,7 @@ import (
 	"github.com/nova-archive/nova/internal/ipfs"
 	"github.com/nova-archive/nova/internal/jobs"
 	"github.com/nova-archive/nova/internal/jobs/kinds"
+	"github.com/nova-archive/nova/internal/lifecycle"
 	"github.com/nova-archive/nova/internal/masterkey"
 	"github.com/nova-archive/nova/internal/moderation"
 	"github.com/nova-archive/nova/internal/ratelimit"
@@ -111,6 +112,13 @@ type Config struct {
 	// MasterKeyRotation tunes the M10 re-wrap worker. Zero-valued fields take the
 	// documented defaults (4 workers, 256 ids/batch, 50ms inter-batch pace).
 	MasterKeyRotation MasterKeyRotationConfig
+
+	// ContentLifecycle tunes the M11 owner soft-delete sweep (grace + cadence).
+	ContentLifecycle ContentLifecycleConfig
+
+	// AdminSPA configures coordinator-served admin SPA static assets (M11). An
+	// empty DistDir leaves /admin/* unmounted (the feature-gate posture).
+	AdminSPA AdminSPAConfig
 }
 
 // SignedURLConfig tunes the M7 signed-URL stack.
@@ -146,6 +154,21 @@ type MasterKeyRotationConfig struct {
 	RewrapConcurrency int
 	RewrapBatchSize   int
 	RewrapPace        time.Duration
+}
+
+// ContentLifecycleConfig tunes the M11 owner soft-delete sweep. SweepEnabled
+// gates the in-process loop (the owner GET/DELETE blob routes work regardless);
+// a non-positive SoftDeleteGrace defaults to 24h and a non-positive SweepInterval
+// to one minute.
+type ContentLifecycleConfig struct {
+	SweepEnabled    bool
+	SoftDeleteGrace time.Duration
+	SweepInterval   time.Duration
+}
+
+// AdminSPAConfig configures coordinator-served admin SPA static assets (M11).
+type AdminSPAConfig struct {
+	DistDir string // NOVA_ADMIN_DIST_DIR; empty ⇒ /admin/* unmounted
 }
 
 // Coordinator owns the HTTP server. Build with New; register products before
@@ -187,6 +210,11 @@ type Coordinator struct {
 	// Moderation wiring (M9). The in-process Sweeper tombstones overdue
 	// quarantines; built when pool + backend are present.
 	modSweeper *moderation.Sweeper
+
+	// Owner content-lifecycle wiring (M11). The in-process Sweeper tombstones
+	// overdue soft-deletes via the shared lifecycle.TombstoneTree primitive; built
+	// when pool + backend are present.
+	lifecycleSweeper *lifecycle.Sweeper
 
 	// Master-key rotation wiring (M10). Built when pool + keystore are present;
 	// the Rotator re-wraps DEKs and signing keys to the active master-key version.
@@ -333,6 +361,24 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		sc.DMCAIntake = handlers.NewDMCAIntakeHandler(q)
 		sc.AuditLogAdmin = handlers.NewAuditLogAdminHandler(q)
 	}
+
+	// Owner content-lifecycle (M11): SoftDelete flips active→soft_deleted; the
+	// Sweeper tombstones overdue soft-deletes via the shared lifecycle.TombstoneTree
+	// primitive (the same crypto-shred/unpin as moderation) with its own blob.*
+	// audit vocabulary. hook.OnDelete is the shared derivative cascade. The owner
+	// blob routes + the admin blob/jobs listings are mounted alongside.
+	if pool != nil && backend != nil {
+		q := gen.New(pool)
+		lifeSvc := lifecycle.NewService(q, pool, backend, hook.OnDelete, auditW, slog.Default(), time.Now, cfg.ContentLifecycle.SoftDeleteGrace)
+		c.lifecycleSweeper = lifecycle.NewSweeper(lifeSvc, cfg.ContentLifecycle.SweepInterval, cfg.ContentLifecycle.SweepEnabled, slog.Default())
+		sc.BlobMeta = handlers.NewBlobMetaHandler(q, lifeSvc)
+		sc.BlobsAdmin = handlers.NewBlobsAdminHandler(q)
+		sc.JobsAdmin = handlers.NewJobsAdminHandler(jobs.NewAdminStore(pool))
+	}
+
+	// Admin SPA static serving (M11): gated by NOVA_ADMIN_DIST_DIR (nil ⇒ /admin/*
+	// unmounted). Independent of pool/backend.
+	sc.AdminSPA = handlers.NewAdminSPA(cfg.AdminSPA.DistDir)
 
 	// /readyz checks. Each is a thin wrapper over the corresponding dep's
 	// liveness probe; the handler runs them in parallel under a 1 s deadline.
@@ -542,6 +588,10 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	// Scheduled-tombstone sweep (M9); a disabled sweeper's Run returns at once.
 	if c.modSweeper != nil {
 		go c.modSweeper.Run(ctx)
+	}
+	// Owner soft-delete sweep (M11); a disabled sweeper's Run returns at once.
+	if c.lifecycleSweeper != nil {
+		go c.lifecycleSweeper.Run(ctx)
 	}
 	// Master-key re-wrap worker (M10): resumes any interrupted rotation on boot,
 	// then drains on each operator-triggered Start call.

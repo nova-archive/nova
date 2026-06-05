@@ -33,6 +33,10 @@
 //	NOVA_MASTER_KEY_REWRAP_CONCURRENCY   M10 re-wrap worker goroutines (default 4)
 //	NOVA_MASTER_KEY_REWRAP_BATCH         M10 re-wrap ids claimed per tx (default 256)
 //	NOVA_MASTER_KEY_REWRAP_PACE_MS       M10 re-wrap inter-batch pace ms (default 50)
+//	NOVA_ADMIN_DIST_DIR                  M11 admin SPA bundle dir served at /admin/* (unset ⇒ disabled)
+//	NOVA_SOFT_DELETE_GRACE_SECONDS       M11 owner soft-delete grace before tombstone+shred (default 86400)
+//	NOVA_LIFECYCLE_SWEEP_INTERVAL_MS     M11 owner soft-delete sweep cadence ms (default 60000)
+//	NOVA_SOFT_DELETE_SWEEP_ENABLED       "false" disables the M11 soft-delete sweep (default enabled)
 package main
 
 import (
@@ -213,6 +217,14 @@ func run() error {
 			RewrapConcurrency: envInt("NOVA_MASTER_KEY_REWRAP_CONCURRENCY", 4),
 			RewrapBatchSize:   envInt("NOVA_MASTER_KEY_REWRAP_BATCH", 256),
 			RewrapPace:        time.Duration(envInt("NOVA_MASTER_KEY_REWRAP_PACE_MS", 50)) * time.Millisecond,
+		},
+		ContentLifecycle: coordinator.ContentLifecycleConfig{
+			SweepEnabled:    os.Getenv("NOVA_SOFT_DELETE_SWEEP_ENABLED") != "false",
+			SoftDeleteGrace: time.Duration(envInt("NOVA_SOFT_DELETE_GRACE_SECONDS", 86400)) * time.Second,
+			SweepInterval:   time.Duration(envInt("NOVA_LIFECYCLE_SWEEP_INTERVAL_MS", 60000)) * time.Millisecond,
+		},
+		AdminSPA: coordinator.AdminSPAConfig{
+			DistDir: os.Getenv("NOVA_ADMIN_DIST_DIR"),
 		},
 	})
 	if err != nil {

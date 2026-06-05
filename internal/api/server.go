@@ -54,6 +54,10 @@ type ServerConfig struct {
 	ModerationAdmin *handlers.ModerationAdminHandler // nil ⇒ /api/v1/admin/moderation/* 404
 	AuditLogAdmin   *handlers.AuditLogAdminHandler   // nil ⇒ /api/v1/admin/audit-log 404
 	DMCAIntake      *handlers.DMCAIntakeHandler      // nil ⇒ public /legal/dmca unmounted
+	BlobMeta        *handlers.BlobMetaHandler        // nil ⇒ /api/v1/blobs/{cid} GET+DELETE 404
+	BlobsAdmin      *handlers.BlobsAdminHandler      // nil ⇒ /api/v1/admin/blobs 404
+	JobsAdmin       *handlers.JobsAdminHandler       // nil ⇒ /api/v1/admin/jobs 404
+	AdminSPA        *handlers.AdminSPAHandler        // nil ⇒ /admin/* static unmounted
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -96,6 +100,14 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 		r.Post("/legal/dmca", cfg.DMCAIntake.Submit)
 	}
 
+	// Admin SPA static assets (M11), served from NOVA_ADMIN_DIST_DIR at /admin/*.
+	// A distinct prefix from /api/v1/admin (the JSON API); nil ⇒ unmounted. The
+	// handler applies its own strict CSP and SPA (index.html) fallback.
+	if cfg.AdminSPA != nil {
+		r.Handle("/admin", http.HandlerFunc(cfg.AdminSPA.Serve))
+		r.Handle("/admin/*", http.HandlerFunc(cfg.AdminSPA.Serve))
+	}
+
 	r.Route("/api/v1", func(r chi.Router) {
 		// Auth config is always available, both modes.
 		r.Get("/auth/config", authConfigHandler(cfg.AuthConfig))
@@ -131,6 +143,14 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 				r.With(bearer.RequireAuthenticated).Get("/users/me", func(w http.ResponseWriter, r *http.Request) {
 					httputil.WriteError(w, http.StatusNotFound, "not_found", "no such endpoint", middleware.RequestIDFromContext(r.Context()))
 				})
+			}
+
+			// Owner/operator blob metadata + soft-delete (M11; M6-deferred). Any
+			// authenticated caller reaches the handler; in-handler authz enforces
+			// owner-or-elevated (operator/moderator may read; owner/operator delete).
+			if cfg.BlobMeta != nil {
+				r.With(bearer.RequireAuthenticated).Get("/blobs/{cid}", cfg.BlobMeta.Get)
+				r.With(bearer.RequireAuthenticated).Delete("/blobs/{cid}", cfg.BlobMeta.Delete)
 			}
 
 			// Admin boundary: guard runs on every matched /admin/* request.
@@ -174,6 +194,13 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 				// Audit-log listing (M9); read-only, operator+moderator.
 				if cfg.AuditLogAdmin != nil {
 					r.Get("/audit-log", cfg.AuditLogAdmin.List)
+				}
+				// Blob + jobs admin listings (M11); read-only, operator+moderator.
+				if cfg.BlobsAdmin != nil {
+					r.Get("/blobs", cfg.BlobsAdmin.List)
+				}
+				if cfg.JobsAdmin != nil {
+					r.Get("/jobs", cfg.JobsAdmin.List)
 				}
 				r.Handle("/*", http.HandlerFunc(adminNotFound))
 			})
