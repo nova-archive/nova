@@ -316,6 +316,7 @@ CREATE TABLE blobs (
     byte_size             bigint NOT NULL CHECK (byte_size >= 0),
     uploaded_at           timestamptz NOT NULL DEFAULT now(),
     state                 blob_state NOT NULL DEFAULT 'active',
+    soft_deleted_at       timestamptz,                                 -- set on owner soft-delete; the lifecycle sweep ages it against NOVA_SOFT_DELETE_GRACE_SECONDS, then tombstones via the shared lifecycle.TombstoneTree primitive (the same crypto-shred path as moderation)
     source_ip             inet,
     product               blob_product NOT NULL DEFAULT 'raw',
 
@@ -332,6 +333,12 @@ CREATE INDEX blobs_owner_state_idx
 CREATE INDEX blobs_uploaded_at_idx ON blobs (uploaded_at);
 CREATE INDEX blobs_product_state_idx ON blobs (product, state);
 CREATE INDEX blobs_parent_cid_idx ON blobs (parent_cid) WHERE parent_cid IS NOT NULL;
+
+-- Owner soft-delete sweep (M11): the in-process lifecycle sweep claims overdue
+-- soft-deletes by ageing soft_deleted_at against the configured grace window.
+CREATE INDEX blobs_soft_delete_sweep_idx
+    ON blobs (soft_deleted_at)
+    WHERE state = 'soft_deleted';
 
 -- Lookup index for derivatives. Replaces the v1 derivatives table's
 -- UNIQUE(parent_cid, preset, format) constraint.
