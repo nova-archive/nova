@@ -10,24 +10,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/nova-archive/nova/internal/auditlog"
 	"github.com/nova-archive/nova/internal/db/gen"
+	"github.com/nova-archive/nova/internal/lifecycle"
 )
 
-// CascadeHook propagates a parent's new blob state to its derivatives. The
-// coordinator wires this to product.OnDelete; moderation never imports the
-// product package (the dependency is inverted, exactly like storage.WriteHook).
-type CascadeHook func(ctx context.Context, tx pgx.Tx, parentCID, newState string) error
+// CascadeHook propagates a parent's new blob state to its derivatives. It
+// aliases lifecycle.CascadeHook so moderation takedown and owner soft-delete
+// share one cascade wiring (product.OnDelete); moderation never imports the
+// product package (the dependency is inverted, like storage.WriteHook).
+type CascadeHook = lifecycle.CascadeHook
 
-// Backend is the narrow subset of ipfs.Backend the tombstone path needs (kept
-// small so tests can supply a recording fake).
-type Backend interface {
-	Unpin(ctx context.Context, c cid.Cid) error
-}
+// Backend is the narrow subset of ipfs.Backend the tombstone path needs. It
+// aliases lifecycle.Backend (shared with the soft-delete unpin path); tests can
+// supply a recording fake.
+type Backend = lifecycle.Backend
 
 // Service runs the five moderation operations. Each runs in one pgx.Tx and
 // writes its audit_log row via the auditlog.Writer inside that tx.
@@ -55,10 +55,6 @@ func NewService(q *gen.Queries, pool *pgxpool.Pool, b Backend, c CascadeHook, a 
 	}
 	return &Service{q: q, pool: pool, backend: b, cascade: c, audit: a, log: log, now: now}
 }
-
-// zeros72 matches data_encryption_keys.wrapped_key width (the M7 shred pattern):
-// the wrapped key is wrap_nonce(24) || ct_of_key(32) || tag(16) = 72 bytes.
-var zeros72 = make([]byte, 72)
 
 // QuarantineCmd describes a quarantine action.
 type QuarantineCmd struct {
@@ -187,23 +183,16 @@ func (s *Service) Tombstone(ctx context.Context, cmd TombstoneCmd) error {
 	if err := q.ClearScheduledTombstone(ctx, cmd.CID); err != nil {
 		return fmt.Errorf("moderation: clear schedule: %w", err)
 	}
-	if err := q.SetBlobState(ctx, gen.SetBlobStateParams{Cid: cmd.CID, State: gen.BlobStateTombstoned}); err != nil {
-		return fmt.Errorf("moderation: set state: %w", err)
-	}
-	if err := s.cascade(ctx, tx, cmd.CID, string(gen.BlobStateTombstoned)); err != nil {
-		return fmt.Errorf("moderation: cascade: %w", err)
-	}
-
-	// The DB is the legal-hold enforcement boundary: let the CHECK raise.
-	if err := q.ShredDEKsForBlobTree(ctx, gen.ShredDEKsForBlobTreeParams{Cid: cmd.CID, Zeros: zeros72}); err != nil {
-		if isLegalHoldViolation(err) {
-			return ErrLegalHold // deferred tx.Rollback undoes everything
+	// The neutral, irreversible destruction (state→tombstoned, cascade to
+	// derivatives, crypto-shred the DEK tree, revoke) is shared with owner
+	// soft-delete via lifecycle.TombstoneTree. The DB CHECK is the legal-hold
+	// enforcement boundary, surfaced here as ErrLegalHold (deferred Rollback
+	// undoes everything).
+	if err := lifecycle.TombstoneTree(ctx, q, tx, s.cascade, cmd.CID); err != nil {
+		if errors.Is(err, lifecycle.ErrLegalHold) {
+			return ErrLegalHold
 		}
-		return fmt.Errorf("moderation: shred: %w", err)
-	}
-
-	if err := q.InsertRevocation(ctx, gen.InsertRevocationParams{Kind: "cid", Value: cmd.CID}); err != nil {
-		return fmt.Errorf("moderation: revocation: %w", err)
+		return err
 	}
 	if err := actionCaseRef(ctx, q, cmd.RuleRef); err != nil {
 		return err
@@ -377,13 +366,6 @@ func strikeOwner(ctx context.Context, q *gen.Queries, ownerID string) error {
 		return fmt.Errorf("moderation: strike: %w", err)
 	}
 	return nil
-}
-
-// isLegalHoldViolation reports the no_shred_under_legal_hold CHECK (SQLSTATE
-// 23514). Tombstone maps it to ErrLegalHold and rolls the whole tx back.
-func isLegalHoldViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "no_shred_under_legal_hold"
 }
 
 func text(s string) pgtype.Text {
