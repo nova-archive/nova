@@ -603,7 +603,11 @@ paths:
     get:
       tags: [metadata]
       operationId: getBlobMeta
-      summary: Authenticated metadata read for a blob.
+      summary: Authenticated metadata read for a blob (any state; owner or operator/moderator).
+      description: |
+        Returns the blob row in ANY state (unlike the public read path, which
+        rejects non-active states). Authorization: the blob's owner, or an
+        operator/moderator. Mounted in M11 (M6-deferred).
       security: [{ bearerAuth: [] }]
       responses:
         '200':
@@ -612,6 +616,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Blob' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       tags: [metadata]
@@ -643,9 +648,14 @@ paths:
         disks may persist as unrecoverable ciphertext.
       security: [{ bearerAuth: [] }]
       responses:
-        '204': { description: Deletion accepted. }
+        '204': { description: Soft-delete accepted (owner or operator). }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The blob is not active (already soft-deleted, quarantined, or tombstoned).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/images/{cid}:
     parameters:
@@ -1443,6 +1453,67 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedAuditLogEntries'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/blobs:
+    get:
+      tags: [admin]
+      operationId: listAdminBlobs
+      summary: List blobs operator-wide (any state), paginated and filterable.
+      description: |
+        The M11 admin blob-management listing. Optional filters: `state`,
+        `product`, `owner_id`. The owner-facing detail view is
+        `GET /api/v1/blobs/{cid}`. Requires `operator` or `moderator`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: state
+          in: query
+          schema: { type: string, enum: [active, soft_deleted, quarantined, tombstoned] }
+        - name: product
+          in: query
+          schema: { type: string, enum: [image, video, audio, archive, document, raw] }
+        - name: owner_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Blob listing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaginatedBlobs' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/v1/admin/jobs:
+    get:
+      tags: [admin]
+      operationId: listAdminJobs
+      summary: List background-queue jobs (read-only), paginated and filterable.
+      description: |
+        The M11 jobs view — stuck / failed / recent work with `last_error`.
+        Optional filters: `state`, `kind`. Read-only; requeue is a deliberate
+        M11 non-goal. Requires `operator` or `moderator`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PerPageParam'
+        - name: state
+          in: query
+          schema: { type: string, enum: [pending, leased, completed, failed, dead] }
+        - name: kind
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Job listing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaginatedJobs' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2522,6 +2593,54 @@ components:
         data:
           type: array
           items: { $ref: '#/components/schemas/IntegrityAudit' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    AdminBlob:
+      type: object
+      description: A row in the M11 operator-wide blob listing.
+      required: [cid, mime_type, byte_size, state, product, uploaded_at]
+      properties:
+        cid: { $ref: '#/components/schemas/Cid' }
+        owner_id: { type: string, format: uuid, nullable: true }
+        parent_cid: { type: string, nullable: true }
+        mime_type: { type: string }
+        byte_size: { type: integer, format: int64 }
+        state: { type: string, enum: [active, soft_deleted, quarantined, tombstoned] }
+        product: { type: string, enum: [image, video, audio, archive, document, raw] }
+        uploaded_at: { type: string, format: date-time }
+
+    PaginatedBlobs:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/AdminBlob' }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    Job:
+      type: object
+      description: A background-queue job row for the M11 jobs view.
+      required: [id, kind, state, attempts, max_attempts, not_before, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string }
+        state: { type: string, enum: [pending, leased, completed, failed, dead] }
+        attempts: { type: integer }
+        max_attempts: { type: integer }
+        last_error: { type: string, nullable: true }
+        not_before: { type: string, format: date-time }
+        lease_until: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PaginatedJobs:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Job' }
         pagination: { $ref: '#/components/schemas/Pagination' }
 
     PaginatedPossessionAudits:
