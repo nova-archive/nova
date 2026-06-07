@@ -71,3 +71,24 @@ build-coordinator:
 
 run-coordinator:
 	go run ./cmd/coordinator
+
+.PHONY: admin admin-install admin-build admin-lint admin-test hermetic-spa
+
+# M11 Admin SPA (web/admin). Hermetic React + Vite; no third-party runtime assets.
+admin-install:
+	npm ci
+
+admin-build:
+	npm run build --workspace web/admin
+
+admin-lint:
+	npm run lint --workspace web/admin
+
+admin-test:
+	npm run test --workspace web/admin -- --run
+
+# hermetic-spa fails the build if the bundle declares any third-party asset load.
+hermetic-spa:
+	./scripts/hermetic-spa.sh web/admin/dist
+
+admin: admin-install admin-lint admin-test admin-build hermetic-spa

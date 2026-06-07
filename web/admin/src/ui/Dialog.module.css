@@ -1,0 +1,76 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 17, 20, 0.34);
+  backdrop-filter: blur(1.5px);
+  animation: fade 0.16s ease;
+}
+
+.content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+  background: var(--card);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  padding: 22px 24px 20px;
+  animation: pop 0.16s ease;
+}
+.wide {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.title {
+  font-family: var(--serif);
+  font-size: 20px;
+  margin: 0 0 12px;
+  color: var(--ink);
+  padding-right: 24px;
+}
+
+.body {
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: var(--rule-w) solid var(--rule-soft);
+}
+
+.x {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px;
+}
+.x:hover {
+  color: var(--ink);
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.98);
+  }
+}

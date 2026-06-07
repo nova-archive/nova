@@ -1,0 +1,54 @@
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: var(--rule-w) solid var(--rule);
+}
+.tab {
+  padding: 9px 16px;
+  font-size: 13px;
+  color: var(--ink-mute);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab:hover {
+  color: var(--ink);
+}
+.tabActive {
+  color: var(--ink);
+  border-bottom-color: var(--nova);
+  font-weight: 500;
+}
+.rowActions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 14px;
+}
+.formRow {
+  display: flex;
+  gap: 12px;
+}
+.area {
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: var(--sans);
+  color: var(--ink);
+  background: var(--paper);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--r);
+  min-height: 64px;
+  resize: vertical;
+  width: 100%;
+}
+.area:focus {
+  outline: none;
+  border-color: var(--nova);
+  box-shadow: 0 0 0 3px var(--nova-tint);
+}

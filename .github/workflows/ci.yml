@@ -56,6 +56,31 @@ jobs:
         with:
           version: latest
 
+  web-admin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Type-check (admin SPA)
+        run: make admin-lint
+
+      - name: Unit tests (admin SPA)
+        run: make admin-test
+
+      - name: Build (admin SPA)
+        run: make admin-build
+
+      - name: Hermetic bundle audit
+        run: make hermetic-spa
+
   schema-drift:
     runs-on: ubuntu-latest
     steps:
