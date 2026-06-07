@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -377,8 +378,16 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 	}
 
 	// Admin SPA static serving (M11): gated by NOVA_ADMIN_DIST_DIR (nil ⇒ /admin/*
-	// unmounted). Independent of pool/backend.
-	sc.AdminSPA = handlers.NewAdminSPA(cfg.AdminSPA.DistDir)
+	// unmounted). Independent of pool/backend. In external-OIDC mode the issuer
+	// origin is added to the CSP connect-src so the SPA's authorization-code + PKCE
+	// token exchange can reach the operator's IdP.
+	var spaConnect []string
+	if cfg.Auth.Descriptor.Mode == "external" && cfg.Auth.Descriptor.IssuerURL != "" {
+		if u, perr := url.Parse(cfg.Auth.Descriptor.IssuerURL); perr == nil && u.Scheme != "" && u.Host != "" {
+			spaConnect = append(spaConnect, u.Scheme+"://"+u.Host)
+		}
+	}
+	sc.AdminSPA = handlers.NewAdminSPA(cfg.AdminSPA.DistDir, spaConnect...)
 
 	// /readyz checks. Each is a thin wrapper over the corresponding dep's
 	// liveness probe; the handler runs them in parallel under a 1 s deadline.

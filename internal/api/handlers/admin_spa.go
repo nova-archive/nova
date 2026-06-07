@@ -8,12 +8,23 @@ import (
 	"strings"
 )
 
-// adminCSP is the strict Content-Security-Policy for the hermetic admin SPA: no
-// third-party origins. style-src allows 'unsafe-inline' only for the CSS-Modules
-// runtime style injection; scripts are first-party only (the bundle has no inline
-// scripts). It matches nginx/nova.conf.example and the M11 threat-model boundary.
-const adminCSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
-	"font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+// buildAdminCSP builds the strict Content-Security-Policy for the hermetic admin
+// SPA: no third-party origins. style-src allows 'unsafe-inline' only for the
+// CSS-Modules runtime style injection; scripts are first-party only (the bundle
+// has no inline scripts). connect-src is 'self' plus any extra origins (the
+// external-OIDC issuer, so the browser's authorization-code + PKCE token exchange
+// can reach the operator's IdP). It matches nginx/nova.conf.example and the M11
+// threat-model boundary.
+func buildAdminCSP(connectSrc []string) string {
+	connect := "'self'"
+	for _, o := range connectSrc {
+		if o != "" {
+			connect += " " + o
+		}
+	}
+	return "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+		"font-src 'self'; connect-src " + connect + "; frame-ancestors 'none'; base-uri 'none'"
+}
 
 // AdminSPAHandler serves the built admin SPA bundle from a directory at /admin/*
 // (M11). Vite-hashed assets under /assets/ are immutable-cached; every other path
@@ -24,14 +35,20 @@ const adminCSP = "default-src 'self'; img-src 'self' data:; style-src 'self' 'un
 type AdminSPAHandler struct {
 	dist  string
 	index string
+	csp   string
 }
 
 // NewAdminSPA returns a handler serving dist, or nil when dist is empty.
-func NewAdminSPA(dist string) *AdminSPAHandler {
+// connectSrc adds extra CSP connect-src origins (e.g. the external-OIDC issuer).
+func NewAdminSPA(dist string, connectSrc ...string) *AdminSPAHandler {
 	if dist == "" {
 		return nil
 	}
-	return &AdminSPAHandler{dist: dist, index: filepath.Join(dist, "index.html")}
+	return &AdminSPAHandler{
+		dist:  dist,
+		index: filepath.Join(dist, "index.html"),
+		csp:   buildAdminCSP(connectSrc),
+	}
 }
 
 // Serve resolves the request path to a file under dist (immutable for hashed
@@ -40,7 +57,7 @@ func NewAdminSPA(dist string) *AdminSPAHandler {
 // rooted with a leading slash before path.Clean, so any ".." collapses to the
 // root and re-joins under dist as a non-existent file (→ SPA fallback).
 func (h *AdminSPAHandler) Serve(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Security-Policy", adminCSP)
+	w.Header().Set("Content-Security-Policy", h.csp)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "same-origin")
 
