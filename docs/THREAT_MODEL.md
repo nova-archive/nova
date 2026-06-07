@@ -269,9 +269,15 @@ encryption envelope.
 - **Pinned dependencies.** `go.sum` and `package-lock.json` lock
   every transitive version. CI rejects PRs that touch lock files
   without an accompanying explanation.
-- **Hermetic admin SPA build.** No third-party CDN assets at
-  runtime; CI lint blocks references to external origins in the
-  built bundle.
+- **Hermetic admin SPA build (M11).** No third-party CDN assets at
+  runtime — IBM Plex is self-hosted and the bundle declares no
+  external origin; the `make hermetic-spa` CI gate fails the build on
+  any external origin in `web/admin/dist`, and the coordinator serves
+  it under a strict `default-src 'self'` CSP (connect-src adds the
+  external-OIDC issuer only in external mode, for the browser PKCE
+  token exchange). M11 serves `/admin/*` from the coordinator
+  (`NOVA_ADMIN_DIST_DIR`); the hardened public/admin two-vhost split
+  (boundary ①) lands in M13.
 - **No telemetry, no phone-home, no auto-update** in the
   coordinator or donor binaries. There is no mechanism for an
   attacker to push a malicious update through Nova's own update

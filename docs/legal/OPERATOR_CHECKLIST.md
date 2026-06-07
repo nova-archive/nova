@@ -294,6 +294,31 @@ deployments, consider:
   is conservative for most deployments; small instances may benefit from more
   breathing room.
 
+## Admin SPA (operator console)
+
+The M11 admin console (`web/admin/`) is a hermetic React + Vite bundle the
+coordinator serves at `/admin/*`.
+
+- **Enable it.** Build the bundle (`make admin-build`) and point
+  `NOVA_ADMIN_DIST_DIR` at `web/admin/dist`. Unset ⇒ `/admin/*` stays
+  unmounted (the console is disabled). In production (M13) nginx serves the
+  bundle directly on the admin vhost instead.
+- **Login modes.** With the built-in issuer, operators sign in with email +
+  password; tokens live in the browser with silent refresh. With an external
+  IdP (`auth.issuer_url`), the SPA drives the OIDC authorization-code + PKCE
+  flow — ensure the IdP's CORS allows the admin origin (the coordinator's CSP
+  already admits the configured issuer for the token exchange).
+- **Owner soft-delete is irreversible after the grace window.** A blob deleted
+  from the console (or `DELETE /api/v1/blobs/{cid}`) enters `soft_deleted`
+  (reads return `410`); after `NOVA_SOFT_DELETE_GRACE_SECONDS` (default 86400)
+  the in-process lifecycle sweep tombstones it and **crypto-shreds** the key —
+  unrecoverable. Set the grace to your recovery window;
+  `NOVA_SOFT_DELETE_SWEEP_ENABLED=false` pauses the sweep (soft-deletes then
+  persist, reversibly, until re-enabled).
+- The console only surfaces what the caller's role permits (server-enforced);
+  key rotation is operator-only. Legal-hold clearance stays a `novactl` /
+  Phase-4 action, not a console action.
+
 ## Annual maintenance (RECOMMENDED)
 
 - Re-read this checklist; flag items that have drifted from current

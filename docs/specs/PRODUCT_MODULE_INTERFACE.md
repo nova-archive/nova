@@ -144,6 +144,11 @@ type Product interface {
     // state transitions to the matching new state (e.g., a
     // `tombstoned` parent tombstones its children; a `quarantined`
     // parent quarantines them).
+    //
+    // As of M11 the hook has two callers, sharing one cascade wiring:
+    // moderation (quarantine/tombstone) and the owner content-lifecycle
+    // (`internal/lifecycle` — soft-delete cascades `'soft_deleted'`; the
+    // grace sweep's neutral `TombstoneTree` cascades `'tombstoned'`).
     OnDelete(ctx context.Context, tx pgx.Tx, parentCID string, newState string) error
 
     // RegisterRoutes mounts the product's read routes on the chi
