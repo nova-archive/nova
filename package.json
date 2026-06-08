@@ -5,7 +5,8 @@
   "description": "Networked Object Versatile Archive — federated content-addressed blob storage",
   "license": "Apache-2.0",
   "workspaces": [
-    "web/admin"
+    "web/admin",
+    "web/widget"
   ],
   "engines": {
     "node": ">=20"
