@@ -58,6 +58,7 @@ type ServerConfig struct {
 	BlobsAdmin      *handlers.BlobsAdminHandler      // nil ⇒ /api/v1/admin/blobs 404
 	JobsAdmin       *handlers.JobsAdminHandler       // nil ⇒ /api/v1/admin/jobs 404
 	AdminSPA        *handlers.AdminSPAHandler        // nil ⇒ /admin/* static unmounted
+	WidgetStatic    *handlers.WidgetStaticHandler    // nil ⇒ /widget/* static unmounted
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -106,6 +107,14 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 	if cfg.AdminSPA != nil {
 		r.Handle("/admin", http.HandlerFunc(cfg.AdminSPA.Serve))
 		r.Handle("/admin/*", http.HandlerFunc(cfg.AdminSPA.Serve))
+	}
+
+	// Upload widget static assets (M12), served from NOVA_WIDGET_DIST_DIR at
+	// /widget/*. A distinct prefix from /api/v1/uploads; nil ⇒ unmounted. The
+	// handler applies its own strict CSP; no SPA fallback (404 on unknown paths).
+	if cfg.WidgetStatic != nil {
+		r.Handle("/widget", http.HandlerFunc(cfg.WidgetStatic.Serve))
+		r.Handle("/widget/*", http.HandlerFunc(cfg.WidgetStatic.Serve))
 	}
 
 	r.Route("/api/v1", func(r chi.Router) {

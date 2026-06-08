@@ -34,6 +34,7 @@
 //	NOVA_MASTER_KEY_REWRAP_BATCH         M10 re-wrap ids claimed per tx (default 256)
 //	NOVA_MASTER_KEY_REWRAP_PACE_MS       M10 re-wrap inter-batch pace ms (default 50)
 //	NOVA_ADMIN_DIST_DIR                  M11 admin SPA bundle dir served at /admin/* (unset ⇒ disabled)
+//	NOVA_WIDGET_DIST_DIR                 M12 upload-widget bundle dir served at /widget/* (unset ⇒ disabled)
 //	NOVA_SOFT_DELETE_GRACE_SECONDS       M11 owner soft-delete grace before tombstone+shred (default 86400)
 //	NOVA_LIFECYCLE_SWEEP_INTERVAL_MS     M11 owner soft-delete sweep cadence ms (default 60000)
 //	NOVA_SOFT_DELETE_SWEEP_ENABLED       "false" disables the M11 soft-delete sweep (default enabled)
@@ -225,6 +226,9 @@ func run() error {
 		},
 		AdminSPA: coordinator.AdminSPAConfig{
 			DistDir: os.Getenv("NOVA_ADMIN_DIST_DIR"),
+		},
+		Widget: coordinator.WidgetConfig{
+			DistDir: os.Getenv("NOVA_WIDGET_DIST_DIR"),
 		},
 	})
 	if err != nil {

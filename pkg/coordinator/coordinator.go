@@ -120,6 +120,10 @@ type Config struct {
 	// AdminSPA configures coordinator-served admin SPA static assets (M11). An
 	// empty DistDir leaves /admin/* unmounted (the feature-gate posture).
 	AdminSPA AdminSPAConfig
+
+	// Widget configures coordinator-served upload-widget static assets (M12). An
+	// empty DistDir leaves /widget/* unmounted (the feature-gate posture).
+	Widget WidgetConfig
 }
 
 // SignedURLConfig tunes the M7 signed-URL stack.
@@ -170,6 +174,11 @@ type ContentLifecycleConfig struct {
 // AdminSPAConfig configures coordinator-served admin SPA static assets (M11).
 type AdminSPAConfig struct {
 	DistDir string // NOVA_ADMIN_DIST_DIR; empty ⇒ /admin/* unmounted
+}
+
+// WidgetConfig configures coordinator-served upload-widget static assets (M12).
+type WidgetConfig struct {
+	DistDir string // NOVA_WIDGET_DIST_DIR; empty ⇒ /widget/* unmounted
 }
 
 // Coordinator owns the HTTP server. Build with New; register products before
@@ -388,6 +397,7 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		}
 	}
 	sc.AdminSPA = handlers.NewAdminSPA(cfg.AdminSPA.DistDir, spaConnect...)
+	sc.WidgetStatic = handlers.NewWidgetStatic(cfg.Widget.DistDir)
 
 	// /readyz checks. Each is a thin wrapper over the corresponding dep's
 	// liveness probe; the handler runs them in parallel under a 1 s deadline.
