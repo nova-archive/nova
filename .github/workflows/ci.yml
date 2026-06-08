@@ -81,6 +81,18 @@ jobs:
       - name: Hermetic bundle audit
         run: make hermetic-spa
 
+      - name: Type-check (widget)
+        run: make widget-lint
+
+      - name: Unit tests (widget)
+        run: make widget-test
+
+      - name: Build (widget)
+        run: make widget-build
+
+      - name: Hermetic widget bundle audit
+        run: make hermetic-widget
+
   schema-drift:
     runs-on: ubuntu-latest
     steps:

@@ -92,3 +92,32 @@ hermetic-spa:
 	./scripts/hermetic-spa.sh web/admin/dist
 
 admin: admin-install admin-lint admin-test admin-build hermetic-spa
+
+.PHONY: widget widget-build widget-lint widget-test hermetic-widget web
+
+# M12 Upload Widget (web/widget). Hermetic Uppy + tus; no third-party runtime assets.
+widget-build:
+	npm run build --workspace web/widget
+
+widget-lint:
+	npm run lint --workspace web/widget
+
+widget-test:
+	npm run test --workspace web/widget -- --run
+
+# hermetic-widget fails the build if the widget bundle declares any third-party
+# asset load. The widget inlines its CSS into the JS bundle (single <script> embed),
+# so in addition to the HTML/CSS gate we scan the JS for CSS asset-load patterns
+# (url(http…), @import …http) — unambiguous external asset loads, distinct from the
+# harmless doc-URL string literals hermetic-spa.sh deliberately ignores.
+hermetic-widget:
+	./scripts/hermetic-spa.sh web/widget/dist
+	@if grep -qaE 'url\(https?:|@import[^;]*https?:' web/widget/dist/nova-upload-widget.js; then \
+		echo "hermetic-widget: external CSS asset URL in the inlined bundle" >&2; exit 1; \
+	fi; \
+	echo "hermetic-widget: inlined-CSS clean (web/widget/dist/nova-upload-widget.js)"
+
+widget: admin-install widget-lint widget-test widget-build hermetic-widget
+
+# web builds + checks both web workspaces (npm ci installs all workspaces).
+web: admin widget

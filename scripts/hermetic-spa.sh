@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# hermetic-spa.sh — fail if the built admin SPA bundle declares any third-party
-# asset load. Nova's threat model requires the admin SPA to make no third-party
+# hermetic-spa.sh — fail if the built bundle declares any third-party
+# asset load. Nova's threat model requires web bundles to make no third-party
 # requests at runtime (no CDN fonts/scripts/analytics); this is the CI backstop
 # alongside the coordinator's strict default-src 'self' CSP.
 #
@@ -16,7 +16,7 @@ set -euo pipefail
 
 dist="${1:-web/admin/dist}"
 if [ ! -d "$dist" ]; then
-  echo "hermetic-spa: '$dist' not found — build the admin SPA first" >&2
+  echo "hermetic-spa: '$dist' not found — build the bundle first" >&2
   exit 1
 fi
 
@@ -26,7 +26,7 @@ hits="$(grep -rEnoI "https?://[A-Za-z0-9.-]+" \
   | grep -vE "https?://(www\.)?w3\.org" || true)"
 
 if [ -n "$hits" ]; then
-  echo "hermetic-spa: external origin(s) in admin bundle HTML/CSS:" >&2
+  echo "hermetic-spa: external origin(s) in bundle HTML/CSS:" >&2
   echo "$hits" >&2
   exit 1
 fi
