@@ -50,7 +50,12 @@ tags:
   - name: content-image
     description: Image content with on-the-fly transforms (`nova-image`).
   - name: upload
-    description: Resumable (tus) and non-resumable upload endpoints.
+    description: |
+      Resumable (tus.io) and multipart upload endpoints. The M12 browser widget
+      (`web/widget/`) is the reference consumer of this surface; after the final
+      tus `PATCH`, it calls `POST .../finalize`. When `NOVA_WIDGET_DIST_DIR` is set
+      the coordinator also serves the widget bundle as static assets at `/widget/*`
+      (a non-API surface, not described here).
   - name: metadata
     description: Read and update blob/image metadata.
   - name: collections

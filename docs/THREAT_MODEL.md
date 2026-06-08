@@ -278,6 +278,19 @@ encryption envelope.
   token exchange). M11 serves `/admin/*` from the coordinator
   (`NOVA_ADMIN_DIST_DIR`); the hardened public/admin two-vhost split
   (boundary ①) lands in M13.
+- **Hermetic upload widget (M12).** The same hermetic guarantee covers
+  the M12 upload widget (`web/widget/`): Uppy + tus are bundled, CSS
+  is injected locally (the widget inlines its CSS into the JS bundle),
+  there is no telemetry, and the `hermetic-widget` CI gate fails the
+  build on any external origin in `web/widget/dist` — it scans both
+  the HTML/CSS (via `hermetic-spa.sh`) and the inlined JS bundle for
+  CSS asset-load patterns (`url(http…)`, `@import …http`), making the
+  "fails on any external origin" claim precise. Phase-1 widget
+  embedding is **same-origin** (the host page is served from the Nova
+  origin); cross-origin embedding requires operator-managed CORS at
+  the reverse proxy and is deferred with the hardened two-vhost
+  public/admin split (M13). No first-class coordinator CORS surface
+  ships in Phase 1.
 - **No telemetry, no phone-home, no auto-update** in the
   coordinator or donor binaries. There is no mechanism for an
   attacker to push a malicious update through Nova's own update

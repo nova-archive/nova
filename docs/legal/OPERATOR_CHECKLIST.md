@@ -319,6 +319,36 @@ coordinator serves at `/admin/*`.
   key rotation is operator-only. Legal-hold clearance stays a `novactl` /
   Phase-4 action, not a console action.
 
+## Upload widget (M12)
+
+Build the widget bundle and point the coordinator at it to serve `/widget/*`:
+
+    npm ci
+    make widget-build           # → web/widget/dist (bundle + demo page)
+    NOVA_WIDGET_DIST_DIR=$PWD/web/widget/dist   # coordinator env; unset ⇒ /widget disabled
+
+Embed it in any **same-origin** page with a single script tag:
+
+    <div data-nova-upload-widget data-product="image"></div>
+    <script src="/widget/nova-upload-widget.js"></script>
+
+For authenticated uploads, mount via JS and supply a token provider (never put a
+bearer token in a `data-*` attribute):
+
+    NovaUploadWidget.mount('#uploader', {
+      product: 'image',
+      getToken: async () => yourApp.getAccessToken(),   // called per request; survives token rotation
+      onComplete: (r) => console.log(r.cid, r.urls),
+    });
+
+Notes:
+- `getToken` returning `null` sends no `Authorization` header — uploads then require
+  the public-uploads floor (`NOVA_PUBLIC_UPLOADS=true`, which itself requires
+  `NOVA_TOS_URL`). The zero-JS `data-nova-upload-widget` path only works under that floor.
+- The bundle is hermetic (no third-party CDN); CI enforces it (`make hermetic-widget`).
+- Phase-1 embedding is same-origin. To embed on a different origin, add CORS for the
+  upload endpoints at your reverse proxy; first-class CORS lands with the M13 host split.
+
 ## Annual maintenance (RECOMMENDED)
 
 - Re-read this checklist; flag items that have drifted from current

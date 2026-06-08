@@ -967,11 +967,11 @@ ready to render the surface.
 - Key rotation buttons (with confirmation modals).
 - Jobs view.
 
-**M12 — Widget (~week 11–12, parallel)**
-- Uppy + tus.io drag-and-drop.
-- Embeds in any HTML page via `<script src=".../widget.js">`.
-- Calls `/api/v1/uploads/*` with bearer.
-- Hermetic build; no external CDN.
+**M12 — Widget (implemented, tag `m12-upload-widget`)**
+- Hermetic Uppy + tus embeddable widget (`web/widget/`); single-`<script>` embed;
+  `getToken` bearer; coordinator `/widget/*` seam (`NOVA_WIDGET_DIST_DIR`).
+- Design: `docs/superpowers/specs/2026-06-07-phase1-m12-upload-widget-design.md`.
+  Plan: `docs/superpowers/plans/2026-06-07-phase1-m12-upload-widget.md`.
 
 **M13 — Setup wizard + Docker production (~week 13)**
 - Setup web wizard (small React app).

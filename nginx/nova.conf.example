@@ -196,6 +196,16 @@ server {
         proxy_pass http://nova_coordinator;
     }
 
+    # ----- Upload widget (M12) -----------------------------------------
+    #
+    # The coordinator serves the hermetic widget bundle + demo at /widget/*
+    # when NOVA_WIDGET_DIST_DIR is set (unset ⇒ 404). Same hermetic CSP as the
+    # admin SPA (declared above). M13 may serve web/widget/dist directly here.
+    location /widget {
+        limit_req zone=nova_per_ip burst=30 nodelay;
+        proxy_pass http://nova_coordinator;
+    }
+
     # ----- Federation endpoints: NEVER expose publicly -----------------
     #
     # /fed/v1/* is reachable only over the Nebula mesh. Block at the
