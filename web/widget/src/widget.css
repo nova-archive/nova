@@ -1,0 +1,25 @@
+/* Brand-tokened overrides for the Uppy DragDrop + StatusBar surface. Nova palette
+   from docs/design/Nova Brand _standalone_.html. Local-only: no @font-face URLs,
+   no external url() — the hermetic-widget gate fails on any external origin. */
+.nova-upload-widget {
+  --nova-paper: #ECE8DF;
+  --nova-card: #F4F1E8;
+  --nova-accent: #E2502B;
+  --nova-ink: #1A1A1A;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.nova-upload-widget .uppy-DragDrop-container {
+  background: var(--nova-card);
+  border-radius: 8px;
+  border: 1px dashed color-mix(in srgb, var(--nova-ink) 25%, transparent);
+}
+
+.nova-upload-widget .uppy-DragDrop-container:focus,
+.nova-upload-widget .uppy-DragDrop--isDragDropSupported.is-dragover {
+  border-color: var(--nova-accent);
+}
+
+.nova-upload-widget .uppy-StatusBar-actionBtn--upload {
+  background-color: var(--nova-accent);
+}

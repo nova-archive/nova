@@ -17,6 +17,7 @@ export interface WidgetInstance {
 // transport with per-request auth, Upload-Metadata on file-added, progress
 // forwarding, and the finalize bridge. autoProceed uploads on drop.
 export function buildUppy(target: Element, cfg: NormalizedConfig): WidgetInstance {
+  target.classList.add('nova-upload-widget')
   const uppy = new Uppy({
     autoProceed: true,
     restrictions: cfg.maxFileSize ? { maxFileSize: cfg.maxFileSize } : undefined,

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nova upload widget — demo</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 640px; margin: 3rem auto; }
+      #result img { max-width: 100%; border-radius: 8px; }
+      code { background: #ECE8DF; padding: 0 .25rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Nova upload widget</h1>
+    <p>Drop a file below. On finalize, the returned CID renders from <code>/blob/&lt;cid&gt;</code>.</p>
+
+    <!-- zero-JS auto-bootstrap; works under the public-uploads floor -->
+    <div data-nova-upload-widget data-product="raw"></div>
+
+    <!-- advanced mount with a result callback -->
+    <div id="up"></div>
+    <div id="result"></div>
+
+    <script src="/widget/nova-upload-widget.js"></script>
+    <script>
+      NovaUploadWidget.mount('#up', {
+        product: 'raw',
+        onComplete: function (r) {
+          document.getElementById('result').innerHTML =
+            '<p>CID: <code>' + r.cid + '</code></p><img src="' + r.urls.original + '" alt="upload" />';
+        },
+        onError: function (e) {
+          document.getElementById('result').textContent = 'Upload failed: ' + e.code;
+        },
+      });
+    </script>
+  </body>
+</html>

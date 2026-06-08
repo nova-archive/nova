@@ -15,6 +15,7 @@ internal/api/codegen/
 # Node
 node_modules/
 web/admin/dist/
+web/widget/dist/
 
 # Local environment
 .env
