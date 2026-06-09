@@ -63,6 +63,12 @@ services:
       dockerfile: docker/Dockerfile
     container_name: nova-coordinator
     environment:
+      # sslmode=disable is intentional for the shipped single-host topology:
+      # coordinator↔postgres is THREAT_MODEL boundary ② (trusted colocation) —
+      # the password never leaves this host's private compose bridge network.
+      # If you run postgres OFF-HOST (a separate machine / managed DB), change
+      # this to sslmode=require (or verify-full with a mounted CA) so the
+      # credential + traffic are not exposed on the wire.
       DATABASE_URL: "postgres://nova:${POSTGRES_PASSWORD}@postgres:5432/nova?sslmode=disable"
       NOVA_CONFIG_DIR: /etc/nova
       NOVA_SECRETS_DIR: /run/secrets
