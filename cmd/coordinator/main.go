@@ -89,6 +89,12 @@ func run() error {
 		return err
 	}
 
+	opCfg, err := loadOperatorConfigFile()
+	if err != nil {
+		return fmt.Errorf("operator.yaml: %w", err)
+	}
+	rc := resolveOperatorConfig(opCfg, os.Getenv)
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return errors.New("DATABASE_URL is required")
@@ -117,10 +123,10 @@ func run() error {
 	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
 		return fmt.Errorf("create upload tmp dir: %w", err)
 	}
-	maxUpload := envInt64("NOVA_MAX_UPLOAD_SIZE_BYTES", config.DefaultMaxUploadSizeBytes)
+	maxUpload := rc.MaxUploadSizeBytes
 	maxAssembly := envInt("NOVA_MAX_CONCURRENT_ASSEMBLY", config.DefaultMaxConcurrentAssembly)
 	sessionTTL := time.Duration(envInt("NOVA_UPLOAD_SESSION_TTL_SECONDS", config.DefaultUploadSessionTTLSecs)) * time.Second
-	recordIP := os.Getenv("NOVA_PARANOID") != "true"
+	recordIP := !rc.Paranoid
 
 	trustedProxies, err := httputil.ParseTrustedProxies(os.Getenv("NOVA_TRUSTED_PROXIES"))
 	if err != nil {
@@ -166,7 +172,7 @@ func run() error {
 
 	// Build auth (and enforce its refuse-to-start floors) before the expensive
 	// embedded-Kubo boot, so a missing signing key / T1.20 violation fails fast.
-	authCfg, err := buildAuthConfig(ctx, gen.New(pool))
+	authCfg, err := buildAuthConfig(ctx, gen.New(pool), rc)
 	if err != nil {
 		return err
 	}
@@ -265,21 +271,21 @@ func run() error {
 // (verify-only; local issuer endpoints 404). Otherwise it runs the built-in
 // local Ed25519 issuer, which requires NOVA_OIDC_SIGNING_KEY (refuse-to-start
 // floor). Public uploads require NOVA_TOS_URL (T1.20).
-func buildAuthConfig(ctx context.Context, q *gen.Queries) (coordinator.AuthConfig, error) {
+func buildAuthConfig(ctx context.Context, q *gen.Queries, rc resolvedConfig) (coordinator.AuthConfig, error) {
 	var ac coordinator.AuthConfig
 
-	publicUploads := os.Getenv("NOVA_PUBLIC_UPLOADS") == "true"
-	if publicUploads && os.Getenv("NOVA_TOS_URL") == "" {
+	publicUploads := rc.PublicUploads
+	if publicUploads && rc.TosURL == "" {
 		return ac, errors.New("NOVA_PUBLIC_UPLOADS=true requires NOVA_TOS_URL (T1.20); refusing to start")
 	}
 	ac.PublicUploads = publicUploads
 	// Strict per-IP limiter on /api/v1/auth/login: ~5 attempts/minute, burst 5.
 	ac.LoginRate = coordinator.RateLimitConfig{RatePerSec: 5.0 / 60.0, Burst: 5}
 
-	if issuerURL := os.Getenv("NOVA_AUTH_ISSUER_URL"); issuerURL != "" {
+	if issuerURL := rc.AuthIssuerURL; issuerURL != "" {
 		// External-OIDC mode: verify-only. New is resilient to IdP downtime
 		// (background discovery retry) and only errors on invalid config.
-		clientID := os.Getenv("NOVA_AUTH_CLIENT_ID")
+		clientID := rc.AuthClientID
 		if clientID == "" {
 			// go-oidc requires the client id as the expected token audience;
 			// with it empty every token fails verification (universal 401).
@@ -364,11 +370,80 @@ func envInt(key string, def int) int {
 	return def
 }
 
-func envInt64(key string, def int64) int64 {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			return n
+// resolvedConfig holds the operator-facing values that operator.yaml may set
+// and env vars may override. Deep tuning knobs (signed-url, rotation, sweeps)
+// stay env-only and are not part of this struct.
+type resolvedConfig struct {
+	PublicUploads      bool
+	TosURL             string
+	Paranoid           bool
+	AuthIssuerURL      string // external OIDC issuer ("" = built-in local issuer)
+	AuthClientID       string
+	MaxUploadSizeBytes int64
+}
+
+// resolveOperatorConfig merges operator.yaml (cfg, may be nil) with env overrides.
+// getenv is injected for testability (pass os.Getenv in production).
+func resolveOperatorConfig(cfg *config.Config, getenv func(string) string) resolvedConfig {
+	rc := resolvedConfig{MaxUploadSizeBytes: config.DefaultMaxUploadSizeBytes}
+	if cfg != nil {
+		rc.PublicUploads = cfg.Uploads.PublicUploads
+		rc.TosURL = cfg.TosURL
+		rc.Paranoid = cfg.Auth.Paranoid
+		rc.AuthIssuerURL = cfg.Auth.IssuerURL
+		rc.AuthClientID = cfg.Auth.ClientID
+		if cfg.Uploads.MaxUploadSizeBytes > 0 {
+			rc.MaxUploadSizeBytes = cfg.Uploads.MaxUploadSizeBytes
 		}
 	}
-	return def
+	// env overrides (only when the var is SET — use a presence check for bools)
+	if v, ok := lookupBool(getenv, "NOVA_PUBLIC_UPLOADS"); ok {
+		rc.PublicUploads = v
+	}
+	if v := getenv("NOVA_TOS_URL"); v != "" {
+		rc.TosURL = v
+	}
+	if v, ok := lookupBool(getenv, "NOVA_PARANOID"); ok {
+		rc.Paranoid = v
+	}
+	if v := getenv("NOVA_AUTH_ISSUER_URL"); v != "" {
+		rc.AuthIssuerURL = v
+	}
+	if v := getenv("NOVA_AUTH_CLIENT_ID"); v != "" {
+		rc.AuthClientID = v
+	}
+	if v := getenv("NOVA_MAX_UPLOAD_SIZE_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			rc.MaxUploadSizeBytes = n
+		}
+	}
+	return rc
+}
+
+// lookupBool reports the bool value of key and whether it was set (non-empty).
+func lookupBool(getenv func(string) string, key string) (val, ok bool) {
+	v := getenv(key)
+	if v == "" {
+		return false, false
+	}
+	return v == "true", true
+}
+
+// loadOperatorConfigFile loads operator.yaml from NOVA_CONFIG_FILE (or
+// $NOVA_CONFIG_DIR/operator.yaml). Returns (nil, nil) when no path is
+// configured or the file is absent — the env-only path (full back-compat).
+func loadOperatorConfigFile() (*config.Config, error) {
+	path := os.Getenv("NOVA_CONFIG_FILE")
+	if path == "" {
+		if dir := os.Getenv("NOVA_CONFIG_DIR"); dir != "" {
+			path = filepath.Join(dir, "operator.yaml")
+		}
+	}
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return config.LoadFromFile(path)
 }
