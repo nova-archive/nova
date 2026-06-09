@@ -1,4 +1,4 @@
-.PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-down migrate-status clean
+.PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-down migrate-status clean docker-build
 
 GOTEST    := go test ./...
 GOTESTV   := go test -v ./...
@@ -18,6 +18,7 @@ help:
 	@echo "  migrate-down      Roll back one migration"
 	@echo "  migrate-status    Show migration status"
 	@echo "  clean             Remove build artifacts"
+	@echo "  docker-build      Build the multi-stage Docker image (no push)"
 
 test:
 	$(GOTESTV)
@@ -57,6 +58,11 @@ migrate-status: build
 
 clean:
 	rm -rf bin dist build coverage.out coverage.html
+
+# M13 Docker image build. Builds the multi-stage image locally (no push).
+# Requires Docker 29+ with BuildKit enabled (the default).
+docker-build:
+	docker build -f docker/Dockerfile -t nova-coordinator:dev .
 
 .PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
 
