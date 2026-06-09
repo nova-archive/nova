@@ -1,0 +1,250 @@
+// Package handlers contains the coordinator's HTTP request handlers.
+// This file provides the SetupHandler, which serves the web-based first-run
+// setup wizard at /setup/*. The handler is only mounted when the bootstrap
+// sentinel is absent — once setup completes, NewSetup returns nil so the seam
+// is removed from the router.
+package handlers
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"github.com/nova-archive/nova/internal/api/httputil"
+	"github.com/nova-archive/nova/internal/api/middleware"
+	"github.com/nova-archive/nova/internal/setup"
+)
+
+// buildSetupCSP builds the strict Content-Security-Policy for the setup wizard
+// SPA: no third-party origins, scripts first-party only, frame-ancestors none.
+func buildSetupCSP() string {
+	return "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; " +
+		"font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+}
+
+// SetupConfig holds the configuration for the setup wizard handler.
+type SetupConfig struct {
+	// DistDir is the path to the pre-built setup wizard SPA bundle. When empty,
+	// static file requests return 404. The API routes (state, keys, answers,
+	// commit) work regardless.
+	DistDir string
+	// Paths are the on-disk locations the commit writes to.
+	Paths setup.Paths
+	// UC is the UserCreator used by Commit. May be nil in unit tests (commit is
+	// not called by the state/keys/answers tests).
+	UC setup.UserCreator
+	// AfterCommit, if non-nil, is called in a goroutine after a successful commit
+	// (e.g. to trigger coordinator re-exec). Called after the response is written.
+	AfterCommit func()
+}
+
+// SetupHandler serves the /setup/* routes for the first-run web wizard. It
+// routes API requests (GET /setup/state, POST /setup/keys/master, POST
+// /setup/answers, POST /setup/commit) and serves the static SPA bundle for
+// all other /setup/* paths. It holds the in-progress Secrets in memory so the
+// master key generated at /setup/keys/master is the same key committed at
+// /setup/commit.
+type SetupHandler struct {
+	cfg SetupConfig
+	csp string
+
+	mu         sync.Mutex
+	secrets    setup.Secrets
+	hasSecrets bool
+}
+
+// NewSetup returns a handler for the setup wizard, or nil if the bootstrap
+// sentinel already exists (setup is complete). The nil return is the
+// feature-gate seam: the caller must not mount this route when nil is returned.
+func NewSetup(cfg SetupConfig) *SetupHandler {
+	if cfg.Paths.Sentinel != "" {
+		if _, err := os.Stat(cfg.Paths.Sentinel); err == nil {
+			return nil
+		}
+	}
+	return &SetupHandler{
+		cfg: cfg,
+		csp: buildSetupCSP(),
+	}
+}
+
+// Serve dispatches setup wizard requests. API routes are handled directly;
+// all other /setup/* paths fall through to the static SPA bundle.
+func (h *SetupHandler) Serve(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Security-Policy", h.csp)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "same-origin")
+
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/setup/state":
+		h.handleState(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/setup/keys/master":
+		h.handleGenerateMasterKey(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/setup/answers":
+		h.handleAnswers(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/setup/commit":
+		h.handleCommit(w, r)
+	default:
+		h.serveStatic(w, r)
+	}
+}
+
+// handleState returns the current setup state. The handler only exists while
+// setup is pending, so bootstrap_complete is always false here.
+func (h *SetupHandler) handleState(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"bootstrap_complete": false})
+}
+
+// handleGenerateMasterKey generates a fresh set of first-run secrets, stores
+// them in memory (under the mutex), and returns the master key hex + its
+// fingerprint for the operator to verify before committing.
+func (h *SetupHandler) handleGenerateMasterKey(w http.ResponseWriter, r *http.Request) {
+	rid := middleware.RequestIDFromContext(r.Context())
+
+	s, err := setup.GenerateSecrets()
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", "failed to generate secrets", rid)
+		return
+	}
+
+	h.mu.Lock()
+	h.secrets = s
+	h.hasSecrets = true
+	h.mu.Unlock()
+
+	fp, err := setup.Fingerprint(s.MasterKeyHex)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", "failed to compute fingerprint", rid)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"master_key_hex": s.MasterKeyHex,
+		"fingerprint":    fp,
+	})
+}
+
+// handleAnswers validates a submitted Answers payload and returns ok or a 400
+// with the validation message. It does not persist anything — that happens at
+// commit.
+func (h *SetupHandler) handleAnswers(w http.ResponseWriter, r *http.Request) {
+	rid := middleware.RequestIDFromContext(r.Context())
+
+	var a setup.Answers
+	if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_answers", "request body is not valid JSON", rid)
+		return
+	}
+	if err := a.Validate(); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_answers", err.Error(), rid)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+// handleCommit decodes the final Answers, uses the in-memory secrets (falling
+// back to freshly generated secrets if /setup/keys/master was never called),
+// and calls setup.Commit. On success it writes ok=true and, if AfterCommit is
+// set, calls it in a goroutine so the coordinator can re-exec without blocking
+// the HTTP response.
+func (h *SetupHandler) handleCommit(w http.ResponseWriter, r *http.Request) {
+	rid := middleware.RequestIDFromContext(r.Context())
+
+	var a setup.Answers
+	if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_answers", "request body is not valid JSON", rid)
+		return
+	}
+
+	h.mu.Lock()
+	if !h.hasSecrets {
+		s, err := setup.GenerateSecrets()
+		if err != nil {
+			h.mu.Unlock()
+			httputil.WriteError(w, http.StatusInternalServerError, "internal", "failed to generate secrets", rid)
+			return
+		}
+		h.secrets = s
+		h.hasSecrets = true
+	}
+	secrets := h.secrets
+	h.mu.Unlock()
+
+	uc := h.cfg.UC
+	if err := setup.Commit(r.Context(), a, h.cfg.Paths, secrets, uc); err != nil {
+		// Validation errors (from a.Validate() inside Commit) get 400.
+		if isValidationError(err) {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid_answers", err.Error(), rid)
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", err.Error(), rid)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+
+	if h.cfg.AfterCommit != nil {
+		go h.cfg.AfterCommit()
+	}
+}
+
+// isValidationError returns true for errors that originate from Answers.Validate
+// (they all start with "setup: ").
+func isValidationError(err error) bool {
+	return strings.HasPrefix(err.Error(), "setup: ") &&
+		!strings.HasPrefix(err.Error(), "setup: mkdir") &&
+		!strings.HasPrefix(err.Error(), "setup: write") &&
+		!strings.HasPrefix(err.Error(), "setup: create operator") &&
+		!strings.HasPrefix(err.Error(), "setup: render") &&
+		!strings.HasPrefix(err.Error(), "setup: commit: secrets incomplete") &&
+		!strings.HasPrefix(err.Error(), "setup: tls") &&
+		!strings.HasPrefix(err.Error(), "setup: csprng")
+}
+
+// serveStatic serves files from cfg.DistDir for /setup/* paths. "/setup" and
+// "/setup/" serve the SPA index.html for the app shell. If DistDir is empty,
+// all static requests return 404.
+func (h *SetupHandler) serveStatic(w http.ResponseWriter, r *http.Request) {
+	rid := middleware.RequestIDFromContext(r.Context())
+
+	if h.cfg.DistDir == "" {
+		httputil.WriteError(w, http.StatusNotFound, "not_found", "setup wizard not available", rid)
+		return
+	}
+
+	rel := strings.TrimPrefix(r.URL.Path, "/setup")
+	clean := path.Clean("/" + strings.TrimPrefix(rel, "/")) // leading slash collapses any ".."
+
+	// Serve the SPA shell for the root paths.
+	if clean == "/" {
+		w.Header().Set("Cache-Control", "no-store")
+		http.ServeFile(w, r, filepath.Join(h.cfg.DistDir, "index.html"))
+		return
+	}
+
+	fsPath := filepath.Join(h.cfg.DistDir, filepath.FromSlash(clean))
+	info, err := os.Stat(fsPath)
+	if err != nil || info.IsDir() {
+		httputil.WriteError(w, http.StatusNotFound, "not_found", "not found", rid)
+		return
+	}
+	if strings.HasPrefix(clean, "/assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	http.ServeFile(w, r, fsPath)
+}

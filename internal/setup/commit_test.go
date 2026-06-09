@@ -30,7 +30,11 @@ func TestCommit_SentinelWrittenLast_AndModes(t *testing.T) {
 	p := tmpPaths(t)
 	uc := &fakeUserCreator{}
 	a := validAnswers()
-	if err := Commit(context.Background(), a, p, uc); err != nil {
+	s, err := GenerateSecrets()
+	if err != nil {
+		t.Fatalf("GenerateSecrets: %v", err)
+	}
+	if err := Commit(context.Background(), a, p, s, uc); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
 	for _, name := range []string{"master-key-v1", "swarm.key", "oidc-signing-key"} {

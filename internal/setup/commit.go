@@ -20,12 +20,44 @@ type UserCreator interface {
 	CreateOperator(ctx context.Context, email, plain string) error
 }
 
+// Secrets is the first-run key material. Generated once (GenerateSecrets or the
+// /setup/keys/master endpoint), then persisted by Commit — so the master key the
+// operator backs up is exactly the one committed.
+type Secrets struct {
+	MasterKeyHex string // 64 hex chars
+	SwarmKey     string // Kubo PSK v1 base16 format
+	SigningSeed  string // ed25519 seed hex
+}
+
+// GenerateSecrets makes a fresh set of first-run secrets.
+func GenerateSecrets() (Secrets, error) {
+	mk, err := GenerateMasterKey()
+	if err != nil {
+		return Secrets{}, err
+	}
+	swarm, err := GenerateSwarmKey()
+	if err != nil {
+		return Secrets{}, err
+	}
+	seed, err := GenerateSigningSeed()
+	if err != nil {
+		return Secrets{}, err
+	}
+	return Secrets{MasterKeyHex: mk, SwarmKey: swarm, SigningSeed: seed}, nil
+}
+
 // Commit performs the atomic first-run finalize. Ordering is load-bearing:
 // secrets -> config -> user -> SENTINEL LAST. A crash before the sentinel
 // re-enters setup mode cleanly (every prior step is idempotent/overwrite).
-func Commit(ctx context.Context, a Answers, p Paths, uc UserCreator) error {
+// s must be a fully-populated Secrets (use GenerateSecrets); Commit validates
+// that all three fields are non-empty so the caller cannot accidentally commit
+// with zero values.
+func Commit(ctx context.Context, a Answers, p Paths, s Secrets, uc UserCreator) error {
 	if err := a.Validate(); err != nil {
 		return err
+	}
+	if s.MasterKeyHex == "" || s.SwarmKey == "" || s.SigningSeed == "" {
+		return fmt.Errorf("setup: commit: secrets incomplete")
 	}
 	if err := os.MkdirAll(p.SecretsDir, 0o700); err != nil {
 		return fmt.Errorf("setup: mkdir secrets: %w", err)
@@ -35,25 +67,13 @@ func Commit(ctx context.Context, a Answers, p Paths, uc UserCreator) error {
 	}
 
 	// 1. secrets (0600)
-	mk, err := GenerateMasterKey()
-	if err != nil {
+	if err := writeSecret(p.SecretsDir, "master-key-v1", s.MasterKeyHex); err != nil {
 		return err
 	}
-	swarm, err := GenerateSwarmKey()
-	if err != nil {
+	if err := writeSecret(p.SecretsDir, "swarm.key", s.SwarmKey); err != nil {
 		return err
 	}
-	seed, err := GenerateSigningSeed()
-	if err != nil {
-		return err
-	}
-	if err := writeSecret(p.SecretsDir, "master-key-v1", mk); err != nil {
-		return err
-	}
-	if err := writeSecret(p.SecretsDir, "swarm.key", swarm); err != nil {
-		return err
-	}
-	if err := writeSecret(p.SecretsDir, "oidc-signing-key", seed); err != nil {
+	if err := writeSecret(p.SecretsDir, "oidc-signing-key", s.SigningSeed); err != nil {
 		return err
 	}
 
