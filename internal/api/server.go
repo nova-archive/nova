@@ -59,6 +59,7 @@ type ServerConfig struct {
 	JobsAdmin       *handlers.JobsAdminHandler       // nil ⇒ /api/v1/admin/jobs 404
 	AdminSPA        *handlers.AdminSPAHandler        // nil ⇒ /admin/* static unmounted
 	WidgetStatic    *handlers.WidgetStaticHandler    // nil ⇒ /widget/* static unmounted
+	Setup           *handlers.SetupHandler           // nil ⇒ /setup/* unmounted (normal mode)
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -115,6 +116,13 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 	if cfg.WidgetStatic != nil {
 		r.Handle("/widget", http.HandlerFunc(cfg.WidgetStatic.Serve))
 		r.Handle("/widget/*", http.HandlerFunc(cfg.WidgetStatic.Serve))
+	}
+
+	// First-run setup wizard (M13), mounted only in setup mode (Setup non-nil).
+	// In normal mode Setup is nil ⇒ /setup/* 404s (no route).
+	if cfg.Setup != nil {
+		r.Handle("/setup", http.HandlerFunc(cfg.Setup.Serve))
+		r.Handle("/setup/*", http.HandlerFunc(cfg.Setup.Serve))
 	}
 
 	r.Route("/api/v1", func(r chi.Router) {

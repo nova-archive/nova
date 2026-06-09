@@ -4,11 +4,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/nova-archive/nova/internal/api"
+	"github.com/nova-archive/nova/internal/api/handlers"
 	"github.com/nova-archive/nova/internal/ratelimit"
+	"github.com/nova-archive/nova/internal/setup"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,6 +64,30 @@ func TestServerAuthRouting(t *testing.T) {
 
 	code, _ = do(t, r, http.MethodGet, "/api/v1/users/me", "")
 	require.Equal(t, 401, code) // no token
+}
+
+func TestServerSetupSeam(t *testing.T) {
+	t.Parallel()
+
+	// Build a SetupHandler with a sentinel that does NOT exist ⇒ handler is non-nil.
+	h := handlers.NewSetup(handlers.SetupConfig{
+		Paths: setup.Paths{
+			ConfigDir:  t.TempDir(),
+			SecretsDir: t.TempDir(),
+			Sentinel:   filepath.Join(t.TempDir(), ".bootstrap-complete"),
+		},
+	})
+	require.NotNil(t, h, "sentinel absent ⇒ NewSetup must return non-nil")
+
+	// With Setup mounted, GET /setup/state must return 200.
+	r := api.NewServer(api.ServerConfig{Version: "test", Setup: h})
+	code, _ := do(t, r, http.MethodGet, "/setup/state", "")
+	require.Equal(t, http.StatusOK, code, "GET /setup/state with Setup mounted must return 200")
+
+	// Without Setup mounted (nil), GET /setup/state must 404.
+	r2 := api.NewServer(api.ServerConfig{Version: "test"})
+	code2, _ := do(t, r2, http.MethodGet, "/setup/state", "")
+	require.Equal(t, http.StatusNotFound, code2, "GET /setup/state without Setup mounted must 404")
 }
 
 func TestServerExternalModeAuth404(t *testing.T) {

@@ -36,6 +36,7 @@ import (
 	"github.com/nova-archive/nova/internal/masterkey"
 	"github.com/nova-archive/nova/internal/moderation"
 	"github.com/nova-archive/nova/internal/ratelimit"
+	"github.com/nova-archive/nova/internal/setup"
 	"github.com/nova-archive/nova/internal/upload"
 	"github.com/nova-archive/nova/pkg/coordinator/product"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
@@ -639,6 +640,48 @@ func (c *Coordinator) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return c.srv.Shutdown(ctx)
+}
+
+// SetupServerConfig configures the reduced first-run setup server. It serves
+// only the /setup seam (+ /health) and boots no keystore/Kubo/auth — the
+// master key does not exist until the wizard commits.
+type SetupServerConfig struct {
+	ListenAddr   string
+	Version      string
+	Pool         *pgxpool.Pool // for CreateOperator
+	SetupDistDir string        // web/setup bundle dir (may be empty)
+	Paths        setup.Paths   // config/secrets/sentinel locations
+	AfterCommit  func()        // called after a successful commit (re-exec hook)
+}
+
+// RunSetupServer serves the first-run wizard until ctx is cancelled (or a
+// successful commit triggers AfterCommit). It returns nil on clean shutdown.
+func RunSetupServer(ctx context.Context, cfg SetupServerConfig) error {
+	if cfg.ListenAddr == "" {
+		return errors.New("coordinator: setup: ListenAddr is required")
+	}
+	h := handlers.NewSetup(handlers.SetupConfig{
+		DistDir:     cfg.SetupDistDir,
+		Paths:       cfg.Paths,
+		UC:          setup.DBUserCreator{Q: gen.New(cfg.Pool)},
+		AfterCommit: cfg.AfterCommit,
+	})
+	if h == nil {
+		return errors.New("coordinator: setup: sentinel already present (not in setup mode)")
+	}
+	mux := api.NewServer(api.ServerConfig{Version: cfg.Version, Setup: h})
+	srv := &http.Server{Addr: cfg.ListenAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(sctx)
+	}()
+	slog.Info("coordinator setup mode", "listen", cfg.ListenAddr, "setup_dist", cfg.SetupDistDir != "")
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // gcLoop periodically reclaims abandoned upload sessions, expired refresh

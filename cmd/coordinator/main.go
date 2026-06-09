@@ -68,6 +68,7 @@ import (
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
+	"github.com/nova-archive/nova/internal/setup"
 	novaimage "github.com/nova-archive/nova/nova-image"
 	"github.com/nova-archive/nova/nova-image/imageproduct"
 	"github.com/nova-archive/nova/pkg/coordinator"
@@ -94,6 +95,56 @@ func run() error {
 		return fmt.Errorf("operator.yaml: %w", err)
 	}
 	rc := resolveOperatorConfig(opCfg, os.Getenv)
+
+	// SETUP MODE: when the bootstrap sentinel is absent, serve only the /setup
+	// wizard seam. No keystore/Kubo/auth is booted — the master key does not
+	// exist until the wizard commits. On a successful commit, AfterCommit (cancel)
+	// causes a clean shutdown; the process supervisor restarts in normal mode.
+	configDir := os.Getenv("NOVA_CONFIG_DIR")
+	if configDir == "" {
+		configDir = "/etc/nova"
+	}
+	sentinelPath := filepath.Join(configDir, ".bootstrap-complete")
+	if _, statErr := os.Stat(sentinelPath); errors.Is(statErr, os.ErrNotExist) {
+		dsn := os.Getenv("DATABASE_URL")
+		if dsn == "" {
+			return errors.New("DATABASE_URL is required")
+		}
+		pool, err := db.Open(ctx, dsn)
+		if err != nil {
+			return fmt.Errorf("open db: %w", err)
+		}
+		defer pool.Close()
+
+		listen := os.Getenv("NOVA_LISTEN_ADDR")
+		if listen == "" {
+			listen = ":9000"
+		}
+		version := os.Getenv("NOVA_VERSION")
+		if version == "" {
+			version = "dev"
+		}
+		secretsDir := os.Getenv("NOVA_SECRETS_DIR")
+		if secretsDir == "" {
+			secretsDir = "/run/secrets"
+		}
+
+		setupCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		return coordinator.RunSetupServer(setupCtx, coordinator.SetupServerConfig{
+			ListenAddr:   listen,
+			Version:      version,
+			Pool:         pool,
+			SetupDistDir: os.Getenv("NOVA_SETUP_DIST_DIR"),
+			Paths: setup.Paths{
+				ConfigDir:  configDir,
+				SecretsDir: secretsDir,
+				Sentinel:   sentinelPath,
+			},
+			AfterCommit: cancel, // commit → cancel → graceful shutdown → process exit → restart in normal mode
+		})
+	}
+	// NORMAL MODE: full boot below (unchanged).
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
