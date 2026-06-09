@@ -16,7 +16,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -29,6 +31,11 @@ import (
 	"time"
 
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
+
+	"github.com/nova-archive/nova/internal/db"
+	"github.com/nova-archive/nova/internal/db/gen"
+	"github.com/nova-archive/nova/internal/setup"
 )
 
 const defaultBaseURL = "http://localhost:8080"
@@ -954,11 +961,249 @@ func cmdKeys(args []string) error {
 }
 
 // --------------------------------------------------------------------------
+// Subcommand: setup
+// --------------------------------------------------------------------------
+
+// loadAnswersFile reads and validates a YAML answers file from path.
+func loadAnswersFile(path string) (setup.Answers, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return setup.Answers{}, fmt.Errorf("setup: read %s: %w", path, err)
+	}
+	var a setup.Answers
+	if err := yaml.Unmarshal(data, &a); err != nil {
+		return setup.Answers{}, fmt.Errorf("setup: parse %s: %w", path, err)
+	}
+	if err := a.Validate(); err != nil {
+		return setup.Answers{}, err
+	}
+	return a, nil
+}
+
+// commitSetup generates the first-run secrets, prints the master key + its
+// fingerprint to out (so a headless operator can back them up), then commits.
+func commitSetup(ctx context.Context, a setup.Answers, p setup.Paths, uc setup.UserCreator, out io.Writer) error {
+	s, err := setup.GenerateSecrets()
+	if err != nil {
+		return err
+	}
+	fp, err := setup.Fingerprint(s.MasterKeyHex)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "MASTER KEY (back this up securely — it cannot be recovered):\n  %s\n  fingerprint: %s\n", s.MasterKeyHex, fp)
+	return setup.Commit(ctx, a, p, s, uc)
+}
+
+// cmdSetup is the `novactl setup` subcommand. It runs BEFORE the coordinator
+// serves — postgres must be up and migrations applied.
+func cmdSetup(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	interactive := fs.Bool("interactive", false, "prompt for each field on stdin")
+	configFile := fs.String("config-file", "", "path to YAML answers file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	configDir := os.Getenv("NOVA_CONFIG_DIR")
+	if configDir == "" {
+		configDir = "/etc/nova"
+	}
+	secretsDir := os.Getenv("NOVA_SECRETS_DIR")
+	if secretsDir == "" {
+		secretsDir = "/run/secrets"
+	}
+	paths := setup.Paths{
+		ConfigDir:  configDir,
+		SecretsDir: secretsDir,
+		Sentinel:   filepath.Join(configDir, ".bootstrap-complete"),
+	}
+
+	ctx := context.Background()
+
+	switch {
+	case *configFile != "":
+		a, err := loadAnswersFile(*configFile)
+		if err != nil {
+			return err
+		}
+		dsn := os.Getenv("DATABASE_URL")
+		if dsn == "" {
+			return errors.New("setup: DATABASE_URL must be set")
+		}
+		pool, err := db.Open(ctx, dsn)
+		if err != nil {
+			return fmt.Errorf("setup: open db: %w", err)
+		}
+		defer pool.Close()
+		uc := setup.DBUserCreator{Q: gen.New(pool)}
+		if err := commitSetup(ctx, a, paths, uc, os.Stdout); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, "setup complete; restart the coordinator in normal mode")
+		return nil
+
+	case *interactive:
+		a, err := promptAnswers()
+		if err != nil {
+			return err
+		}
+		// Generate secrets first so we can show and challenge the master key.
+		s, err := setup.GenerateSecrets()
+		if err != nil {
+			return err
+		}
+		fp, err := setup.Fingerprint(s.MasterKeyHex)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("MASTER KEY (back this up securely — it cannot be recovered):\n  %s\n  fingerprint: %s\n", s.MasterKeyHex, fp)
+		// Require the operator to type back the fingerprint.
+		scanner := bufio.NewScanner(os.Stdin)
+		for {
+			fmt.Print("Type the fingerprint to confirm you have saved the master key: ")
+			if !scanner.Scan() {
+				return errors.New("setup: stdin closed before fingerprint confirmation")
+			}
+			typed := strings.TrimSpace(scanner.Text())
+			if typed == fp {
+				break
+			}
+			fmt.Fprintln(os.Stderr, "Fingerprint mismatch; try again.")
+		}
+		dsn := os.Getenv("DATABASE_URL")
+		if dsn == "" {
+			return errors.New("setup: DATABASE_URL must be set")
+		}
+		pool, err := db.Open(ctx, dsn)
+		if err != nil {
+			return fmt.Errorf("setup: open db: %w", err)
+		}
+		defer pool.Close()
+		uc := setup.DBUserCreator{Q: gen.New(pool)}
+		if err := setup.Commit(ctx, a, paths, s, uc); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, "setup complete; restart the coordinator in normal mode")
+		return nil
+
+	default:
+		fmt.Fprintln(os.Stderr, "usage: novactl setup (--config-file <path> | --interactive)")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "  --config-file <path>   non-interactive: read answers from YAML file")
+		fmt.Fprintln(os.Stderr, "  --interactive          prompt for each field on stdin")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Env vars: DATABASE_URL (required), NOVA_CONFIG_DIR (default /etc/nova),")
+		fmt.Fprintln(os.Stderr, "          NOVA_SECRETS_DIR (default /run/secrets)")
+		return errors.New("setup: specify --config-file or --interactive")
+	}
+}
+
+// promptAnswers interactively reads each Answers field from os.Stdin.
+func promptAnswers() (setup.Answers, error) {
+	scanner := bufio.NewScanner(os.Stdin)
+	prompt := func(label string) (string, error) {
+		fmt.Printf("%s: ", label)
+		if !scanner.Scan() {
+			return "", fmt.Errorf("setup: stdin closed while reading %q", label)
+		}
+		return strings.TrimSpace(scanner.Text()), nil
+	}
+	promptBool := func(label string) (bool, error) {
+		v, err := prompt(label + " [y/N]")
+		if err != nil {
+			return false, err
+		}
+		return strings.EqualFold(v, "y"), nil
+	}
+	// promptPassword reads a credential without echoing it (matching cmdLogin),
+	// requiring a confirmation re-entry so a typo can't silently set the password.
+	promptPassword := func(label string) (string, error) {
+		for {
+			fmt.Printf("%s: ", label)
+			b1, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if err != nil {
+				return "", fmt.Errorf("setup: read password: %w", err)
+			}
+			fmt.Print("Confirm password: ")
+			b2, err := term.ReadPassword(int(os.Stdin.Fd()))
+			fmt.Fprintln(os.Stderr)
+			if err != nil {
+				return "", fmt.Errorf("setup: read password: %w", err)
+			}
+			if string(b1) != string(b2) {
+				fmt.Fprintln(os.Stderr, "passwords do not match; try again")
+				continue
+			}
+			return string(b1), nil
+		}
+	}
+
+	var a setup.Answers
+	var err error
+
+	if a.Hostname, err = prompt("Hostname (e.g. img.example.com)"); err != nil {
+		return a, err
+	}
+	if a.ContactEmail, err = prompt("Contact email"); err != nil {
+		return a, err
+	}
+	if a.DisplayName, err = prompt("Display name (optional)"); err != nil {
+		return a, err
+	}
+	if a.AdminEmail, err = prompt("Admin email"); err != nil {
+		return a, err
+	}
+	if a.AdminPassword, err = promptPassword("Admin password (min 12 chars)"); err != nil {
+		return a, err
+	}
+	if a.TLSMode, err = prompt("TLS mode (dev-self-signed|http-01|dns-01|static|onion)"); err != nil {
+		return a, err
+	}
+	if a.TLSMode == "static" {
+		if a.CertPath, err = prompt("Cert path"); err != nil {
+			return a, err
+		}
+		if a.KeyPath, err = prompt("Key path"); err != nil {
+			return a, err
+		}
+	}
+	if a.AuthMode, err = prompt("Auth mode (local|external)"); err != nil {
+		return a, err
+	}
+	if a.AuthMode == "external" {
+		if a.IssuerURL, err = prompt("Issuer URL"); err != nil {
+			return a, err
+		}
+		if a.ClientID, err = prompt("Client ID"); err != nil {
+			return a, err
+		}
+	}
+	if a.PublicUploads, err = promptBool("Allow public uploads"); err != nil {
+		return a, err
+	}
+	if a.PublicUploads {
+		if a.TosURL, err = prompt("Terms of service URL"); err != nil {
+			return a, err
+		}
+	}
+	if a.Paranoid, err = promptBool("Paranoid mode (suppress source-IP recording)"); err != nil {
+		return a, err
+	}
+
+	if err := a.Validate(); err != nil {
+		return setup.Answers{}, err
+	}
+	return a, nil
+}
+
+// --------------------------------------------------------------------------
 // main
 // --------------------------------------------------------------------------
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys> <subcommand>")
+	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup> <subcommand>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth login [--url <base>] [--username <u>]")
@@ -972,6 +1217,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  moderation list [--per-page <n>]")
 	fmt.Fprintln(os.Stderr, "  keys rotate-master --from <label> --to <label> [--no-confirm]")
 	fmt.Fprintln(os.Stderr, "  keys status")
+	fmt.Fprintln(os.Stderr, "  setup --config-file <path>   (first-run, non-interactive)")
+	fmt.Fprintln(os.Stderr, "  setup --interactive           (first-run, interactive prompts)")
 }
 
 func main() {
@@ -991,6 +1238,8 @@ func main() {
 		err = cmdModeration(args[1:])
 	case "keys":
 		err = cmdKeys(os.Args[2:])
+	case "setup":
+		err = cmdSetup(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()

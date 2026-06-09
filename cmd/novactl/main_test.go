@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nova-archive/nova/internal/setup"
 	"github.com/stretchr/testify/require"
 )
 
@@ -322,5 +325,43 @@ func TestKeysDispatch(t *testing.T) {
 	}
 	if err := cmdKeys([]string{"bogus"}); err == nil {
 		t.Fatal("unknown subcommand must error")
+	}
+}
+
+func TestLoadAnswersFile(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.yaml")
+	os.WriteFile(good, []byte("hostname: img.example.com\ncontact_email: a@b.co\nadmin_email: op@b.co\nadmin_password: correcthorsebattery\ntls_mode: dev-self-signed\nauth_mode: local\n"), 0o644)
+	if _, err := loadAnswersFile(good); err != nil {
+		t.Fatalf("valid answers file rejected: %v", err)
+	}
+	bad := filepath.Join(dir, "bad.yaml")
+	os.WriteFile(bad, []byte("hostname: \"\"\ncontact_email: a@b.co\n"), 0o644)
+	if _, err := loadAnswersFile(bad); err == nil {
+		t.Fatal("missing-hostname answers file must error")
+	}
+}
+
+type fakeUC struct{ called bool }
+
+func (f *fakeUC) CreateOperator(_ context.Context, _, _ string) error { f.called = true; return nil }
+
+func TestCommitSetup(t *testing.T) {
+	root := t.TempDir()
+	p := setup.Paths{ConfigDir: filepath.Join(root, "c"), SecretsDir: filepath.Join(root, "s"), Sentinel: filepath.Join(root, "c", ".bootstrap-complete")}
+	a := setup.Answers{Hostname: "img.example.com", ContactEmail: "a@b.co", AdminEmail: "op@b.co", AdminPassword: "correcthorsebattery", TLSMode: "dev-self-signed", AuthMode: "local"}
+	uc := &fakeUC{}
+	var out bytes.Buffer
+	if err := commitSetup(context.Background(), a, p, uc, &out); err != nil {
+		t.Fatalf("commitSetup: %v", err)
+	}
+	if !uc.called {
+		t.Fatal("operator not created")
+	}
+	if !strings.Contains(out.String(), "MASTER KEY") {
+		t.Fatal("master key not displayed for backup")
+	}
+	if _, err := os.Stat(p.Sentinel); err != nil {
+		t.Fatalf("sentinel not written: %v", err)
 	}
 }
