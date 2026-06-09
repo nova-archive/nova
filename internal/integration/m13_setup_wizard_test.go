@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -218,13 +219,15 @@ func TestIntegrationM13TwoVhostSplitThroughNginx(t *testing.T) {
 
 		// Use a fixed port; RunSetupServer uses ListenAndServe so :0 is not supported.
 		const setupPort = "19113"
+		const setupToken = "testsetuptoken"
 		setupDone := make(chan error, 1)
 		go func() {
 			setupDone <- coordinator.RunSetupServer(setupCtx, coordinator.SetupServerConfig{
-				ListenAddr: "0.0.0.0:" + setupPort,
-				Version:    "m13-setup-itest",
-				Pool:       setupPool,
-				Paths:      paths,
+				ListenAddr:     "0.0.0.0:" + setupPort,
+				Version:        "m13-setup-itest",
+				Pool:           setupPool,
+				Paths:          paths,
+				BootstrapToken: setupToken,
 			})
 		}()
 
@@ -238,9 +241,22 @@ func TestIntegrationM13TwoVhostSplitThroughNginx(t *testing.T) {
 			return resp.StatusCode == http.StatusOK
 		}, 10*time.Second, 50*time.Millisecond, "setup server must become ready")
 
-		// /setup/state → 200 (setup route mounted, bootstrap_complete=false).
-		code, body, _ := m11GetRaw(t, setupBase+"/setup/state")
-		require.Equal(t, http.StatusOK, code, "setup mode must serve /setup/state")
+		// /setup/state without token → 401.
+		codeNoTok, _, _ := m11GetRaw(t, setupBase+"/setup/state")
+		require.Equal(t, http.StatusUnauthorized, codeNoTok,
+			"/setup/state without bootstrap token must return 401")
+
+		// /setup/state with correct token → 200 (setup route mounted, bootstrap_complete=false).
+		stateReq, err := http.NewRequestWithContext(ctx, http.MethodGet, setupBase+"/setup/state", nil)
+		require.NoError(t, err)
+		stateReq.Header.Set("X-Nova-Setup-Token", setupToken)
+		stateResp, err := http.DefaultClient.Do(stateReq)
+		require.NoError(t, err)
+		stateBody, _ := io.ReadAll(stateResp.Body)
+		_ = stateResp.Body.Close()
+		code := stateResp.StatusCode
+		body := stateBody
+		require.Equal(t, http.StatusOK, code, "setup mode must serve /setup/state with valid token")
 		require.Contains(t, string(body), "bootstrap_complete",
 			"setup/state must return bootstrap_complete field")
 

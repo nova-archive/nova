@@ -7,6 +7,8 @@ package coordinator
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -646,12 +648,13 @@ func (c *Coordinator) Shutdown(ctx context.Context) error {
 // only the /setup seam (+ /health) and boots no keystore/Kubo/auth — the
 // master key does not exist until the wizard commits.
 type SetupServerConfig struct {
-	ListenAddr   string
-	Version      string
-	Pool         *pgxpool.Pool // for CreateOperator
-	SetupDistDir string        // web/setup bundle dir (may be empty)
-	Paths        setup.Paths   // config/secrets/sentinel locations
-	AfterCommit  func()        // called after a successful commit (re-exec hook)
+	ListenAddr     string
+	Version        string
+	Pool           *pgxpool.Pool // for CreateOperator
+	SetupDistDir   string        // web/setup bundle dir (may be empty)
+	Paths          setup.Paths   // config/secrets/sentinel locations
+	AfterCommit    func()        // called after a successful commit (re-exec hook)
+	BootstrapToken string        // optional; if empty, a CSPRNG token is generated
 }
 
 // RunSetupServer serves the first-run wizard until ctx is cancelled (or a
@@ -660,11 +663,24 @@ func RunSetupServer(ctx context.Context, cfg SetupServerConfig) error {
 	if cfg.ListenAddr == "" {
 		return errors.New("coordinator: setup: ListenAddr is required")
 	}
+
+	// Resolve the bootstrap token: use the caller-supplied one, or generate a
+	// fresh CSPRNG token (16 random bytes → 32 hex chars).
+	token := cfg.BootstrapToken
+	if token == "" {
+		b := make([]byte, 16)
+		if _, err := rand.Read(b); err != nil {
+			return fmt.Errorf("coordinator: setup: failed to generate bootstrap token: %w", err)
+		}
+		token = hex.EncodeToString(b)
+	}
+
 	h := handlers.NewSetup(handlers.SetupConfig{
 		DistDir:     cfg.SetupDistDir,
 		Paths:       cfg.Paths,
 		UC:          setup.DBUserCreator{Q: gen.New(cfg.Pool)},
 		AfterCommit: cfg.AfterCommit,
+		Token:       token,
 	})
 	if h == nil {
 		return errors.New("coordinator: setup: sentinel already present (not in setup mode)")
@@ -677,7 +693,10 @@ func RunSetupServer(ctx context.Context, cfg SetupServerConfig) error {
 		defer cancel()
 		_ = srv.Shutdown(sctx)
 	}()
-	slog.Info("coordinator setup mode", "listen", cfg.ListenAddr, "setup_dist", cfg.SetupDistDir != "")
+	slog.Warn("coordinator SETUP MODE: serving the UNAUTHENTICATED first-run wizard — do NOT publish this port; reach it only via the loopback-bound nginx-setup (127.0.0.1:8444). The wizard self-disables after setup completes.",
+		"listen", cfg.ListenAddr, "setup_dist", cfg.SetupDistDir != "")
+	slog.Warn("coordinator SETUP MODE: bootstrap token (present as the X-Nova-Setup-Token header in the wizard) — copy it from this log",
+		"bootstrap_token", token)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

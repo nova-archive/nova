@@ -12,6 +12,8 @@ import (
 	"github.com/nova-archive/nova/internal/setup"
 )
 
+const testSetupToken = "test-bootstrap-token-abc123"
+
 func TestNewSetup_NilWhenSentinelPresent(t *testing.T) {
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, ".bootstrap-complete")
@@ -59,6 +61,49 @@ func TestSetup_AnswersValidationRejects(t *testing.T) {
 	}
 }
 
+// TestSetup_MissingTokenRejects verifies that an API request without the
+// bootstrap token header returns 401 with code "setup_token_required".
+func TestSetup_MissingTokenRejects(t *testing.T) {
+	h := newTestSetup(t)
+	// Send a request to an API route WITHOUT the token header.
+	req := httptest.NewRequest(http.MethodGet, "/setup/state", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	h.Serve(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "setup_token_required") {
+		t.Fatalf("expected setup_token_required in body, got %s", rr.Body.String())
+	}
+}
+
+// TestSetup_WrongTokenRejects verifies that a wrong token value also yields 401.
+func TestSetup_WrongTokenRejects(t *testing.T) {
+	h := newTestSetup(t)
+	req := httptest.NewRequest(http.MethodGet, "/setup/state", strings.NewReader(""))
+	req.Header.Set("X-Nova-Setup-Token", "definitely-wrong-token")
+	rr := httptest.NewRecorder()
+	h.Serve(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong token, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestSetup_StaticNoTokenRequired verifies that the static-serving branch does
+// NOT require the bootstrap token (the operator must load the page to enter it).
+// When DistDir is empty the static branch returns 404 — but specifically NOT 401.
+func TestSetup_StaticNoTokenRequired(t *testing.T) {
+	h := newTestSetup(t)
+	// Hit a path that falls through to the static branch (not an API route).
+	req := httptest.NewRequest(http.MethodGet, "/setup/", strings.NewReader(""))
+	// No token header set.
+	rr := httptest.NewRecorder()
+	h.Serve(rr, req)
+	if rr.Code == http.StatusUnauthorized {
+		t.Fatalf("static branch must not return 401 (got %d): token guard must not gate static serving", rr.Code)
+	}
+}
+
 // helpers
 func newTestSetup(t *testing.T) *SetupHandler {
 	t.Helper()
@@ -69,6 +114,7 @@ func newTestSetup(t *testing.T) *SetupHandler {
 			SecretsDir: filepath.Join(root, "secrets"),
 			Sentinel:   filepath.Join(root, "config", ".bootstrap-complete"),
 		},
+		Token: testSetupToken,
 	})
 	if h == nil {
 		t.Fatal("handler must be non-nil when sentinel absent")
@@ -79,6 +125,7 @@ func newTestSetup(t *testing.T) *SetupHandler {
 func doSetup(t *testing.T, h *SetupHandler, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req.Header.Set("X-Nova-Setup-Token", testSetupToken)
 	rr := httptest.NewRecorder()
 	h.Serve(rr, req)
 	return rr
