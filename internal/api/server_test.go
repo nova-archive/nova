@@ -69,8 +69,10 @@ func TestServerAuthRouting(t *testing.T) {
 func TestServerSetupSeam(t *testing.T) {
 	t.Parallel()
 
+	const setupTok = "test-bootstrap-token"
 	// Build a SetupHandler with a sentinel that does NOT exist ⇒ handler is non-nil.
 	h := handlers.NewSetup(handlers.SetupConfig{
+		Token: setupTok,
 		Paths: setup.Paths{
 			ConfigDir:  t.TempDir(),
 			SecretsDir: t.TempDir(),
@@ -79,10 +81,18 @@ func TestServerSetupSeam(t *testing.T) {
 	})
 	require.NotNil(t, h, "sentinel absent ⇒ NewSetup must return non-nil")
 
-	// With Setup mounted, GET /setup/state must return 200.
 	r := api.NewServer(api.ServerConfig{Version: "test", Setup: h})
-	code, _ := do(t, r, http.MethodGet, "/setup/state", "")
-	require.Equal(t, http.StatusOK, code, "GET /setup/state with Setup mounted must return 200")
+
+	// With Setup mounted AND the bootstrap token, GET /setup/state must return 200.
+	req := httptest.NewRequest(http.MethodGet, "/setup/state", nil)
+	req.Header.Set("X-Nova-Setup-Token", setupTok)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "GET /setup/state with Setup + token must return 200")
+
+	// Without the bootstrap token, the API route must 401 (fail-closed; M13.1).
+	code401, _ := do(t, r, http.MethodGet, "/setup/state", "")
+	require.Equal(t, http.StatusUnauthorized, code401, "GET /setup/state without the bootstrap token must 401")
 
 	// Without Setup mounted (nil), GET /setup/state must 404.
 	r2 := api.NewServer(api.ServerConfig{Version: "test"})
