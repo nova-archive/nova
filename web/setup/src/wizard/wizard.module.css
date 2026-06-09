@@ -1,0 +1,251 @@
+/*
+ * First-run wizard layout. Editorial, archival operator's-instrument styling
+ * built on the Nova tokens (var(--paper)/--card/--ink/--nova/--rule). A
+ * centered card on the warm paper ground with a hairline-ruled step rail.
+ */
+.wrap {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 48px 20px 64px;
+  background: var(--paper);
+}
+
+.card {
+  width: 100%;
+  max-width: 640px;
+  background: var(--card);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  padding: 32px 36px 36px;
+  animation: nova-rise 0.32s ease both;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.mark {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--nova);
+  letter-spacing: 0.04em;
+  font-size: 15px;
+}
+
+.kicker {
+  color: var(--ink-mute);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* Step rail — numbered progress dots above the card body. */
+.rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 18px 0 24px;
+  padding-bottom: 18px;
+  border-bottom: var(--rule-w) solid var(--rule-soft);
+}
+
+.dot {
+  width: 22px;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--rule);
+}
+
+.dotActive {
+  background: var(--nova);
+}
+
+.dotDone {
+  background: var(--ok);
+}
+
+.h {
+  font-size: 22px;
+  margin-bottom: 6px;
+}
+
+.step {
+  color: var(--ink-mute);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 14px;
+}
+
+.lead {
+  color: var(--ink-2);
+  margin: 0 0 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.lbl {
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.hint {
+  color: var(--ink-mute);
+  font-size: 12px;
+}
+
+.warn {
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.in,
+.sel {
+  width: 100%;
+  padding: 9px 11px;
+  background: var(--paper);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--r);
+  color: var(--ink);
+  outline: none;
+}
+
+.in:focus,
+.sel:focus {
+  border-color: var(--nova);
+  box-shadow: 0 0 0 3px var(--nova-tint);
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.keyBox {
+  font-family: var(--mono);
+  font-size: 13px;
+  word-break: break-all;
+  background: var(--card-deep);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--r);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  color: var(--ink);
+}
+
+.fpRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 26px;
+  padding-top: 20px;
+  border-top: var(--rule-w) solid var(--rule-soft);
+}
+
+.btn {
+  padding: 9px 18px;
+  border-radius: var(--r);
+  border: var(--rule-w) solid var(--rule);
+  background: var(--card);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.primary {
+  background: var(--nova);
+  border-color: var(--nova-deep);
+  color: #fff;
+}
+
+.primary:disabled {
+  opacity: 0.45;
+}
+
+.banner {
+  background: var(--danger-tint);
+  border: var(--rule-w) solid var(--danger);
+  color: var(--danger);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.review {
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--r);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.reviewRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 13px;
+  border-bottom: var(--rule-w) solid var(--rule-soft);
+}
+
+.reviewRow:last-child {
+  border-bottom: none;
+}
+
+.reviewKey {
+  color: var(--ink-mute);
+  font-size: 13px;
+}
+
+.reviewVal {
+  font-family: var(--mono);
+  font-size: 13px;
+  text-align: right;
+  word-break: break-all;
+}
+
+.snippet {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: var(--r);
+  padding: 14px 16px;
+  margin: 6px 0 16px;
+}
+
+.foot {
+  margin-top: 22px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  text-align: center;
+}

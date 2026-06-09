@@ -1,0 +1,49 @@
+/*
+ * Nova design tokens — ported from docs/design/Nova Brand _standalone_.html.
+ * An editorial, archival operator's-instrument palette: warm paper grounds, ink
+ * text, the burnt-orange Nova accent used sparingly for primary actions, ok-green
+ * for healthy states, slate for the cool secondary, hairline rules.
+ */
+:root {
+  /* Palette */
+  --paper:      #ece8df;
+  --paper-2:    #e3ded1;
+  --card:       #f4f1e8;
+  --card-deep:  #e8e2d2;
+  --ink:        #111114;
+  --ink-2:      #2a2c30;
+  --ink-mute:   #6e6f73;
+  --ink-faint:  #9b9a93;
+  --nova:       #e2502b;
+  --nova-deep:  #b83a18;
+  --ok:         #4a6b3a;
+  --slate:      #3c4756;
+  --slate-2:    #5c6878;
+  --rule:       #cac3b2;
+  --rule-soft:  #dad3c2;
+
+  /* Derived semantic tints (state chips, banners) */
+  --nova-tint:   #f6e3d9;
+  --ok-tint:     #e4eada;
+  --slate-tint:  #e2e5ea;
+  --danger:      #8c2f1f;
+  --danger-tint: #f1ddd5;
+  --warn:        #9a6b1e;
+  --warn-tint:   #efe6d2;
+
+  /* Type families — IBM Plex first, then a cross-OS system fallback stack. */
+  --sans:  "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --serif: "IBM Plex Serif", ui-serif, Georgia, "Times New Roman", serif;
+  --mono:  "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Geometry + depth */
+  --r:        4px;
+  --r-lg:     8px;
+  --rule-w:   1px;
+  --shadow-1: 0 1px 0 rgba(17, 17, 20, 0.04), 0 1px 2px rgba(17, 17, 20, 0.05);
+  --shadow-2: 0 14px 40px -18px rgba(17, 17, 20, 0.32);
+
+  /* Layout */
+  --rail-w:   232px;
+  --header-h: 56px;
+}
