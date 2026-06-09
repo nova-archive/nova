@@ -56,8 +56,8 @@ The assets Nova protects, ranked by harm if exposed:
 
 | # | Boundary | Trust direction |
 |---|---|---|
-| ① | Internet ↔ nginx | nginx terminates TLS; everything inside the box is trusted by the operator. The public-content origin (`/blob/*`, `/i/*`, `/legal/*`, `/health`, `/api/v1/uploads/*`) and the admin/setup origin (`/admin`, `/api/v1/admin/*`, `/api/v1/auth/*`, ephemeral `/setup`) live on **distinct virtual hosts** so that an XSS or cache-poisoning at the public origin does not become administrative trust. The admin host can be IP-restricted or mTLS-fronted independently. v3.1 amendment. |
-| ① a | First-run setup wizard | Binds loopback-only inside the coordinator container; reachable from the host only when the operator publishes the setup port (`docker compose --profile setup up`). Self-disables permanently after the first successful bootstrap writes `.bootstrap-complete` to the secrets volume. v3.1 amendment. |
+| ① | Internet ↔ nginx | nginx terminates TLS; everything inside the box is trusted by the operator. The public-content origin (`/blob/*`, `/i/*`, `/legal/*`, `/health`, `/api/v1/uploads\|blobs\|images`, the hermetic upload widget at `/widget/*`) and the admin origin (`/admin`, `/api/v1/admin/*`, `/api/v1/auth/*`, `/api/v1/users/me`) live on **distinct virtual hosts** so that an XSS or cache-poisoning at the public origin does not become administrative trust. The admin host can be IP-restricted or mTLS-fronted independently. v3.1 amendment; **implemented in M13** — the split is enforced by the wizard-rendered nginx config (`internal/setup/templates/nova.conf.tmpl`: each vhost closes its default location to 404), templated from the same source as the `nginx/nova.conf.example` reference. The coordinator keeps a single mux; the host split is enforced entirely at nginx. |
+| ① a | First-run setup wizard | Binds loopback-only (`127.0.0.1:8444`) inside the coordinator container; reachable from the host only when the operator publishes the setup port (`docker compose --profile setup up`). Self-disables permanently after the first successful bootstrap writes the `.bootstrap-complete` sentinel. v3.1 amendment; **implemented in M13** — setup mode is a reduced boot of the coordinator (`coordinator.RunSetupServer`) that mounts only the sentinel-gated `/setup/*` seam; nginx serves `bootstrap.conf` (proxying `/setup/*` only) while the sentinel is absent and flips to the two-vhost `nova.conf` once it is present. |
 | ② | nginx ↔ coordinator | loopback / unix socket; trusted by colocation |
 | ③ | coordinator ↔ master key | environment variable OR file-mount (e.g., Docker secret at `/run/secrets/master-key-<label>`, per the `NOVA_MASTER_KEY_<LABEL> → _FILE → /run/secrets/master-key-<label>` resolver chain); never written to disk by Nova. v3.1 amendment broadens beyond env-var-only; implemented in M6.1. During a master-key rotation window (M10) both the old and new versions are process-resident simultaneously; this is consistent with the existing process-resident-master-key posture and is bounded to the rotation window. |
 | ④ | coordinator ↔ donor | Nebula overlay + HTTPS/mTLS; the Nebula cert authorizes mesh membership, the federation client cert authorizes HTTP API calls |
@@ -277,7 +277,9 @@ encryption envelope.
   external-OIDC issuer only in external mode, for the browser PKCE
   token exchange). M11 serves `/admin/*` from the coordinator
   (`NOVA_ADMIN_DIST_DIR`); the hardened public/admin two-vhost split
-  (boundary ①) lands in M13.
+  (boundary ①) is **implemented in M13** by the wizard-rendered nginx
+  config — `/admin/*` and `/api/v1/admin/*` live on the admin vhost,
+  closed to 404 on the public vhost.
 - **Hermetic upload widget (M12).** The same hermetic guarantee covers
   the M12 upload widget (`web/widget/`): Uppy + tus are bundled, CSS
   is injected locally (the widget inlines its CSS into the JS bundle),
@@ -288,9 +290,11 @@ encryption envelope.
   "fails on any external origin" claim precise. Phase-1 widget
   embedding is **same-origin** (the host page is served from the Nova
   origin); cross-origin embedding requires operator-managed CORS at
-  the reverse proxy and is deferred with the hardened two-vhost
-  public/admin split (M13). No first-class coordinator CORS surface
-  ships in Phase 1.
+  the reverse proxy and is deferred. No first-class coordinator CORS
+  surface ships in Phase 1. As of M13 the widget bundle is served on
+  the **public_host** of the two-vhost split (it is the end-user
+  uploader, and its API target `/api/v1/uploads/*` is a public-origin
+  route) — never on the admin host.
 - **No telemetry, no phone-home, no auto-update** in the
   coordinator or donor binaries. There is no mechanism for an
   attacker to push a malicious update through Nova's own update

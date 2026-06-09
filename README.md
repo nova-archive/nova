@@ -107,16 +107,21 @@ nginx/          reference reverse-proxy configuration
 
 Phase 0 (specifications) is complete. Phase 1 (single-node MVP) is
 underway. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the per-milestone
-progress checklist (M1 through M6.2 are tagged; M7 through M14 remain).
+progress checklist (M1 through M12 are tagged, M13 is complete on its
+branch; M14 remains).
 
 ## Try Nova (developer setup)
 
-> **Dev-mode only.** This walkthrough boots a single-node coordinator
-> against a local Postgres + embedded IPFS for kicking the tires.
-> The first-run setup wizard, two-vhost nginx, certbot, and admin SPA
-> are M11–M13 deliverables; until those ship, production deployment
-> is **not** supported. This section will be replaced by a proper
-> operator quickstart in M14.
+> **Dev walkthrough.** This section boots a single-node coordinator
+> against a local Postgres + embedded IPFS for kicking the tires. For
+> a production-style first-run, M13 ships a setup wizard + Docker
+> profiles: `docker compose --profile setup up` (in `docker/`), then
+> open the loopback-only wizard at `http://127.0.0.1:8444/setup/`
+> (or run the headless `novactl setup`). See
+> [`docs/legal/OPERATOR_CHECKLIST.md`](docs/legal/OPERATOR_CHECKLIST.md)
+> § "First-run setup (M13)" for the three first-run paths, TLS-mode
+> guidance, and the secrets-backup obligation. The full operator
+> quickstart (`docs/quickstart.md`) lands in M14.
 
 ### Prerequisites
 
@@ -227,10 +232,12 @@ see [`docs/ROADMAP.md`](docs/ROADMAP.md) for slot details:
 - DMCA / moderation flows (M9)
 - Master-key rotation tooling (M10)
 - Admin SPA (M11) and drag-and-drop widget (M12)
-- Setup wizard + production Docker compose + TLS modes (M13)
-- Operator quickstart + end-to-end smoke in CI (M14)
+- Operator quickstart (`docs/quickstart.md`) + end-to-end smoke in CI (M14)
 
-Until M13 the recipe above is the supported dev-test path.
+The setup wizard + production Docker compose + TLS modes shipped in
+M13 (`docker compose --profile setup up`; see the dev-walkthrough
+note above). The manual recipe above remains the lightest dev-test
+path; the polished operator quickstart lands in M14.
 
 ## Development MCP servers
 

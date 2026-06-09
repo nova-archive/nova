@@ -63,7 +63,14 @@ tags:
   - name: search
     description: Search APIs (perceptual near-duplicate, etc.).
   - name: admin
-    description: Operator and moderator endpoints (require role).
+    description: |
+      Operator and moderator endpoints (require role). Separately, the M13
+      first-run setup wizard exposes an **ephemeral** `/setup/*` surface
+      (`internal/api/handlers/setup.go`): it is mounted only while the
+      `.bootstrap-complete` sentinel is absent, binds loopback-only, and is
+      removed permanently once the wizard commits — `/setup/*` returns 404 in
+      normal operation. It is a bootstrap-only, non-API surface and is not
+      described here.
   - name: legal
     description: Public DMCA receipt and DSAR endpoints.
   - name: health

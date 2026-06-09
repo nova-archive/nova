@@ -131,6 +131,20 @@ Key topology points (all justified in `docs/REVIEW_2026_05_25.md`):
   the job worker pool in `Run` on startup. The `derivative_prewarm`
   job kind is live; other job kinds follow in later milestones.
 
+> **Reconciliation (M13, implemented).** This topology shipped as drawn — published
+> ports 8442:80, 8443:443, 127.0.0.1:8445:8445, wizard 127.0.0.1:8444; `setup` + `prod`
+> compose profiles; the setup wizard lives inside the coordinator container (setup mode
+> is a reduced boot of the same binary). Two refinements: (1) `operator.yaml` (in the
+> `nova-config` volume) is the **canonical** non-secret config source, wired into
+> `cmd/coordinator` with the `NOVA_*` env vars preserved as **overrides** — not a
+> wholesale env replacement (the M7–M12 tuning knobs stay env-only for now). (2) The
+> wizard-generated secrets (master-key-`<label>`, swarm.key, oidc-signing-key) land in
+> the `nova-secrets` volume at the M6.1 resolver file paths. The two-vhost split is
+> nginx-only (the coordinator keeps its single mux). The runtime image is multi-stage
+> Debian-slim/glibc, non-root via a `gosu` drop in `entrypoint.sh` (the in-process
+> uid-0 floor named under "Network exposure floor" is deferred — non-root is enforced
+> by the container today).
+
 ### Network exposure floor
 
 The startup validator (per `KUBO_HARDENING.md` + `PRIVACY_AUDIT.md`)
@@ -721,16 +735,28 @@ This was clarified in the M6 design — see
 
 ## Onboarding wizard
 
-The wizard runs only when `nova-config/.bootstrap-complete` is
-absent. The coordinator's entrypoint script (`docker/init/entrypoint.sh`)
-checks for the sentinel and either:
+> **Reconciliation (M13, implemented — tag `m13-setup-wizard`).** Setup mode is
+> *folded into the coordinator boot path* (`coordinator.RunSetupServer`, sentinel-gated
+> in `cmd/coordinator`), not a second long-lived binary — `cmd/setup-wizard` is a thin
+> alias. The web wizard and the headless `novactl setup --interactive | --config-file`
+> share one UI-agnostic core (`internal/setup/`: answers, keygen, render, tls, commit).
+> The `/setup/*` seam (`internal/api/handlers/setup.go`) binds loopback-only and is
+> sentinel-gated. The **web** wizard configures the local issuer (the default); the
+> **external-OIDC** path (`auth_mode: external` + `issuer_url`/`client_id`) is configured
+> via the headless `novactl setup --config-file` / manual `operator.yaml` path, not the
+> web stepper. Design: `docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md`.
 
-1. Sentinel **absent**: launch in wizard mode. nginx loads
-   `bootstrap.conf` (proxies only `/setup/*`). Coordinator listens
-   on :9000 but only mounts the `/setup` route group.
+The wizard runs only when `.bootstrap-complete` is absent. The
+coordinator's entrypoint script (`docker/init/entrypoint.sh`) checks
+for the sentinel and either:
+
+1. Sentinel **absent**: launch in setup mode — a *reduced* boot that opens only the
+   DB pool (needed to create the admin user) and mounts only the loopback `/setup/*`
+   route group; no keystore / Kubo / auth / upload / audit subsystems start. nginx
+   loads `bootstrap.conf` (proxies only `/setup/*`, on loopback `:8444`).
 2. Sentinel **present**: launch normally. nginx loads the
-   wizard-rendered `nova.conf`. Coordinator mounts the full route
-   set; `/setup` returns 404.
+   wizard-rendered `nova.conf` (two-vhost). Coordinator mounts the
+   full route set; `/setup` returns 404.
 
 Wizard flow (web UI; CLI equivalent for headless ops):
 
@@ -762,12 +788,21 @@ Step 6. TLS mode (explicit choice with privacy-cost displayed):
 Step 7. ToS URL (required if public uploads enabled; otherwise optional)
 Step 8. Paranoid mode (single switch; explains tradeoffs)
 Step 9. Review summary; confirm or go back.
-Step 10. Commit:
-        - render operator.yaml from collected answers
-        - render nova.conf (templated nginx)
-        - write .bootstrap-complete sentinel
+Step 10. Commit (ordered for crash-safety; sentinel LAST):
+        - stage secrets (master-key-<label>, swarm.key, oidc-signing-key) at the
+          M6.1 resolver file paths in nova-secrets/, mode 0600
+        - render operator.yaml (self-validated via config.LoadFromBytes) + nova.conf
+          (two-vhost) into the config volume
+        - INSERT users(role='operator') with an argon2id hash
+        - write .bootstrap-complete sentinel (the point of no return)
         - SIGTERM ourselves; entrypoint.sh restarts in normal mode
 ```
+
+> **As implemented (M13):** the commit is `internal/setup/commit.go`. Secrets are staged
+> at the resolver file paths so a normal boot picks them up with no env editing; every
+> step before the sentinel is idempotent, so a crash re-enters setup mode cleanly. The
+> sentinel lives on the config volume so deleting it (and restarting) is the documented
+> "redo setup" recovery path.
 
 The wizard refuses Step 2 → Step 3 transition until the readback
 fingerprint matches. The wizard refuses Step 10 until every prior
@@ -973,12 +1008,28 @@ ready to render the surface.
 - Design: `docs/superpowers/specs/2026-06-07-phase1-m12-upload-widget-design.md`.
   Plan: `docs/superpowers/plans/2026-06-07-phase1-m12-upload-widget.md`.
 
-**M13 — Setup wizard + Docker production (~week 13)**
-- Setup web wizard (small React app).
-- `entrypoint.sh` sentinel logic.
-- nginx config templating.
-- TLS-mode selection + certbot integration (prod profile).
-- Headless CLI equivalent (`novactl setup`).
+**M13 — Setup wizard + Docker production (implemented, tag `m13-setup-wizard`)**
+- Shared UI-agnostic core (`internal/setup/`) behind both a hermetic React+Vite web
+  wizard (`web/setup/`) and a headless `novactl setup --interactive | --config-file`.
+- Setup mode **folded into the coordinator boot path** (`coordinator.RunSetupServer`,
+  sentinel-gated) — a reduced boot mounting only the loopback `/setup/*` seam until
+  `.bootstrap-complete` is written; `cmd/setup-wizard` is a thin alias (not a second
+  long-lived binary). `entrypoint.sh` does the sentinel branch.
+- `operator.yaml` wired into `cmd/coordinator` as the canonical non-secret config,
+  with `NOVA_*` env reads preserved as overrides (canonical-with-override, not a
+  wholesale env replacement; the M7–M12 tuning knobs stay env-only for now).
+- Two-vhost split is nginx-only (templated `nova.conf` from
+  `internal/setup/templates/nova.conf.tmpl`); the coordinator keeps its single mux.
+- TLS modes (`dev-self-signed` / `static` / `http-01`; `dns-01`/`onion` render config +
+  print operator-handoff); certbot prod profile is a best-effort renewal scaffold
+  (initial issuance + full deploy-hook/reload → M14).
+- Docker multi-stage Debian-slim/glibc image (non-root via `gosu`); `setup` + `prod`
+  compose profiles; published ports 8442:80, 8443:443, 127.0.0.1:8445:8445, wizard
+  127.0.0.1:8444; wizard-generated secrets land in the `nova-secrets` volume.
+- The web wizard configures the local issuer (default); external-OIDC is configured via
+  the headless `novactl setup --config-file` / manual `operator.yaml` path.
+- Design: `docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md`.
+  Plan: `docs/superpowers/plans/2026-06-08-phase1-m13-setup-wizard.md`.
 
 **M14 — Polish + docs (~week 14)**
 - End-to-end smoke test in CI.

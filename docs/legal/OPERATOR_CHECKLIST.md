@@ -347,7 +347,80 @@ Notes:
   `NOVA_TOS_URL`). The zero-JS `data-nova-upload-widget` path only works under that floor.
 - The bundle is hermetic (no third-party CDN); CI enforces it (`make hermetic-widget`).
 - Phase-1 embedding is same-origin. To embed on a different origin, add CORS for the
-  upload endpoints at your reverse proxy; first-class CORS lands with the M13 host split.
+  upload endpoints at your reverse proxy; first-class coordinator CORS is deferred. As
+  of M13 the widget bundle is served on the **public_host** of the two-vhost split.
+
+## First-run setup (M13)
+
+A fresh deployment boots in **setup mode** until the wizard writes a
+`.bootstrap-complete` sentinel into the config volume (`/etc/nova`). While the sentinel
+is absent the coordinator runs a *reduced* boot that mounts only the loopback-bound
+`/setup/*` seam; nginx serves a bootstrap config that proxies `/setup/*` only. There are
+three ways to complete first-run; pick one.
+
+### Path A — web wizard (recommended)
+
+    docker compose --profile setup up        # in docker/
+    # then open the loopback-only wizard:
+    #   http://127.0.0.1:8444/setup/
+
+Step through the wizard (welcome → master key → swarm key → OIDC signing key → admin
+user → TLS mode → ToS → review → commit). The commit stages secrets, renders
+`operator.yaml` + the two-vhost `nova.conf`, creates the operator user, and writes the
+sentinel **last**; the container then restarts into normal mode. Bring the stack up
+without the `setup` profile (or `docker compose up`) once committed.
+
+The web wizard configures the **local issuer** (the Phase-1 default). To use an
+**external OIDC** provider, use Path B with `auth_mode: external` + `issuer_url` /
+`client_id` (the web stepper does not configure external OIDC).
+
+### Path B — headless `novactl setup`
+
+    # interactive prompts:
+    docker compose run --rm coordinator novactl setup --interactive
+    # or fully unattended from an answers file (the external-OIDC path):
+    docker compose run --rm coordinator novactl setup --config-file /etc/nova/answers.yaml
+
+Shares the same `internal/setup` core as the web wizard (same validation floors, same
+crash-safe commit ordering). Use this for unattended provisioning and for external OIDC.
+
+### Path C — fully manual (skip the wizard)
+
+Pre-place `operator.yaml` + `nova.conf` in the config volume, stage the three secrets
+(`master-key-<label>`, `swarm.key`, `oidc-signing-key`) at the resolver file paths in
+the secrets volume (mode 0600), insert an `operator` user, then create the
+`.bootstrap-complete` sentinel **last**. The coordinator boots normally on the next
+start. This is the escape hatch for operators with their own provisioning tooling.
+
+### Per-TLS-mode guidance
+
+- [ ] `dev-self-signed` — the wizard generates a throwaway CA + leaf. Dev/staging only;
+      browsers will warn. Never use for a public deployment.
+- [ ] `static` — drop your fullchain + private key PEMs into the config TLS dir and give
+      the wizard their paths. You own renewal.
+- [ ] `http-01` (prod profile, certbot) — **CT-log disclosure**: requesting a publicly
+      trusted certificate publishes your hostname to Certificate Transparency logs
+      (`crt.sh` and friends). If that is a deanonymization concern, choose `dns-01`,
+      `static`, or `onion` instead. M13 ships a best-effort renewal scaffold; **initial
+      issuance is an operator handoff** and full deploy-hook/reload wiring lands in M14.
+- [ ] `dns-01` / `onion` — the wizard renders the config and prints **operator-handoff
+      instructions** (supply DNS-API credentials out of band for `dns-01`; run Tor and
+      supply the self-signed cert for `onion`). Full automation is deferred.
+
+### Secrets-volume backup obligation
+
+- [ ] [REQUIRED] The wizard generates the master key, swarm key, and OIDC signing key
+      into the **secrets volume**. Back this volume up out-of-band before you accept
+      traffic — losing the master key is permanent, federation-wide data loss (see
+      § "Master key generation, storage, and backup"). At minimum, make the **paper
+      backup of the master key** the wizard prompts you to download.
+
+### Re-arming the wizard (redo setup)
+
+Setup is idempotent up to the sentinel. To redo first-run, **delete
+`.bootstrap-complete`** from the config volume and restart — the coordinator re-enters
+setup mode. This is the documented recovery path; treat it carefully on a live
+deployment (it does not delete existing secrets or data, but it re-exposes `/setup/*`).
 
 ## Annual maintenance (RECOMMENDED)
 
