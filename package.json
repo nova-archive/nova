@@ -6,7 +6,8 @@
   "license": "Apache-2.0",
   "workspaces": [
     "web/admin",
-    "web/widget"
+    "web/widget",
+    "web/setup"
   ],
   "engines": {
     "node": ">=20"

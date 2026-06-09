@@ -119,5 +119,28 @@ hermetic-widget:
 
 widget: admin-install widget-lint widget-test widget-build hermetic-widget
 
-# web builds + checks both web workspaces (npm ci installs all workspaces).
-web: admin widget
+.PHONY: setup-spa setup-install setup-build setup-lint setup-test hermetic-setup
+
+# M13 first-run Setup wizard (web/setup). Hermetic React + Vite; no third-party
+# runtime assets. base '/setup/' so hashed assets resolve behind the coordinator's
+# /setup/* mount during bootstrap.
+setup-install:
+	npm ci
+
+setup-build:
+	npm run build --workspace web/setup
+
+setup-lint:
+	npm run lint --workspace web/setup
+
+setup-test:
+	npm run test --workspace web/setup -- --run
+
+# hermetic-setup fails the build if the bundle declares any third-party asset load.
+hermetic-setup:
+	./scripts/hermetic-spa.sh web/setup/dist
+
+setup-spa: setup-install setup-lint setup-test setup-build hermetic-setup
+
+# web builds + checks all web workspaces (npm ci installs all workspaces).
+web: admin widget setup-spa
