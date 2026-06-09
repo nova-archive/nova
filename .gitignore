@@ -4,6 +4,7 @@
 /build/
 /coordinator
 /novactl
+/setup-wizard
 coverage.out
 coverage.html
 
@@ -16,6 +17,7 @@ internal/api/codegen/
 node_modules/
 web/admin/dist/
 web/widget/dist/
+web/setup/dist/
 
 # Local environment
 .env
