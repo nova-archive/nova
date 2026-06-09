@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ApiError, createSetupApi, type MasterKey, type SetupApi } from '../api/client'
 import { buildBackupContent } from '../backup'
 import { initialForm, toAnswers, type FormState, type TLSMode } from './types'
@@ -9,6 +9,7 @@ import s from './wizard.module.css'
 // must equal the returned fingerprint) and the final commit → orientation are
 // the load-bearing flows.
 const STEPS = [
+  'token',
   'welcome',
   'master-key',
   'keys',
@@ -38,9 +39,18 @@ export interface WizardProps {
 }
 
 export function Wizard({ api: injected }: WizardProps = {}) {
-  const [api] = useState<SetupApi>(() => injected ?? createSetupApi())
   const [idx, setIdx] = useState(0)
   const [form, setForm] = useState<FormState>(initialForm)
+
+  // Tests inject a mock api (used as-is). Otherwise build the real same-origin
+  // client once the bootstrap token is entered: it closes over the token and
+  // sends it as X-Nova-Setup-Token on every /setup/* request. The first real
+  // API call (generateMasterKey) is on the master-key step, which is after the
+  // token step, so the token is always set before the client is used.
+  const api = useMemo<SetupApi>(
+    () => injected ?? createSetupApi(form.bootstrapToken),
+    [injected, form.bootstrapToken],
+  )
 
   // Master-key material (generated on entering the master-key step) and the
   // readback the operator types to prove they captured the fingerprint.
@@ -96,6 +106,8 @@ export function Wizard({ api: injected }: WizardProps = {}) {
   // Per-step gate for the Next/Continue control.
   const canNext = (): boolean => {
     switch (step) {
+      case 'token':
+        return form.bootstrapToken.trim().length > 0
       case 'welcome':
         return form.hostname.trim().length > 0 && form.contact_email.trim().length > 0
       case 'master-key':
@@ -198,11 +210,41 @@ export function Wizard({ api: injected }: WizardProps = {}) {
 
   function renderStep() {
     switch (step) {
+      case 'token':
+        return (
+          <>
+            <h1 className={s.h}>Bootstrap token</h1>
+            <div className={s.step}>Step 1 · Bootstrap token</div>
+            <p className={s.lead}>
+              Setup is locked to whoever holds this node’s bootstrap token. Paste it below to
+              authorize this wizard — every setup request carries it.
+            </p>
+
+            <label className={s.field} style={{ marginTop: 18 }}>
+              <span className={s.lbl}>Bootstrap token</span>
+              <input
+                className={`${s.in} ${s.mono}`}
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                aria-label="Bootstrap token"
+                value={form.bootstrapToken}
+                onChange={(e) => set('bootstrapToken', e.target.value)}
+              />
+              <span className={s.hint}>
+                Copy it from the coordinator startup log
+                (<span className={s.mono}>docker compose logs coordinator</span>) — it appears as{' '}
+                <span className={s.mono}>bootstrap_token=…</span>.
+              </span>
+            </label>
+          </>
+        )
+
       case 'welcome':
         return (
           <>
             <h1 className={s.h}>Welcome to Nova</h1>
-            <div className={s.step}>Step 1 · Welcome</div>
+            <div className={s.step}>Step 2 · Welcome</div>
             <p className={s.lead}>
               This wizard configures your Nova node’s first run: it generates your master key,
               creates the operator account, and writes <span className={s.mono}>operator.yaml</span>.
@@ -253,7 +295,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Your master key</h1>
-            <div className={s.step}>Step 2 · Master key</div>
+            <div className={s.step}>Step 3 · Master key</div>
             <p className={s.lead}>
               This key encrypts your node’s secrets and <strong>cannot be recovered</strong>. Save
               the backup file somewhere safe, then type the fingerprint below to confirm you have it.
@@ -305,7 +347,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Node keys</h1>
-            <div className={s.step}>Step 3 · Keys</div>
+            <div className={s.step}>Step 4 · Keys</div>
             <p className={s.lead}>
               Your swarm identity and content-signing keys are generated automatically and sealed
               with your master key when you commit. There’s nothing to enter here.
@@ -320,7 +362,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Operator account</h1>
-            <div className={s.step}>Step 4 · Admin user</div>
+            <div className={s.step}>Step 5 · Admin user</div>
             <p className={s.lead}>The first operator can sign in to the admin console at /admin.</p>
 
             <label className={s.field}>
@@ -358,7 +400,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>TLS &amp; certificates</h1>
-            <div className={s.step}>Step 5 · TLS mode</div>
+            <div className={s.step}>Step 6 · TLS mode</div>
             <p className={s.lead}>How should Nova obtain its HTTPS certificate?</p>
 
             <label className={s.field}>
@@ -408,7 +450,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Public uploads</h1>
-            <div className={s.step}>Step 6 · Terms of service</div>
+            <div className={s.step}>Step 7 · Terms of service</div>
             <p className={s.lead}>
               Allow anyone to upload through your node’s public widget? If enabled, you must publish
               a terms-of-service URL (T1.20).
@@ -442,7 +484,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Paranoid mode</h1>
-            <div className={s.step}>Step 7 · Paranoid</div>
+            <div className={s.step}>Step 8 · Paranoid</div>
             <p className={s.lead}>
               Hardened defaults for hostile environments.
             </p>
@@ -465,7 +507,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Review</h1>
-            <div className={s.step}>Step 8 · Review</div>
+            <div className={s.step}>Step 9 · Review</div>
             <p className={s.lead}>Confirm your choices. Secrets (password, master key) are not shown.</p>
 
             {submitErr && <div className={s.banner} role="alert">{submitErr}</div>}
@@ -490,7 +532,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Commit</h1>
-            <div className={s.step}>Step 9 · Commit</div>
+            <div className={s.step}>Step 10 · Commit</div>
             <p className={s.lead}>
               Committing writes <span className={s.mono}>operator.yaml</span>, creates your operator
               account, and seals the generated keys with your master key. This finalizes setup.
@@ -504,7 +546,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>You’re live</h1>
-            <div className={s.step}>Step 10 · Orientation</div>
+            <div className={s.step}>Step 11 · Orientation</div>
             <p className={s.lead}>
               Setup is complete. Sign in to the operator console at{' '}
               <a className={s.mono} href="/admin">/admin</a>.

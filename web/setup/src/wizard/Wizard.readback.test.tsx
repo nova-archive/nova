@@ -23,6 +23,13 @@ describe('master-key readback gate', () => {
   it('disables Next until the typed value equals the fingerprint', async () => {
     render(<Wizard api={mockApi()} />)
 
+    // Token step is first: Next is gated on a non-empty bootstrap token. The
+    // injected mock ignores the token, but the step gate must be satisfied.
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Bootstrap token'), { target: { value: 'tok' } })
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
     // Welcome step needs hostname + contact email to advance.
     fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'nova.example.org' } })
     fireEvent.change(screen.getByLabelText('Contact email'), {

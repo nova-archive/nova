@@ -7,6 +7,10 @@ export type AuthMode = 'local' | 'external'
 // FormState holds every operator input plus the generated master-key material
 // (kept in component state only — never echoed back to the API in answers).
 export interface FormState {
+  // Bootstrap token (printed to the coordinator log) sent as the
+  // X-Nova-Setup-Token header on every /setup/* request. Transport-only — it is
+  // a credential and is never serialized into answers/operator.yaml.
+  bootstrapToken: string
   hostname: string
   contact_email: string
   display_name: string
@@ -24,6 +28,7 @@ export interface FormState {
 }
 
 export const initialForm: FormState = {
+  bootstrapToken: '',
   hostname: '',
   contact_email: '',
   display_name: '',

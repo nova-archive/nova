@@ -28,48 +28,52 @@ describe('wizard drives to orientation', () => {
   it('shows the widget snippet and /admin after commit', async () => {
     render(<Wizard api={mockApi()} />)
 
-    // 1 · Welcome
+    // 1 · Bootstrap token (gates Next on a non-empty token; mock ignores value).
+    fireEvent.change(screen.getByLabelText('Bootstrap token'), { target: { value: 'tok' } })
+    await clickNext()
+
+    // 2 · Welcome
     fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'nova.example.org' } })
     fireEvent.change(screen.getByLabelText('Contact email'), {
       target: { value: 'op@example.org' },
     })
     await clickNext()
 
-    // 2 · Master key — satisfy the readback gate.
+    // 3 · Master key — satisfy the readback gate.
     await screen.findByTestId('fingerprint')
     fireEvent.change(screen.getByLabelText('Confirm fingerprint'), {
       target: { value: FINGERPRINT },
     })
     await clickNext()
 
-    // 3 · Keys (informational)
+    // 4 · Keys (informational)
     await clickNext()
 
-    // 4 · Admin user
+    // 5 · Admin user
     fireEvent.change(screen.getByLabelText('Admin email'), { target: { value: 'op@example.org' } })
     fireEvent.change(screen.getByLabelText('Admin password'), {
       target: { value: 'a-very-strong-password' },
     })
     await clickNext()
 
-    // 5 · TLS (default dev-self-signed is valid)
+    // 6 · TLS (default dev-self-signed is valid)
     await clickNext()
 
-    // 6 · ToS / public uploads (off → no tos_url required)
+    // 7 · ToS / public uploads (off → no tos_url required)
     await clickNext()
 
-    // 7 · Paranoid
+    // 8 · Paranoid
     await clickNext()
 
-    // 8 · Review → submitAnswers
+    // 9 · Review → submitAnswers
     await screen.findByText('Review')
     await clickNext()
 
-    // 9 · Commit → commit
+    // 10 · Commit → commit
     await screen.findByText('Commit')
     await clickNext()
 
-    // 10 · Orientation
+    // 11 · Orientation
     await screen.findByText('You’re live')
     const snippet = screen.getByTestId('widget-snippet')
     expect(snippet).toHaveTextContent('nova-upload-widget.js')
