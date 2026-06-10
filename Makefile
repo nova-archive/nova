@@ -12,7 +12,7 @@ help:
 	@echo "  tidy              Tidy Go module files"
 	@echo "  build             Build cmd/migrate (other binaries in later M)"
 	@echo "  lint              Run golangci-lint"
-	@echo "  smoke             End-to-end smoke: compose up + migrate + assert schema"
+	@echo "  smoke             End-to-end smoke: image build + compose prod + upload/read/transform/delete"
 	@echo "  m2-exit           Run the M2 exit-criterion test (env → ipfs → decrypt round-trip)"
 	@echo "  migrate-up        Apply migrations against running compose postgres"
 	@echo "  migrate-down      Roll back one migration"

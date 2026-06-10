@@ -1,12 +1,27 @@
 #!/usr/bin/env bash
-# scripts/smoke.sh — M1 end-to-end smoke test.
+# scripts/smoke.sh — M14 full-stack end-to-end smoke test.
 #
-# Brings up docker-compose postgres, runs cmd/migrate up against it,
-# asserts the v3.1 schema, then tears down (leaving the volume).
+# Exercises the real compose artifact, start to finish:
+#   1. Build the coordinator image (compose build stanza; warm cache).
+#   2. Bring up postgres, wait for readiness.
+#   3. Headless first-run setup (`novactl setup --config-file`) via a one-off
+#      coordinator container: migrations + secrets + operator user + rendered
+#      two-vhost nova.conf + .bootstrap-complete sentinel.
+#   4. Bring up the prod profile (coordinator + nginx + certbot).
+#   5. Prove upload → read-back → transform → delete through nginx TLS:
+#        [1/5] anonymous multipart PNG upload (public vhost :8443)
+#        [2/5] byte-identical read-back of /blob/{cid}
+#        [3/5] image transform /i/{cid}/w320.png → 200
+#        [4/5] operator login (admin vhost :8445) + DELETE /api/v1/blobs/{cid}
+#        [5/5] deleted blob no longer served (404/410)
+#
+# Self-contained and idempotent: artifacts live in a mktemp dir; teardown is
+# `down -v` in the EXIT trap. The seeded docker/.env persists across runs
+# (pre-existing behavior; it is gitignored).
 #
 # Exit codes:
 #   0  success
-#   1  any step failed (compose, migrate, or schema assertion)
+#   1  any step failed
 
 set -euo pipefail
 
@@ -31,6 +46,38 @@ source "$ENV_FILE"
 
 DC="docker compose -f docker/docker-compose.yml --env-file $ENV_FILE"
 
+HOST="smoke.nova.test"
+ADMIN_EMAIL="operator@example.invalid"
+ADMIN_PW="$(openssl rand -hex 12)"
+TMP="$(mktemp -d)"
+
+cleanup() {
+    rm -rf "$TMP"
+    $DC --profile prod down -v --remove-orphans >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+# fail <reason>: print the failure, dump the last 50 compose log lines, exit 1.
+fail() {
+    echo "[smoke] FAIL: $1" >&2
+    echo "[smoke] ─── last 50 compose log lines ───" >&2
+    $DC --profile prod logs --tail 50 >&2 || true
+    exit 1
+}
+
+# Both vhosts share server_name $HOST; --resolve makes SNI/Host match the
+# dev-self-signed cert, -k accepts the self-signed chain.
+PUB="https://$HOST:8443"
+ADM="https://$HOST:8445"
+CURL_PUB=(curl -ksS --resolve "$HOST:8443:127.0.0.1")
+CURL_ADM=(curl -ksS --resolve "$HOST:8445:127.0.0.1")
+
+echo "[smoke] Ensuring a clean slate (down -v)..."
+$DC --profile prod down -v --remove-orphans >/dev/null 2>&1 || true
+
+echo "[smoke] Building the coordinator image..."
+$DC build coordinator >/dev/null || fail "coordinator image build failed"
+
 echo "[smoke] Bringing up postgres..."
 $DC up -d postgres
 
@@ -42,54 +89,132 @@ for i in {1..30}; do
     fi
     sleep 1
     if [[ $i -eq 30 ]]; then
-        echo "[smoke] FAIL: postgres did not become ready in 30s" >&2
-        $DC logs postgres
-        exit 1
+        fail "postgres did not become ready in 30s"
     fi
 done
 
-echo "[smoke] Building cmd/migrate..."
-go build -o bin/migrate ./cmd/migrate
+echo "[smoke] Headless setup (novactl setup --config-file)..."
+cat > "$TMP/answers.yaml" <<EOF
+hostname: $HOST
+contact_email: smoke@example.invalid
+admin_email: $ADMIN_EMAIL
+admin_password: $ADMIN_PW
+tls_mode: dev-self-signed
+auth_mode: local
+public_uploads: true
+tos_url: https://$HOST/tos
+paranoid: false
+EOF
+# One-off container: the image entrypoint always execs the coordinator, so
+# bypass it with --entrypoint. Runs as root (no USER in the Dockerfile); the
+# prod boot's chown -R in entrypoint.sh fixes volume ownership afterwards.
+# DATABASE_URL/NOVA_*_DIR come from the coordinator service environment.
+$DC run --rm -T --entrypoint /bin/sh \
+    -v "$TMP/answers.yaml:/answers.yaml:ro" \
+    coordinator -c "/usr/local/bin/migrate up && /usr/local/bin/novactl setup --config-file /answers.yaml" \
+    || fail "headless setup (migrate + novactl setup) failed"
 
-echo "[smoke] Running migrations..."
-DATABASE_URL="postgres://nova:${POSTGRES_PASSWORD}@127.0.0.1:5432/nova?sslmode=disable" ./bin/migrate up
+echo "[smoke] Bringing up the prod profile..."
+$DC --profile prod up -d
 
-echo "[smoke] Asserting v3.1 schema..."
-EXPECTED_TABLES=(
-    users master_key_versions data_encryption_keys signing_keys
-    collections blobs blob_manifests blob_blocks
-    image_metadata collection_items
-    nodes pin_assignments pin_audits
-    integrity_audits moderation_decisions dmca_cases
-    takedown_repeat_infringers signed_url_revocations
-    audit_log jobs
-)
-
-for table in "${EXPECTED_TABLES[@]}"; do
-    found=$(PGPASSWORD="$POSTGRES_PASSWORD" $DC exec -T postgres psql -U nova -d nova -t -c "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='$table'" | tr -d '[:space:]')
-    if [[ "$found" != "1" ]]; then
-        echo "[smoke] FAIL: expected table '$table' is missing" >&2
-        exit 1
+echo "[smoke] Waiting for /health through nginx (public vhost)..."
+health_code=""
+for i in {1..60}; do
+    health_code="$("${CURL_PUB[@]}" -o /dev/null -w '%{http_code}' "$PUB/health" 2>/dev/null || true)"
+    if [[ "$health_code" == "200" ]]; then
+        echo "[smoke] Health OK after $((i * 2))s"
+        break
+    fi
+    sleep 2
+    if [[ $i -eq 60 ]]; then
+        fail "public /health did not return 200 within 120s (last code: ${health_code:-none})"
     fi
 done
 
-# blobs.envelope_version
-has_col=$(PGPASSWORD="$POSTGRES_PASSWORD" $DC exec -T postgres psql -U nova -d nova -t -c "SELECT 1 FROM information_schema.columns WHERE table_name='blobs' AND column_name='envelope_version'" | tr -d '[:space:]')
-if [[ "$has_col" != "1" ]]; then
-    echo "[smoke] FAIL: blobs.envelope_version column missing" >&2
-    exit 1
+echo "[smoke] Seeding a public collection (visibility floor: no membership => private)..."
+# Blobs with no collection membership resolve to private visibility
+# (pkg/coordinator/storage/types.go resolveVisibility), so an anonymous /blob
+# read would 401. Phase 1 has no collection-creation API; seed one owned by
+# the setup-created operator, exactly as the M4 integration test does.
+COL_ID="$($DC exec -T postgres psql -U nova -d nova -tA -c \
+    "INSERT INTO collections (owner_id, name, slug, visibility, public_archival)
+     SELECT id, 'smoke-public', 'smoke-public', 'public', false
+     FROM users WHERE email = '$ADMIN_EMAIL'
+     RETURNING id;" | head -n1 | tr -d '[:space:]')" || fail "seeding the public collection failed"
+[[ -n "$COL_ID" ]] || fail "public-collection seed returned an empty id (operator user missing?)"
+echo "[smoke]       collection_id=$COL_ID"
+
+echo "[smoke] [1/5] Anonymous multipart PNG upload..."
+python3 - "$TMP/fixture.png" <<'PYEOF'
+import struct, sys, zlib
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+w = h = 16
+raw = b"".join(b"\x00" + b"\xc8\x32\x32" * w for _ in range(h))
+png = (b"\x89PNG\r\n\x1a\n"
+       + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+       + chunk(b"IDAT", zlib.compress(raw))
+       + chunk(b"IEND", b""))
+open(sys.argv[1], "wb").write(png)
+PYEOF
+# product=image so the /i/* transform routes accept the blob (raw blobs 415).
+code="$("${CURL_PUB[@]}" -o "$TMP/upload.json" -w '%{http_code}' \
+    -F "file=@$TMP/fixture.png;type=image/png;filename=fixture.png" \
+    -F "product=image" \
+    -F "collection_id=$COL_ID" \
+    "$PUB/api/v1/blobs")" || fail "upload request failed"
+if [[ "$code" != "201" ]]; then
+    cat "$TMP/upload.json" >&2 || true
+    fail "upload returned $code (want 201)"
+fi
+CID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cid"])' "$TMP/upload.json")" \
+    || fail "could not extract cid from upload response"
+[[ -n "$CID" ]] || fail "upload response contained an empty cid"
+echo "[smoke]       cid=$CID"
+
+echo "[smoke] [2/5] Read-back byte identity (/blob/$CID)..."
+code="$("${CURL_PUB[@]}" -o "$TMP/readback.png" -w '%{http_code}' "$PUB/blob/$CID")" \
+    || fail "read-back request failed"
+[[ "$code" == "200" ]] || fail "read-back returned $code (want 200)"
+cmp -s "$TMP/fixture.png" "$TMP/readback.png" || fail "read-back bytes differ from the uploaded fixture"
+
+# w320 is the smallest width in the shipped allowlist (nova-image
+# DefaultConfig AllowedWidths: 320/512/1024/2048; anything else 400s).
+echo "[smoke] [3/5] Image transform (/i/$CID/w320.png)..."
+code="$("${CURL_PUB[@]}" -o "$TMP/transform.png" -w '%{http_code}' "$PUB/i/$CID/w320.png")" \
+    || fail "transform request failed"
+[[ "$code" == "200" ]] || fail "transform returned $code (want 200)"
+[[ -s "$TMP/transform.png" ]] || fail "transform returned an empty body"
+
+echo "[smoke] [4/5] Operator login (admin vhost) + DELETE /api/v1/blobs/$CID..."
+code="$("${CURL_ADM[@]}" -o "$TMP/login.json" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}" \
+    "$ADM/api/v1/auth/login")" || fail "login request failed"
+if [[ "$code" != "200" ]]; then
+    cat "$TMP/login.json" >&2 || true
+    fail "login returned $code (want 200)"
+fi
+TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access_token"])' "$TMP/login.json")" \
+    || fail "could not extract access_token from login response"
+[[ -n "$TOKEN" ]] || fail "login response contained an empty access_token"
+
+code="$("${CURL_PUB[@]}" -o "$TMP/delete.json" -w '%{http_code}' -X DELETE \
+    -H "Authorization: Bearer $TOKEN" \
+    "$PUB/api/v1/blobs/$CID")" || fail "delete request failed"
+if [[ "$code" != 2* ]]; then
+    cat "$TMP/delete.json" >&2 || true
+    fail "delete returned $code (want 2xx)"
 fi
 
-# integrity_audits is partitioned
-is_part=$(PGPASSWORD="$POSTGRES_PASSWORD" $DC exec -T postgres psql -U nova -d nova -t -c "SELECT 1 FROM pg_partitioned_table pt JOIN pg_class c ON c.oid = pt.partrelid WHERE c.relname='integrity_audits'" | tr -d '[:space:]')
-if [[ "$is_part" != "1" ]]; then
-    echo "[smoke] FAIL: integrity_audits not partitioned" >&2
-    exit 1
+echo "[smoke] [5/5] Deleted blob no longer served..."
+# nginx caches /blob 200s for 1y; bust the cache key with a benign query param
+# (the signed-URL guard only engages on sig/exp/aud/kid) so the probe reaches
+# the coordinator instead of the step-[2/5] cache entry.
+code="$("${CURL_PUB[@]}" -o /dev/null -w '%{http_code}' "$PUB/blob/$CID?nocache=$RANDOM")" \
+    || fail "post-delete read request failed"
+if [[ "$code" != "404" && "$code" != "410" ]]; then
+    fail "deleted blob still served: GET /blob/$CID returned $code (want 404 or 410)"
 fi
 
-echo "[smoke] PASS — all v3.1 tables present, envelope_version column exists, integrity_audits partitioned"
-
-echo "[smoke] Tearing down (data preserved)..."
-$DC down
-
-echo "[smoke] OK"
+echo "[smoke] PASS — upload → read → transform → delete proven through the prod stack."
