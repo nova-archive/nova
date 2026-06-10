@@ -44,7 +44,7 @@ fi
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
-DC="docker compose -f docker/docker-compose.yml --env-file $ENV_FILE"
+DC=(docker compose -f docker/docker-compose.yml --env-file "$ENV_FILE")
 
 HOST="smoke.nova.test"
 ADMIN_EMAIL="operator@example.invalid"
@@ -53,7 +53,7 @@ TMP="$(mktemp -d)"
 
 cleanup() {
     rm -rf "$TMP"
-    $DC --profile prod down -v --remove-orphans >/dev/null 2>&1 || true
+    "${DC[@]}" --profile prod down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -61,7 +61,7 @@ trap cleanup EXIT
 fail() {
     echo "[smoke] FAIL: $1" >&2
     echo "[smoke] ─── last 50 compose log lines ───" >&2
-    $DC --profile prod logs --tail 50 >&2 || true
+    "${DC[@]}" --profile prod logs --tail 50 >&2 || true
     exit 1
 }
 
@@ -73,17 +73,17 @@ CURL_PUB=(curl -ksS --resolve "$HOST:8443:127.0.0.1")
 CURL_ADM=(curl -ksS --resolve "$HOST:8445:127.0.0.1")
 
 echo "[smoke] Ensuring a clean slate (down -v)..."
-$DC --profile prod down -v --remove-orphans >/dev/null 2>&1 || true
+"${DC[@]}" --profile prod down -v --remove-orphans >/dev/null 2>&1 || true
 
 echo "[smoke] Building the coordinator image..."
-$DC build coordinator >/dev/null || fail "coordinator image build failed"
+"${DC[@]}" build coordinator >/dev/null || fail "coordinator image build failed"
 
 echo "[smoke] Bringing up postgres..."
-$DC up -d postgres
+"${DC[@]}" up -d postgres
 
 echo "[smoke] Waiting for postgres to be ready..."
 for i in {1..30}; do
-    if $DC exec -T postgres pg_isready -U nova -d nova >/dev/null 2>&1; then
+    if "${DC[@]}" exec -T postgres pg_isready -U nova -d nova >/dev/null 2>&1; then
         echo "[smoke] Postgres ready after ${i}s"
         break
     fi
@@ -109,13 +109,13 @@ EOF
 # bypass it with --entrypoint. Runs as root (no USER in the Dockerfile); the
 # prod boot's chown -R in entrypoint.sh fixes volume ownership afterwards.
 # DATABASE_URL/NOVA_*_DIR come from the coordinator service environment.
-$DC run --rm -T --entrypoint /bin/sh \
+"${DC[@]}" run --rm -T --entrypoint /bin/sh \
     -v "$TMP/answers.yaml:/answers.yaml:ro" \
     coordinator -c "/usr/local/bin/migrate up && /usr/local/bin/novactl setup --config-file /answers.yaml" \
     || fail "headless setup (migrate + novactl setup) failed"
 
 echo "[smoke] Bringing up the prod profile..."
-$DC --profile prod up -d
+"${DC[@]}" --profile prod up -d
 
 echo "[smoke] Waiting for /health through nginx (public vhost)..."
 health_code=""
@@ -136,7 +136,9 @@ echo "[smoke] Seeding a public collection (visibility floor: no membership => pr
 # (pkg/coordinator/storage/types.go resolveVisibility), so an anonymous /blob
 # read would 401. Phase 1 has no collection-creation API; seed one owned by
 # the setup-created operator, exactly as the M4 integration test does.
-COL_ID="$($DC exec -T postgres psql -U nova -d nova -tA -c \
+# No PGPASSWORD needed: compose exec runs inside the container, where the
+# postgres image grants trust auth to POSTGRES_USER on local sockets.
+COL_ID="$("${DC[@]}" exec -T postgres psql -U nova -d nova -tA -c \
     "INSERT INTO collections (owner_id, name, slug, visibility, public_archival)
      SELECT id, 'smoke-public', 'smoke-public', 'public', false
      FROM users WHERE email = '$ADMIN_EMAIL'
@@ -186,7 +188,7 @@ code="$("${CURL_PUB[@]}" -o "$TMP/transform.png" -w '%{http_code}' "$PUB/i/$CID/
 [[ "$code" == "200" ]] || fail "transform returned $code (want 200)"
 [[ -s "$TMP/transform.png" ]] || fail "transform returned an empty body"
 
-echo "[smoke] [4/5] Operator login (admin vhost) + DELETE /api/v1/blobs/$CID..."
+echo "[smoke] [4/5] Operator login via admin vhost + DELETE via public vhost (/api/v1/blobs/$CID)..."
 code="$("${CURL_ADM[@]}" -o "$TMP/login.json" -w '%{http_code}' \
     -H 'Content-Type: application/json' \
     -d "{\"username\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}" \
@@ -202,6 +204,8 @@ TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["access
 code="$("${CURL_PUB[@]}" -o "$TMP/delete.json" -w '%{http_code}' -X DELETE \
     -H "Authorization: Bearer $TOKEN" \
     "$PUB/api/v1/blobs/$CID")" || fail "delete request failed"
+# [[ RHS ]] of != is a glob: 2* matches 200/201/204/… (bash [[ ]] semantics).
+# shellcheck disable=SC2053
 if [[ "$code" != 2* ]]; then
     cat "$TMP/delete.json" >&2 || true
     fail "delete returned $code (want 2xx)"
