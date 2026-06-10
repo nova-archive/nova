@@ -123,3 +123,17 @@ jobs:
 
       - name: Build Docker image (no push)
         run: make docker-build
+
+  # Full-stack e2e against the shipped compose artifact: image build →
+  # headless setup → prod profile → upload/read/transform/delete via nginx.
+  # On failure smoke.sh itself dumps the last 50 compose log lines to stderr
+  # (the EXIT trap tears the stack down, so a post-failure log step would
+  # capture nothing). ubuntu-latest ships docker + compose v2 natively.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: End-to-end smoke (compose prod stack)
+        run: make smoke
