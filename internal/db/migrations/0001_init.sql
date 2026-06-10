@@ -1,8 +1,10 @@
 -- +goose Up
 -- +goose StatementBegin
--- Forward-only migration 0001: initial schema per docs/specs/DATA_MODEL.sql
--- This migration MUST remain bit-identical to docs/specs/DATA_MODEL.sql.
--- Drift fails CI (see .github/workflows/ci.yml: schema-drift check).
+-- Forward-only migration 0001: initial schema (Phase-0 v2 baseline).
+-- Shipped migrations are immutable: any edit to a file listed in
+-- MANIFEST.sha256 fails CI (scripts/check-migrations-frozen.sh).
+-- docs/specs/DATA_MODEL.sql is the annotated living schema REFERENCE;
+-- this directory (goose, read by sqlc) is the authoritative schema.
 -- ============================================================================
 -- Nova: Networked Object Versatile Archive
 -- Data Model — Phase 0 v2 (Postgres 16)

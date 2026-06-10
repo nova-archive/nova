@@ -105,23 +105,13 @@ jobs:
       - name: Hermetic setup bundle audit
         run: make hermetic-setup
 
-  schema-drift:
+  migrations-frozen:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check 0001_init.sql matches DATA_MODEL.sql
-        run: |
-          extracted="$(sed -n '/^-- +goose Up$/,/^-- +goose StatementEnd$/{
-            /^-- +goose Up$/d
-            /^-- +goose StatementBegin$/d
-            /^-- +goose StatementEnd$/d
-            /^-- This migration MUST/d
-            /^-- Forward-only/d
-            /^-- Drift fails CI/d
-            p
-          }' internal/db/migrations/0001_init.sql)"
-          diff <(echo "$extracted") docs/specs/DATA_MODEL.sql
+      - name: Shipped migrations are immutable
+        run: make migrations-frozen
 
   docker-build:
     runs-on: ubuntu-latest

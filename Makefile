@@ -1,4 +1,4 @@
-.PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-down migrate-status clean docker-build
+.PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-down migrate-status clean docker-build migrations-frozen
 
 GOTEST    := go test ./...
 GOTESTV   := go test -v ./...
@@ -19,6 +19,7 @@ help:
 	@echo "  migrate-status    Show migration status"
 	@echo "  clean             Remove build artifacts"
 	@echo "  docker-build      Build the multi-stage Docker image (no push)"
+	@echo "  migrations-frozen  Verify shipped migrations are unmodified (MANIFEST.sha256)"
 
 test:
 	$(GOTESTV)
@@ -63,6 +64,9 @@ clean:
 # Requires Docker 29+ with BuildKit enabled (the default).
 docker-build:
 	docker build -f docker/Dockerfile -t nova-coordinator:dev .
+
+migrations-frozen:
+	./scripts/check-migrations-frozen.sh
 
 .PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
 
