@@ -1,8 +1,18 @@
 version: "2"
+run:
+  timeout: 5m
 linters:
+  # Pin the full set explicitly (default: standard would drift if a future
+  # golangci-lint release changes its defaults).
+  default: none
   enable:
+    - errcheck
+    - govet
+    - ineffassign
     - misspell
     - revive
+    - staticcheck
+    - unused
   settings:
     revive:
       rules:
