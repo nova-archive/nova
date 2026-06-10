@@ -50,7 +50,7 @@ if [ -z "$CERT" ]; then
 fi
 
 until [ -s "$CERT" ]; do
-    echo "cert-watch: waiting for $CERT (http-01 mode: certbot writes the bootstrap placeholder)"
+    echo "cert-watch: waiting for $CERT (http-01: certbot writes a placeholder shortly; dns-01/onion: place the cert per the wizard's handoff instructions)"
     sleep 2
 done
 
