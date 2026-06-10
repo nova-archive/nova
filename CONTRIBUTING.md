@@ -47,6 +47,25 @@ docs(specs): clarify CID encoding in encryption envelope
 
 Subject line under 72 characters. Body wrapped at 72.
 
+## Toolchain currency
+
+Staying current is treated as routine maintenance, not incident response:
+
+- **Node** tracks the active LTS line (`.nvmrc` is authoritative; CI uses
+  `node-version-file`, the Docker node-builder pins the same major). When a
+  Node LTS transition happens, the bump lands within the next milestone.
+- **Go** — the `go.mod` directive tracks current stable Go; CI derives its
+  version from `go.mod` (`go-version-file`), never a workflow literal.
+- **golangci-lint** — the CI action installs the current major
+  (`version: latest`); `.golangci.yml` pins `version: "2"` config schema, so
+  a future linter major (v3) will fail loudly at config-load rather than
+  drift silently. Bump the config schema deliberately when that happens.
+- **Dependabot** (`.github/dependabot.yml`) watches gomod, npm, and
+  github-actions weekly. Triage of alerts and grouped update PRs is part of
+  every milestone's definition of done: determine reachability on Nova,
+  record the verdict (see the M14 design's triage table for the format), and
+  patch — exploitable or not — unless a bump is genuinely breaking.
+
 ## Code of Conduct
 
 This project follows the [Contributor Covenant](https://www.contributor-covenant.org/),

@@ -1,0 +1,25 @@
+# Dependabot keeps the three ecosystems current. Alerts and update PRs are
+# triaged per-milestone (see CONTRIBUTING.md "Toolchain currency"), never
+# auto-merged.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
