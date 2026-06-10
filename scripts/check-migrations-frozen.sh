@@ -27,6 +27,7 @@ if ! (cd "$MIG_DIR" && sha256sum --check --strict --quiet "$MANIFEST"); then
 fi
 
 # Direction 2: every migration on disk is listed.
+shopt -s nullglob # an empty match must skip the loop, not run on the glob text
 status=0
 for f in "$MIG_DIR"/[0-9][0-9][0-9][0-9]_*.sql; do
     base="$(basename "$f")"

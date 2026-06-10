@@ -19,7 +19,7 @@ help:
 	@echo "  migrate-status    Show migration status"
 	@echo "  clean             Remove build artifacts"
 	@echo "  docker-build      Build the multi-stage Docker image (no push)"
-	@echo "  migrations-frozen  Verify shipped migrations are unmodified (MANIFEST.sha256)"
+	@echo "  migrations-frozen Verify shipped migrations are unmodified (MANIFEST.sha256)"
 
 test:
 	$(GOTESTV)
