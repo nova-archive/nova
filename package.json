@@ -10,6 +10,11 @@
     "web/setup"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
+  },
+  "overrides": {
+    "@uppy/core": {
+      "nanoid": "^5.1.6"
+    }
   }
 }

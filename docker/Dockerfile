@@ -14,7 +14,7 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/coordinator ./cmd/coordinator \
  && go build -trimpath -ldflags="-s -w" -o /out/migrate     ./cmd/migrate
 
 # ---- node-builder: admin + widget + setup hermetic bundles ----
-FROM node:20-bookworm AS node-builder
+FROM node:22-bookworm AS node-builder
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY web/admin/package.json  web/admin/package.json
