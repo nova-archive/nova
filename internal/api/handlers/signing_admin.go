@@ -78,7 +78,7 @@ func (h *SigningAdminHandler) RotateSigning(w http.ResponseWriter, r *http.Reque
 		httputil.WriteError(w, http.StatusInternalServerError, "internal", "rotate failed", rid)
 		return
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := h.q.WithTx(tx)
 
 	kid, err := signedurl.MintKey(ctx, qtx, h.ks)

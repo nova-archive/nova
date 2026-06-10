@@ -67,7 +67,7 @@ func Decode(b []byte) (version byte, codec Codec, err error) {
 	if len(b) < HeaderSize {
 		return 0, nil, ErrEnvelopeTooShort
 	}
-	if !(b[0] == magic[0] && b[1] == magic[1] && b[2] == magic[2] && b[3] == magic[3]) {
+	if b[0] != magic[0] || b[1] != magic[1] || b[2] != magic[2] || b[3] != magic[3] {
 		return 0, nil, ErrEnvelopeBadMagic
 	}
 	v := b[4]

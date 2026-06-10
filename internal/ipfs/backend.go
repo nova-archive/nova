@@ -42,7 +42,7 @@ func (m Mode) String() string {
 type AddResult struct {
 	CID          cid.Cid
 	EnvelopeSize int64
-	Codec        string  // "raw" for single-block, "dag-pb" for UnixFS
+	Codec        string // "raw" for single-block, "dag-pb" for UnixFS
 	Blocks       []Block
 	MerkleRoot   cid.Cid // root CID; for single-block this equals CID
 }

@@ -188,11 +188,10 @@ func applyHardeningDefaults(cfg *kuboconfig.Config, mode Mode) {
 	cfg.Swarm.DisableNatPortMap = true
 
 	if mode == ModePrivate {
-		// Routing.Type and Provider/Reprovider are pointer-y in modern
+		// Routing.Type and Provide.Strategy are pointer-y in modern
 		// Kubo configs; set via the spec-mandated values.
 		cfg.Routing.Type = kuboconfig.NewOptionalString("none")
-		cfg.Provider.Strategy = kuboconfig.NewOptionalString("")
-		cfg.Reprovider.Strategy = kuboconfig.NewOptionalString("")
+		cfg.Provide.Strategy = kuboconfig.NewOptionalString("")
 	}
 	// ModePublicArchivalDHT: leave Kubo defaults for routing.
 }
@@ -209,11 +208,10 @@ func translateKuboConfig(c *kuboconfig.Config) KuboConfig {
 	if c.Routing.Type != nil {
 		out.Routing.Type = c.Routing.Type.WithDefault("")
 	}
-	if c.Provider.Strategy != nil {
-		out.Provider.Strategy = c.Provider.Strategy.WithDefault("")
-	}
-	if c.Reprovider.Strategy != nil {
-		out.Reprovider.Strategy = c.Reprovider.Strategy.WithDefault("")
+	if c.Provide.Strategy != nil {
+		strategy := c.Provide.Strategy.WithDefault("")
+		out.Provider.Strategy = strategy
+		out.Reprovider.Strategy = strategy
 	}
 	if len(c.Addresses.API) > 0 {
 		out.Addresses.API = c.Addresses.API[0]

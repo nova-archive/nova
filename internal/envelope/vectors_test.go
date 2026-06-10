@@ -21,13 +21,13 @@ var updateVectors = flag.Bool("update", false, "regenerate envelope golden vecto
 
 type vector struct {
 	Name         string `json:"name"`
-	MasterKey    string `json:"master_key_hex"`     // 32 bytes hex
-	PerBlobKey   string `json:"per_blob_key_hex"`   // 32 bytes hex
-	Plaintext    string `json:"plaintext_hex"`      // arbitrary length hex
-	WrapSeedHex  string `json:"wrap_seed_hex"`      // 24-byte wrap_nonce hex; deterministic via seeded reader
-	EnvelopeSeed string `json:"envelope_seed_hex"`  // 24-byte envelope nonce hex; deterministic via seeded reader
-	WrappedKey   string `json:"wrapped_key_hex"`    // 72-byte hex; expected output
-	Envelope     string `json:"envelope_hex"`       // arbitrary length hex; expected output
+	MasterKey    string `json:"master_key_hex"`    // 32 bytes hex
+	PerBlobKey   string `json:"per_blob_key_hex"`  // 32 bytes hex
+	Plaintext    string `json:"plaintext_hex"`     // arbitrary length hex
+	WrapSeedHex  string `json:"wrap_seed_hex"`     // 24-byte wrap_nonce hex; deterministic via seeded reader
+	EnvelopeSeed string `json:"envelope_seed_hex"` // 24-byte envelope nonce hex; deterministic via seeded reader
+	WrappedKey   string `json:"wrapped_key_hex"`   // 72-byte hex; expected output
+	Envelope     string `json:"envelope_hex"`      // arbitrary length hex; expected output
 }
 
 // seededReader is a deterministic byte source for vector generation.

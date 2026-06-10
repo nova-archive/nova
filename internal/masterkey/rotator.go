@@ -179,7 +179,7 @@ func (r *Rotator) drainBatch(ctx context.Context, fromID pgtype.UUID) (int, erro
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 	q := r.q.WithTx(tx)
 
 	rows, err := q.ClaimDEKsForRewrap(ctx, gen.ClaimDEKsForRewrapParams{

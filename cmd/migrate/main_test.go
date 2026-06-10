@@ -37,7 +37,7 @@ func TestIntegrationMigrateUpProducesExpectedTables(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	container, err := postgres.RunContainer(ctx,
+	container, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("nova"),
 		postgres.WithUsername("nova"),
 		postgres.WithPassword("test-password"),

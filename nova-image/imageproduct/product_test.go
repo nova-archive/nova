@@ -124,11 +124,9 @@ func TestAnalyzeUpload_PNG_FormatConversion(t *testing.T) {
 	require.Equal(t, storage.ActionAllow, scan.Action)
 	require.NotNil(t, transformed, "format conversion enabled: transformed should be non-nil")
 
-	outBytes, rerr := bytes.NewBuffer(nil), error(nil)
-	buf := new(bytes.Buffer)
-	_, rerr = buf.ReadFrom(transformed)
+	outBytes := new(bytes.Buffer)
+	_, rerr := outBytes.ReadFrom(transformed)
 	require.NoError(t, rerr)
-	outBytes = buf
 	require.NotEmpty(t, outBytes.Bytes())
 
 	// Check WebP magic: RIFF....WEBP

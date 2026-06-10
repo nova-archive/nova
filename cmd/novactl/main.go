@@ -948,7 +948,7 @@ func cmdKeysStatus(args []string) error {
 
 func cmdKeys(args []string) error {
 	if len(args) < 1 {
-		return errors.New("usage: novactl keys <rotate-master|status> ...")
+		return errors.New("usage: novactl keys <rotate-master|status>")
 	}
 	switch args[0] {
 	case "rotate-master":

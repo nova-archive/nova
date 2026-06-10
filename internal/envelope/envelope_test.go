@@ -21,10 +21,10 @@ func TestDecodeRejectsTooShortBytes(t *testing.T) {
 
 func TestDecodeRejectsBadMagic(t *testing.T) {
 	t.Parallel()
-	buf := make([]byte, 48)        // header + 16-byte tag minimum
-	copy(buf[:4], []byte("XXXX"))  // not "NOVE"
-	buf[4] = 0x01                  // version
-	buf[5] = 0x01                  // algorithm
+	buf := make([]byte, 48)       // header + 16-byte tag minimum
+	copy(buf[:4], []byte("XXXX")) // not "NOVE"
+	buf[4] = 0x01                 // version
+	buf[5] = 0x01                 // algorithm
 	_, _, err := envelope.Decode(buf)
 	require.ErrorIs(t, err, envelope.ErrEnvelopeBadMagic)
 }
@@ -33,7 +33,7 @@ func TestDecodeRejectsUnsupportedVersion(t *testing.T) {
 	t.Parallel()
 	buf := make([]byte, 48)
 	copy(buf[:4], []byte("NOVE"))
-	buf[4] = 0xFF                  // unknown version
+	buf[4] = 0xFF // unknown version
 	buf[5] = 0x01
 	_, _, err := envelope.Decode(buf)
 	require.ErrorIs(t, err, envelope.ErrEnvelopeUnsupported)
@@ -46,7 +46,7 @@ func TestDecodeRejectsNonZeroReserved(t *testing.T) {
 	buf[4] = 0x01
 	buf[5] = 0x01
 	buf[6] = 0x00
-	buf[7] = 0x01                  // reserved must be 0x0000
+	buf[7] = 0x01 // reserved must be 0x0000
 	_, _, err := envelope.Decode(buf)
 	require.ErrorIs(t, err, envelope.ErrEnvelopeUnsupported)
 }
@@ -56,7 +56,7 @@ func TestDecodeRejectsBadAlgorithm(t *testing.T) {
 	buf := make([]byte, 48)
 	copy(buf[:4], []byte("NOVE"))
 	buf[4] = 0x01
-	buf[5] = 0x02                  // unknown algorithm
+	buf[5] = 0x02 // unknown algorithm
 	_, _, err := envelope.Decode(buf)
 	require.ErrorIs(t, err, envelope.ErrEnvelopeUnsupported)
 }

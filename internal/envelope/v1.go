@@ -56,7 +56,7 @@ func (v1Codec) Decrypt(env, perBlobKey []byte) ([]byte, error) {
 	if len(env) < HeaderSize+TagSize {
 		return nil, ErrEnvelopeTooShort
 	}
-	if !(env[0] == magic[0] && env[1] == magic[1] && env[2] == magic[2] && env[3] == magic[3]) {
+	if env[0] != magic[0] || env[1] != magic[1] || env[2] != magic[2] || env[3] != magic[3] {
 		return nil, ErrEnvelopeBadMagic
 	}
 	if env[4] != VersionV1 || env[5] != AlgorithmXChaCha20Poly1305 {

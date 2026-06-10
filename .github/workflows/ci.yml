@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version-file: go.mod
           cache: true
 
       - name: Install libvips
@@ -45,14 +45,14 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version-file: go.mod
           cache: true
 
       - name: Install libvips
         run: sudo apt-get update && sudo apt-get install -y libvips-dev libheif-dev libjxl-dev
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
           version: latest
 

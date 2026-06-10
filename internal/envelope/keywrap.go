@@ -12,7 +12,7 @@ import (
 // master key using XChaCha20-Poly1305 with empty AAD. The returned
 // 72-byte payload is:
 //
-//   wrap_nonce(24) || ct_of_per_blob_key(32) || tag(16)
+//	wrap_nonce(24) || ct_of_per_blob_key(32) || tag(16)
 //
 // This is the byte layout stored in data_encryption_keys.wrapped_key.
 //

@@ -18,7 +18,7 @@ func TestIntegrationOpenAndPing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	container, err := postgres.RunContainer(ctx,
+	container, err := postgres.Run(ctx, "postgres:16-alpine",
 		postgres.WithDatabase("novatest"),
 		postgres.WithUsername("nova"),
 		postgres.WithPassword("test-password"),

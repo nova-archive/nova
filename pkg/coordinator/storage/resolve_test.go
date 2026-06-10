@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
-	mh "github.com/multiformats/go-multihash"
 	"github.com/jackc/pgx/v5/pgxpool"
+	mh "github.com/multiformats/go-multihash"
 	"github.com/nova-archive/nova/internal/dbtest"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 	"github.com/stretchr/testify/require"
