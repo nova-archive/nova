@@ -21,6 +21,9 @@ linters:
         - name: error-naming
         - name: package-comments
   exclusions:
+    # presets + paths below are `golangci-lint migrate` output reproducing
+    # the v1 default exclusion behavior (issues.exclude-use-default) — the
+    # gate is equivalent to the old config, not relaxed.
     generated: lax
     presets:
       - comments

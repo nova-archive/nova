@@ -209,6 +209,9 @@ func translateKuboConfig(c *kuboconfig.Config) KuboConfig {
 		out.Routing.Type = c.Routing.Type.WithDefault("")
 	}
 	if c.Provide.Strategy != nil {
+		// Kubo ≥0.36 merged Provider/Reprovider into the single Provide
+		// config; mirror its strategy into both validator fields so both
+		// KUBO_HARDENING.md rows stay independently enforced.
 		strategy := c.Provide.Strategy.WithDefault("")
 		out.Provider.Strategy = strategy
 		out.Reprovider.Strategy = strategy
