@@ -114,13 +114,24 @@ services:
     profiles: ["prod"]
     image: nginx:1.25-alpine
     container_name: nova-nginx
+    # cert-watch.sh wraps nginx: it waits for the cert files the rendered
+    # nova.conf points at (http-01 first boot: certbot writes a self-signed
+    # placeholder within seconds), then runs nginx with a background watcher
+    # that reloads it whenever certbot deploys a new certificate into the
+    # shared nova-config volume (initial issuance and every renewal). It is
+    # a no-op wait + idle watcher for dev-self-signed/static TLS modes.
+    command: ["/bin/sh", "/cert-watch.sh"]
     volumes:
       # include-nova.conf contains a single `include /etc/nova/nova.conf;`
       # which drops the wizard-rendered config into nginx's http{} context.
       - ./nginx/include-nova.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/cert-watch.sh:/cert-watch.sh:ro
       # Wizard-rendered nova.conf, TLS certs, and other operator config.
+      # Read-only on purpose: all TLS writes (placeholder, issued certs) are
+      # done by the certbot sidecar; this public-facing container never
+      # writes its own config.
       - nova-config:/etc/nova:ro
-      # ACME webroot for certbot http-01 challenge renewals.
+      # ACME webroot for certbot http-01 challenge issuance/renewals.
       - acme-webroot:/var/lib/certbot/webroot:ro
       # nginx content cache (populated at runtime; not a named volume so
       # a restart clears it cleanly).
@@ -138,32 +149,38 @@ services:
     security_opt:
       - no-new-privileges:true
 
-  # ── Prod profile: Let's Encrypt certificate renewal ────────────────
+  # ── Prod profile: Let's Encrypt issuance + renewal (http-01) ───────
   certbot:
     profiles: ["prod"]
     image: certbot/certbot
     container_name: nova-certbot
+    environment:
+      # Both default to the wizard's answers (server_name in the rendered
+      # nova.conf / contact_email in operator.yaml); set them in docker/.env
+      # only to override. See docker/.env.example.
+      NOVA_HOSTNAME: "${NOVA_HOSTNAME:-}"
+      NOVA_CONTACT_EMAIL: "${NOVA_CONTACT_EMAIL:-}"
     volumes:
-      # Certbot writes renewed certs to the config volume so nginx picks
-      # them up on the next reload. The wizard provisions TLS once; certbot
-      # only renews (http-01 via the acme-webroot shared with nginx).
+      - ./certbot/certbot-loop.sh:/certbot-loop.sh:ro
+      # Certbot deploys issued/renewed certs into the config volume at the
+      # paths the rendered nova.conf points at; nginx's cert-watch.sh sees
+      # the change and reloads. This volume-mediated copy is the
+      # cross-container deploy hook — no signalling between containers.
       - nova-config:/etc/nova
+      # ACME account + certificate lineage state. Persisted so container
+      # recreation does not re-register or re-issue (LE rate limits).
+      - nova-letsencrypt:/etc/letsencrypt
+      # Webroot shared with nginx for the http-01 challenge.
       - acme-webroot:/var/lib/certbot/webroot
-    # Best-effort http-01 renewal scaffold (prod profile only). Initial
-    # issuance is operator-handoff (see the wizard / `novactl setup` http-01
-    # TLS instructions). `certbot renew` is idempotent and skips certs not yet
-    # due (< 30 days to expiry). Wiring the renewed cert into
-    # /etc/nova/tls/{fullchain,privkey}.pem + an nginx reload (a --deploy-hook
-    # across containers) is finalized in the M14 operator runbook; this loop is
-    # unused for dev-self-signed / static TLS modes.
-    entrypoint: >
-      /bin/sh -c "
-        trap exit TERM;
-        while :; do
-          certbot renew --webroot -w /var/lib/certbot/webroot --quiet || true;
-          sleep 43200 & wait;
-        done
-      "
+    # certbot-loop.sh (http-01 mode only; a 12-hourly no-op otherwise):
+    #   1. writes a self-signed placeholder if the configured leaf is missing,
+    #      breaking the bootstrap deadlock (nginx needs a cert to start;
+    #      certbot needs nginx on :80 for the challenge);
+    #   2. runs `certbot certonly` once if no lineage exists (initial issuance);
+    #   3. runs `certbot renew` (idempotent, skips certs not yet due);
+    #   4. deploys the live lineage over the nova.conf cert paths when it
+    #      differs, which triggers the nginx-side reload.
+    entrypoint: ["/bin/sh", "/certbot-loop.sh"]
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -180,4 +197,6 @@ volumes:
   nova-tmp:
     driver: local
   acme-webroot:
+    driver: local
+  nova-letsencrypt:
     driver: local
