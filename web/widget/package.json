@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@uppy/core": "^3.13.0",
-    "@uppy/drag-drop": "^3.1.0",
+    "@uppy/drag-drop": "^5.1.0",
     "@uppy/status-bar": "^3.3.0",
     "@uppy/tus": "^3.5.0"
   },
