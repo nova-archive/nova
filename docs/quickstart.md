@@ -19,8 +19,8 @@ duplicated here.
 
 - A Linux host with **Docker** and the **compose v2** plugin
   (`docker compose version` works; `docker-compose` v1 is not tested).
-- Roughly 2 GB of free disk for images and volumes, plus whatever you
-  intend to store.
+- Roughly 5 GB of free disk for the image build (Go + Node multi-stage
+  build cache) and volumes, plus whatever you intend to store.
 - A public **DNS hostname** pointing at the host — only if you choose
   the `http-01` (Let's Encrypt) TLS mode. Every other mode works
   without one.
@@ -58,7 +58,7 @@ docker compose -f docker/docker-compose.yml --env-file docker/.env logs coordina
 You will see a line like:
 
 ```
-WARN coordinator SETUP MODE: bootstrap token (present as the X-Nova-Setup-Token header in the wizard) — copy it from this log bootstrap_token=aa9e9198cfec47c804350a72a1ba3aba
+nova-coordinator | 2026/06/10 16:04:11 WARN coordinator SETUP MODE: bootstrap token (present as the X-Nova-Setup-Token header in the wizard) — copy it from this log bootstrap_token=aa9e9198cfec47c804350a72a1ba3aba
 ```
 
 Copy the value after `bootstrap_token=`, then open the wizard at:
@@ -294,7 +294,7 @@ curl -ks --resolve "nova.example.org:8445:127.0.0.1" \
 | `dev-self-signed` | The wizard generates a throwaway CA + leaf. Browsers warn; `curl -k` accepts it. Dev and staging only. | Nothing leaves your machine. |
 | `static` | You supply paths to your own fullchain + key PEMs (drop them in the config volume's TLS dir). You own renewal. | No third party is contacted; disclosure depends on where your cert came from. |
 | `http-01` | Fully automated Let's Encrypt: the certbot sidecar writes a placeholder so nginx can start, obtains the real certificate on first boot, renews it on a 12-hour check loop, and nginx hot-reloads on every deploy. Zero manual certbot steps. Requires your hostname to resolve publicly and port 80 traffic to reach the stack (forward `:80 → :8442`). | Your hostname is published to public **Certificate Transparency logs** (crt.sh and friends). If that is a deanonymization concern, pick another mode. |
-| `dns-01` / `onion` | The wizard renders the config and prints operator-handoff instructions: supply DNS-API credentials out of band (`dns-01`) or run Tor and supply the cert (`onion`). Not automated. | `dns-01` certs still land in CT logs but need no inbound port 80; `onion` keeps your service out of public DNS and CT entirely. |
+| `dns-01` / `onion` | The wizard renders the config and prints operator-handoff instructions: supply DNS-API credentials out of band (`dns-01`) or run Tor and supply the cert (`onion`). Not automated — see the per-mode guidance in [`legal/OPERATOR_CHECKLIST.md`](legal/OPERATOR_CHECKLIST.md). | `dns-01` certs still land in CT logs but need no inbound port 80; `onion` keeps your service out of public DNS and CT entirely. |
 
 ## Headless / scripted setup
 
