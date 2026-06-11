@@ -4,7 +4,7 @@
 
 **Goal:** A curl-driven `tus` resumable upload **or** a `multipart/form-data` upload encrypts, imports deterministically to Kubo, commits the blob/manifest/block/key rows in one transaction (unpinning on rollback), and returns a CID fetchable via M3's read path.
 
-**Architecture:** `internal/api` upload handlers drive a hand-rolled tus 1.0.0 session store (`internal/upload`, backed by a new `upload_sessions` table + on-disk chunk file) and, at finalize/multipart, call a product-agnostic `pkg/coordinator/storage.Service.Put` (validate MIME floor → encrypt → import → commit → unpin-on-rollback). Concurrency is bounded by an in-process per-session lock + optimistic offset commit, and assembly RAM by a buffered-channel semaphore. See `docs/superpowers/specs/2026-05-29-phase1-m4-upload-pipeline-design.md`.
+**Architecture:** `internal/api` upload handlers drive a hand-rolled tus 1.0.0 session store (`internal/upload`, backed by a new `upload_sessions` table + on-disk chunk file) and, at finalize/multipart, call a product-agnostic `pkg/coordinator/storage.Service.Put` (validate MIME floor → encrypt → import → commit → unpin-on-rollback). Concurrency is bounded by an in-process per-session lock + optimistic offset commit, and assembly RAM by a buffered-channel semaphore. See `docs/superpowers/specs/phase1/2026-05-29-phase1-m4-upload-pipeline-design.md`.
 
 **Tech Stack:** Go 1.22, Postgres 16 (pgx/v5 + sqlc), Kubo (embedded), chi router, goose migrations, testcontainers-go, stdlib `net/http` (tus + multipart + `DetectContentType`). No new third-party dependencies.
 
@@ -45,8 +45,8 @@
 | `pkg/coordinator/coordinator.go` | construct upload store + handler; start GC ticker in `Run` |
 | `cmd/coordinator/main.go` | upload env knobs; create `tmp_dir` |
 | `docker/nginx/nova.dev.conf` | pass `/api/v1/uploads` + `/api/v1/blobs` |
-| `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` | reconcile M4 line (nova-image AnalyzeUpload → M5) |
-| `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` | mark M4 in progress; `/api/v1/images` → M5; link M4 plan |
+| `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` | reconcile M4 line (nova-image AnalyzeUpload → M5) |
+| `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` | mark M4 in progress; `/api/v1/images` → M5; link M4 plan |
 | `internal/db/gen/*` | regenerated (committed) |
 
 ---
@@ -61,7 +61,7 @@
 -- +goose Up
 -- +goose StatementBegin
 -- Migration 0005: tus resumable-upload session table.
--- See docs/superpowers/specs/2026-05-29-phase1-m4-upload-pipeline-design.md
+-- See docs/superpowers/specs/phase1/2026-05-29-phase1-m4-upload-pipeline-design.md
 -- § "Data model addition". Short-lived, GC'd, not partitioned. No filename
 -- column (data minimization; blobs stores none either).
 
@@ -1962,7 +1962,7 @@ git commit -s -m "test(m4): nginx-fronted tus + multipart round-trip (jpeg/png/w
 
 ## Task 12: Doc reconciliations + mark M4 in progress
 
-**Files:** Modify `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`, `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md`.
+**Files:** Modify `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`, `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md`.
 
 - [ ] **Step 12.1: Reconcile the Phase-1 design M4 line**
 
@@ -1971,7 +1971,7 @@ In `…single-node-mvp-design.md` under "**M4 — Upload pipeline (~week 4)**", 
 ```
 - Product-agnostic write path; the AnalyzeUpload seam is a no-op in M4.
   nova-image AnalyzeUpload (width/height/PDQ) moves to M5 (see
-  docs/superpowers/specs/2026-05-29-phase1-m4-upload-pipeline-design.md
+  docs/superpowers/specs/phase1/2026-05-29-phase1-m4-upload-pipeline-design.md
   § "Source of truth and required doc reconciliations").
 ```
 
@@ -1982,7 +1982,7 @@ In `…single-node-mvp.md`: set the M4 row Status to **in progress** and Plan to
 - [ ] **Step 12.3: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md
+git add docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md
 git commit -s -m "docs(m4): mark M4 in progress; reconcile nova-image AnalyzeUpload + /api/v1/images to M5" \
   -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```

@@ -89,7 +89,7 @@ already exist: `signing_keys`, `signed_url_revocations`, and the `key_state` enu
    response schemas with the implemented handlers. Document the `403 invalid_signature` read
    error and its `code` values.
 
-4. **`docs/ROADMAP.md` + `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` — M7
+4. **`docs/ROADMAP.md` + `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` — M7
    row.** Mark M7 status and link this design + its plan. Amend the M7 line to include the
    mint endpoint (the roadmap currently lists verifier + rotation + revocation only). Record
    the `m7-signed-urls` tag on completion.
@@ -581,7 +581,7 @@ docs/specs/DATA_MODEL.sql                     key_state comment reconciliation (
 docs/specs/SIGNED_URL_FORMAT.md               fill test vectors; flip M7 status note (#2)
 docs/specs/openapi.yaml                       add /signed-urls/sign; reconcile rotate/revoke; invalid_signature codes (#3)
 docs/ROADMAP.md                               M7 status + mint endpoint + tag (#4)
-docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md   M7 row + link (#4)
+docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md   M7 row + link (#4)
 ```
 
 ### Reused unchanged
@@ -599,9 +599,9 @@ internal/api/httputil/                         WriteError (Error shape)
 
 - `docs/specs/SIGNED_URL_FORMAT.md` — the normative wire format, verification order, rotation,
   and revocation scheme M7 implements.
-- `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` § "M7 — Signed URLs +
+- `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` § "M7 — Signed URLs +
   signing-key rotation".
-- `docs/superpowers/plans/2026-06-01-phase1-m7-signed-urls.md` — the implementation plan.
+- `docs/superpowers/plans/phase1/2026-06-01-phase1-m7-signed-urls.md` — the implementation plan.
 - `docs/specs/DATA_MODEL.sql` — `signing_keys`, `signed_url_revocations`, `key_state`.
 - `docs/specs/openapi.yaml` — `/api/v1/admin/keys/rotate-signing`, `/api/v1/admin/signed-urls/*`.
 - `internal/envelope/keystore.go` — master-key wrap/unwrap (distinct key class from these

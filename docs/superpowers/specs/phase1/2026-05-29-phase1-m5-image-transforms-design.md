@@ -18,7 +18,7 @@ handler that `OnCommitted` enqueues.
 
 **Status:** approved design (review incorporated — Denial-of-Storage, CGO memory, auth-join,
 deletion-cascade corrections folded in). Implementation plan follows in
-`docs/superpowers/plans/2026-05-29-phase1-m5-image-transforms.md`.
+`docs/superpowers/plans/phase1/2026-05-29-phase1-m5-image-transforms.md`.
 
 **Author:** Bug Plowman (operator), Claude (implementation partner).
 
@@ -708,18 +708,18 @@ paths exercised in a variant with them enabled (skipped if the CI libvips lacks 
 | `docs/specs/PRODUCT_MODULE_INTERFACE.md` | image_metadata core-owned note; PDQ two-track |
 | `docs/specs/DATA_MODEL.sql` + `internal/db/migrations/0001_init.sql` | `perceptual_hash` comment (two-track; no schema change) |
 | `docs/ROADMAP.md` | Phase 3 pHash / Phase 4 PDQ naming |
-| `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` | resolve base-image to Debian-slim; worker-pool startup → M5 |
-| `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` | mark M5 in progress; link M5 plan |
+| `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` | resolve base-image to Debian-slim; worker-pool startup → M5 |
+| `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` | mark M5 in progress; link M5 plan |
 
 ---
 
 ## Cross-references
 
-- `docs/superpowers/specs/2026-05-29-phase1-m4-upload-pipeline-design.md` — the write path M5
+- `docs/superpowers/specs/phase1/2026-05-29-phase1-m4-upload-pipeline-design.md` — the write path M5
   extends (the `Put` transaction, the `AnalyzeUpload` no-op seam, dedup/unpin discipline).
-- `docs/superpowers/specs/2026-05-28-phase1-m3-storage-read-api-design.md` — the read path,
+- `docs/superpowers/specs/phase1/2026-05-28-phase1-m3-storage-read-api-design.md` — the read path,
   visibility/state mapping, and dev-nginx harness M5 reuses.
-- `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` — Phase-1 architecture
+- `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` — Phase-1 architecture
   (transform pipeline §, derivative §, container topology, M5 milestone line).
 - `docs/specs/PRODUCT_MODULE_INTERFACE.md` — the `Product` contract M5 implements; the
   derivative procedure; reconciliations #1 and #2.

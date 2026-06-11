@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26, chi, pgx/sqlc, testcontainers (`internal/dbtest`), embedded Kubo (`internal/ipfs`), **govips/libvips (first cgo dependency)**, testify.
 
-**Spec:** `docs/superpowers/specs/2026-05-29-phase1-m5-image-transforms-design.md` (authoritative).
+**Spec:** `docs/superpowers/specs/phase1/2026-05-29-phase1-m5-image-transforms-design.md` (authoritative).
 
 **Conventions (match the existing codebase):**
 - Integration tests guard with `if testing.Short() { t.Skip("integration") }` and use `dbtest.New(t, ctx)`.
@@ -1382,7 +1382,7 @@ func NewDerivativePrewarmHandler(prewarm func(ctx context.Context, parentCID str
 
 ## Task 18: Documentation reconciliations (the six from the spec)
 
-**Files:** `docs/specs/openapi.yaml`, `docs/specs/PRODUCT_MODULE_INTERFACE.md`, `docs/specs/DATA_MODEL.sql`, `internal/db/migrations/0001_init.sql`, `docs/ROADMAP.md`, `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`, `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md`.
+**Files:** `docs/specs/openapi.yaml`, `docs/specs/PRODUCT_MODULE_INTERFACE.md`, `docs/specs/DATA_MODEL.sql`, `internal/db/migrations/0001_init.sql`, `docs/ROADMAP.md`, `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`, `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md`.
 
 - [ ] **Step 1:** `openapi.yaml` — add `jxl` to the `ext` enums on `/i/{cid}.{ext}`, `/i/{cid}/{w}x{h}.{ext}`, `/i/{cid}/w{w}.{ext}` (note operator-gated/off-by-default); add `406` (output format not enabled) and `400` (dimension not whitelisted) responses to the transform routes.
 - [ ] **Step 2:** `PRODUCT_MODULE_INTERFACE.md` — § "Database conventions": note `image_metadata` is core-owned (in `DATA_MODEL.sql`); the products-own-migrations rule governs *future new* tables. § "AnalyzeUpload" + "Reference: nova-image": replace the monolithic "PDQ" with the two-track plan (Go-native pHash dedup → Phase 3; PDQ vs StopNCII/NCMEC → Phase 4).

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26 (per `go.mod`), pgx/v5 (`Begin`/`WithTx`, `pgconn.PgError` for the CHECK), `encoding/json` (jsonb payloads), `log/slog`, sqlc (`:one`/`:many`/`:exec`, `sqlc.narg`/`sqlc.arg`), chi, testcontainers-go (Postgres + nginx). No new third-party dependencies.
 
-**Authoritative spec:** `docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md` (and the normative `docs/legal/DMCA_PROCEDURE.md` + `docs/legal/SEVERE_CONTENT_PROCEDURE.md`).
+**Authoritative spec:** `docs/superpowers/specs/phase1/2026-06-02-phase1-m9-moderation-design.md` (and the normative `docs/legal/DMCA_PROCEDURE.md` + `docs/legal/SEVERE_CONTENT_PROCEDURE.md`).
 
 ---
 

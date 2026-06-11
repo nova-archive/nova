@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go (chi, pgx/sqlc-gen, crypto/rand, crypto/x509, text/template, embed), React + Vite (hermetic, Node-16-safe pins mirroring `web/admin`), nginx, Docker multi-stage (Debian-slim), certbot.
 
-**Spec:** `docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md`
+**Spec:** `docs/superpowers/specs/phase1/2026-06-08-phase1-m13-setup-wizard-design.md`
 
 **Conventions (from prior milestones):**
 - TDD: failing test → run-fail → minimal impl → run-pass → commit.
@@ -49,7 +49,7 @@
 - `Makefile` — `setup-{install,build,lint,test}`, `docker-build`, `web` aggregate.
 - `.github/workflows/ci.yml` — `web-setup` lane + `docker-build` lane.
 - `package.json` / `package-lock.json` — add `web/setup` to workspaces.
-- Docs: `docs/ROADMAP.md`, `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`, `docs/THREAT_MODEL.md`, `docs/specs/openapi.yaml`, `docs/legal/OPERATOR_CHECKLIST.md`, `README.md`.
+- Docs: `docs/ROADMAP.md`, `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`, `docs/THREAT_MODEL.md`, `docs/specs/openapi.yaml`, `docs/legal/OPERATOR_CHECKLIST.md`, `README.md`.
 
 **Reused unchanged:** `internal/config` (loader + floors), `internal/auth/password` + `internal/db/gen` (`CreateUser`/`UserRoleOperator`), `internal/api/handlers/admin_spa.go` (seam pattern), `scripts/hermetic-spa.sh`, the `internal/integration` harness, `web/admin` build conventions.
 
@@ -949,7 +949,7 @@ exec /usr/local/bin/coordinator
 ## Task 13: Documentation reconciliations + nginx reference
 
 **Files:**
-- Modify: `docs/ROADMAP.md`, `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`, `docs/THREAT_MODEL.md`, `docs/specs/openapi.yaml`, `docs/legal/OPERATOR_CHECKLIST.md`, `README.md`, `nginx/nova.conf.example`
+- Modify: `docs/ROADMAP.md`, `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`, `docs/THREAT_MODEL.md`, `docs/specs/openapi.yaml`, `docs/legal/OPERATOR_CHECKLIST.md`, `README.md`, `nginx/nova.conf.example`
 
 - [ ] **Step 1: `docs/ROADMAP.md`** — flesh out the M13 row (status pending→done on completion; link this design + plan; tag `m13-setup-wizard`; record deferrals: hardening/signing/CI-smoke/quickstart → M14, dns-01/onion automation → later, operator.yaml tuning-knob decode → later).
 - [ ] **Step 2: Master plan** — M13 status/links; reconcile "Onboarding wizard" (setup mode folded into the coordinator; operator.yaml canonical+env-override) + container-topology with what shipped.

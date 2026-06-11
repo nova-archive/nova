@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go, PostgreSQL (sqlc + inline pgx for jobs), chi, testcontainers + nginx harness; React 18 + Vite + TypeScript, React Router, TanStack Query, Radix UI, CSS Modules, `@fontsource/ibm-plex-*`, `openapi-typescript`, Vitest.
 
-**Design:** `docs/superpowers/specs/2026-06-04-phase1-m11-admin-spa-design.md` is the source of truth; read its "The content-lifecycle primitive", "Coordinator static serving", and "The Admin SPA" sections before starting.
+**Design:** `docs/superpowers/specs/phase1/2026-06-04-phase1-m11-admin-spa-design.md` is the source of truth; read its "The content-lifecycle primitive", "Coordinator static serving", and "The Admin SPA" sections before starting.
 
 ---
 

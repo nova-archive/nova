@@ -14,7 +14,7 @@ import (
 // newest-first view of the append-only audit_log, optionally filtered by action
 // and target_type. The audit_log is the legal record of every moderation
 // decision (operator-only via routing, Task 10). See
-// docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md § HTTP contract.
+// docs/superpowers/specs/phase1/2026-06-02-phase1-m9-moderation-design.md § HTTP contract.
 type AuditLogAdminHandler struct{ q *gen.Queries }
 
 // NewAuditLogAdminHandler builds the handler over the generated queries.

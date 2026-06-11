@@ -15,7 +15,7 @@ that validates the MIME floor, encrypts (envelope v1) under a freshly-wrapped pe
 typed errors the handler maps to status codes.
 
 **Status:** approved design (review incorporated) — implementation plan follows in
-`docs/superpowers/plans/2026-05-29-phase1-m4-upload-pipeline.md`.
+`docs/superpowers/plans/phase1/2026-05-29-phase1-m4-upload-pipeline.md`.
 
 **Author:** Bug Plowman (operator), Claude (implementation partner).
 
@@ -621,18 +621,18 @@ Existing `test`/`vet`/`lint`/`schema-drift` gates run unchanged.
 | `internal/config/types.go` + `operator_yaml.go` | `Uploads` section + defaults |
 | `internal/db/gen/*` | regenerated for the new queries (committed) |
 | `docker/nginx/nova.dev.conf` | pass `/api/v1/uploads*` + `/api/v1/blobs` to the coordinator |
-| `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` | reconcile M4 milestone line (nova-image AnalyzeUpload → M5) |
-| `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` | mark M4 in progress; move `/api/v1/images` to M5; link M4 plan |
+| `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` | reconcile M4 milestone line (nova-image AnalyzeUpload → M5) |
+| `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` | mark M4 in progress; move `/api/v1/images` to M5; link M4 plan |
 
 ---
 
 ## Cross-references
 
-- `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` — Phase 1 architecture
+- `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` — Phase 1 architecture
   (upload pipeline §, job lifecycle §, container topology § for the `nova-tmp-uploads` volume).
-- `docs/superpowers/specs/2026-05-28-phase1-m3-storage-read-api-design.md` — the read path M4
+- `docs/superpowers/specs/phase1/2026-05-28-phase1-m3-storage-read-api-design.md` — the read path M4
   feeds and the layering/`nova_dev`/dev-nginx patterns M4 mirrors.
-- `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` — milestone table + M4 summary.
+- `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` — milestone table + M4 summary.
 - `docs/specs/openapi.yaml` — `/api/v1/uploads*`, `/api/v1/blobs`, `UploadResult`, `Error`.
 - `docs/specs/DATA_MODEL.sql` — `blobs`, `data_encryption_keys`, `blob_manifests`,
   `blob_blocks`, `collections`, `collection_items` (write targets); `set_updated_at()`.

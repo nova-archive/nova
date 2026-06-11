@@ -24,7 +24,7 @@ import (
 // counter-notice), the decision queue, the DMCA-case views, and the blocklist.
 // Operator-vs-moderator authorization is enforced by route mounting (Task 10),
 // not here. See
-// docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md § HTTP contract.
+// docs/superpowers/specs/phase1/2026-06-02-phase1-m9-moderation-design.md § HTTP contract.
 type ModerationAdminHandler struct {
 	svc *moderation.Service
 	q   *gen.Queries

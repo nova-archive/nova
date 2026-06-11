@@ -8,7 +8,7 @@
 
 **Tech Stack:** golangci-lint v2, GitHub Actions, sha256sum, Go modules (quic-go/otel bumps), npm workspaces + Vite 7 + Vitest 3.x + Node 22, docker compose, certbot (webroot http-01), nginx, bash.
 
-**Spec:** `docs/superpowers/specs/2026-06-09-phase1-m14-polish-release-design.md`
+**Spec:** `docs/superpowers/specs/phase1/2026-06-09-phase1-m14-polish-release-design.md`
 
 **Conventions (from prior milestones):**
 - gofmt only the Go files you touch (toolchain-skew rule); golangci-lint is CI-side (exception: Task 1 validates the v2 config with a locally downloaded binary once).
@@ -884,7 +884,7 @@ git commit -m "docs(quickstart): screenshot operator quickstart — clone to ser
 ## Task 11: Phase-1 docs reconciliation
 
 **Files:**
-- Modify: `docs/ROADMAP.md`, `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`, `docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md`, `README.md`, `docs/VOLUNTEER_DEPLOYMENT_GUIDANCE.md`, `docs/recipes/NGINX_REFERENCE.md`, `docs/legal/OPERATOR_CHECKLIST.md`
+- Modify: `docs/ROADMAP.md`, `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`, `docs/superpowers/specs/phase1/2026-06-08-phase1-m13-setup-wizard-design.md`, `README.md`, `docs/VOLUNTEER_DEPLOYMENT_GUIDANCE.md`, `docs/recipes/NGINX_REFERENCE.md`, `docs/legal/OPERATOR_CHECKLIST.md`
 
 - [ ] **Step 1: `docs/ROADMAP.md`.** Rewrite the M14 row in the completed style of M7–M13: status ✅, tag names (`m14-polish-release`, `v0.1.0-rc1`), one-paragraph summary (CI repairs: golangci-lint v2 + migration-immutability manifest; Dependabot triage outcome — nothing production-exploitable, quic-go/otel patched, Vite-7/Vitest-3/Node-22 toolchain jump; dependabot.yml + currency policy; full-stack CI smoke; http-01 issuance + cert-watch reload; compose hardening floors; quickstart), design/plan doc links, and the deferrals (release signing + seccomp/AppArmor/chaos → Phase 5). Mark the "Phase 1 — Single-node MVP" section complete at `v0.1.0-rc1`.
 
@@ -901,8 +901,8 @@ git commit -m "docs(quickstart): screenshot operator quickstart — clone to ser
 - [ ] **Step 7: Commit.**
 
 ```bash
-git add docs/ROADMAP.md docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md \
-        docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md README.md \
+git add docs/ROADMAP.md docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md \
+        docs/superpowers/specs/phase1/2026-06-08-phase1-m13-setup-wizard-design.md README.md \
         docs/VOLUNTEER_DEPLOYMENT_GUIDANCE.md docs/recipes/NGINX_REFERENCE.md \
         docs/legal/OPERATOR_CHECKLIST.md
 git commit -m "docs(m14): roadmap, master plan, README, runbook — Phase 1 complete at v0.1.0-rc1 (m14)"

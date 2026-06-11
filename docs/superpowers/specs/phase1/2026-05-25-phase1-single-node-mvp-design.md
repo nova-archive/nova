@@ -730,7 +730,7 @@ When external OIDC is on, the local-issuer endpoints
 `404 external_oidc_active` and clients discover the IdP via the
 always-served `GET /api/v1/auth/config`, then drive PKCE themselves.
 This was clarified in the M6 design — see
-`docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md`
+`docs/superpowers/specs/phase1/2026-05-30-phase1-m6-auth-design.md`
 § "Mode selection" — superseding the earlier "SPA/CLI redirect" wording.
 
 ## Onboarding wizard
@@ -744,7 +744,7 @@ This was clarified in the M6 design — see
 > sentinel-gated. The **web** wizard configures the local issuer (the default); the
 > **external-OIDC** path (`auth_mode: external` + `issuer_url`/`client_id`) is configured
 > via the headless `novactl setup --config-file` / manual `operator.yaml` path, not the
-> web stepper. Design: `docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md`.
+> web stepper. Design: `docs/superpowers/specs/phase1/2026-06-08-phase1-m13-setup-wizard-design.md`.
 
 The wizard runs only when `.bootstrap-complete` is absent. The
 coordinator's entrypoint script (`docker/init/entrypoint.sh`) checks
@@ -920,7 +920,7 @@ ready to render the surface.
 - Master-key wrap/unwrap; `data_encryption_keys` lifecycle.
 - Product-agnostic write path; the AnalyzeUpload seam is a no-op in M4.
   nova-image AnalyzeUpload (width/height/PDQ) moves to M5 — see
-  `docs/superpowers/specs/2026-05-29-phase1-m4-upload-pipeline-design.md`
+  `docs/superpowers/specs/phase1/2026-05-29-phase1-m4-upload-pipeline-design.md`
   § "Source of truth and required doc reconciliations".
 - curl upload → GET /blob/{cid} round-trips a JPEG.
 
@@ -937,15 +937,15 @@ ready to render the surface.
 - `/api/v1/auth/login`, `/refresh`, `/logout`, `/jwks.json`.
 - `novactl auth login` CLI.
 - DEV → PROD: nova_dev build tag dropped; production refuses without bearer.
-- Design: `docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md`.
-  Implementation plan: `docs/superpowers/plans/2026-05-30-phase1-m6-auth.md`.
+- Design: `docs/superpowers/specs/phase1/2026-05-30-phase1-m6-auth-design.md`.
+  Implementation plan: `docs/superpowers/plans/phase1/2026-05-30-phase1-m6-auth.md`.
 
 **M6.1 — Keystore hardening (out-of-band)**
 - Master-key resolver chain (env → `_FILE` → `/run/secrets/master-key-<label>`)
   for both `NOVA_MASTER_KEY_<LABEL>` and `NOVA_OIDC_SIGNING_KEY`.
 - ACTIVE/FILE pseudo-label filtering so typo'd forms cannot leak.
 - `THREAT_MODEL.md` boundary ③ amended.
-- Design: `docs/superpowers/specs/2026-05-31-m6.1-keystore-secret-mount-design.md`.
+- Design: `docs/superpowers/specs/phase1/2026-05-31-m6.1-keystore-secret-mount-design.md`.
 
 **M6.2 — Audit remediation (out-of-band)**
 - Spec-drift reconciliation across persistent docs (README, ROADMAP,
@@ -1005,8 +1005,8 @@ ready to render the surface.
 **M12 — Widget (implemented, tag `m12-upload-widget`)**
 - Hermetic Uppy + tus embeddable widget (`web/widget/`); single-`<script>` embed;
   `getToken` bearer; coordinator `/widget/*` seam (`NOVA_WIDGET_DIST_DIR`).
-- Design: `docs/superpowers/specs/2026-06-07-phase1-m12-upload-widget-design.md`.
-  Plan: `docs/superpowers/plans/2026-06-07-phase1-m12-upload-widget.md`.
+- Design: `docs/superpowers/specs/phase1/2026-06-07-phase1-m12-upload-widget-design.md`.
+  Plan: `docs/superpowers/plans/phase1/2026-06-07-phase1-m12-upload-widget.md`.
 
 **M13 — Setup wizard + Docker production (implemented, tag `m13-setup-wizard`)**
 - Shared UI-agnostic core (`internal/setup/`) behind both a hermetic React+Vite web
@@ -1028,8 +1028,8 @@ ready to render the surface.
   127.0.0.1:8444; wizard-generated secrets land in the `nova-secrets` volume.
 - The web wizard configures the local issuer (default); external-OIDC is configured via
   the headless `novactl setup --config-file` / manual `operator.yaml` path.
-- Design: `docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md`.
-  Plan: `docs/superpowers/plans/2026-06-08-phase1-m13-setup-wizard.md`.
+- Design: `docs/superpowers/specs/phase1/2026-06-08-phase1-m13-setup-wizard-design.md`.
+  Plan: `docs/superpowers/plans/phase1/2026-06-08-phase1-m13-setup-wizard.md`.
 
 **M14 — Polish + docs (implemented, tags `m14-polish-release` + `v0.1.0-rc1`)**
 - Full-stack end-to-end smoke in CI (`scripts/smoke.sh`, blocking `smoke` job): image
@@ -1048,8 +1048,8 @@ ready to render the surface.
 - Container hardening floors (healthchecks, read-only rootfs, `cap_drop: [ALL]`,
   `no-new-privileges`). Release signing (sigstore/cosign) → Phase 5.
 - Phase 1 release-candidate tag `v0.1.0-rc1`.
-- Design: `docs/superpowers/specs/2026-06-09-phase1-m14-polish-release-design.md`.
-  Plan: `docs/superpowers/plans/2026-06-09-phase1-m14-polish-release.md`.
+- Design: `docs/superpowers/specs/phase1/2026-06-09-phase1-m14-polish-release-design.md`.
+  Plan: `docs/superpowers/plans/phase1/2026-06-09-phase1-m14-polish-release.md`.
 
 Each milestone ends with a working artifact that can be
 demonstrated or tested. M1–M5 form the walking skeleton; M6–M10
@@ -1344,5 +1344,5 @@ predict now:
   history in this conversation; key changes documented in the v3.1
   amendment commit.
 - The implementation plan derived from this design will live at
-  `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp-plan.md`
+  `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp-plan.md`
   (writing-plans skill output).

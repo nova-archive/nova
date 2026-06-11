@@ -171,7 +171,7 @@ threat tolerance.
 
 | Key | Default | Notes | Where documented |
 |---|---|---|---|
-| `auth.issuer_url` | empty (built-in local issuer) | non-empty ⇒ verify-only external OIDC; local issuer endpoints 404 `external_oidc_active` | M6 design `docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md` |
+| `auth.issuer_url` | empty (built-in local issuer) | non-empty ⇒ verify-only external OIDC; local issuer endpoints 404 `external_oidc_active` | M6 design `docs/superpowers/specs/phase1/2026-05-30-phase1-m6-auth-design.md` |
 | `auth.role_claim` | `groups` | external-OIDC claim read for role mapping | M6 design |
 | `auth.role_mapping` | operator-supplied | maps IdP group/scope strings → Nova roles; unmapped ⇒ `viewer` (safe default) | M6 design |
 | `uploads.public_uploads` | `false` | `true` allows anonymous uploads; refuse-to-start without `tos_url` (T1.20) | M6 design; `PRIVACY_AUDIT.md` |

@@ -88,7 +88,7 @@
 | Path | Why |
 |---|---|
 | `go.mod` / `go.sum` | Add `github.com/ipfs/kubo`, `github.com/ipfs/boxo`, `github.com/ipfs/go-cid`, `github.com/multiformats/go-multihash` |
-| `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` | Mark M2 status `completed`, link this plan |
+| `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` | Mark M2 status `completed`, link this plan |
 
 ### Not created in M2 (planned but deferred)
 
@@ -3266,7 +3266,7 @@ import "time"
 // Backoff returns the delay to apply before a job becomes eligible
 // after a retryable failure. Exponential growth (5s, 10s, 20s, ...)
 // capped at 5 minutes. The shape of the curve is documented in
-// docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md
+// docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md
 // § "Job lifecycle".
 //
 // Attempts is the count after the current failure (i.e., the row's
@@ -4475,16 +4475,16 @@ git push origin m2-envelope-ipfs
 
 - [ ] **Step 14.5: Update the master plan to mark M2 completed**
 
-Edit `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md`. In the milestone table:
+Edit `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md`. In the milestone table:
 
 ```
-| M2 | Envelope + IPFS round-trip | **completed** | docs/superpowers/plans/2026-05-25-phase1-m2-envelope-ipfs.md |
+| M2 | Envelope + IPFS round-trip | **completed** | docs/superpowers/plans/phase1/2026-05-25-phase1-m2-envelope-ipfs.md |
 ```
 
 - [ ] **Step 14.6: Commit and push the status update**
 
 ```bash
-git add docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md
+git add docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md
 git commit -s -m "docs(plans): mark M2 completed; link M2 detailed plan"
 git push origin main
 ```
@@ -4541,7 +4541,7 @@ Plan complete.
 
 ## Execution handoff
 
-**Plan complete and saved to `docs/superpowers/plans/2026-05-25-phase1-m2-envelope-ipfs.md`. Two execution options:**
+**Plan complete and saved to `docs/superpowers/plans/phase1/2026-05-25-phase1-m2-envelope-ipfs.md`. Two execution options:**
 
 **1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration on the Kubo coreapi specifics that may need version-by-version adjustment.
 

@@ -585,8 +585,8 @@ internal/db/queries/masterkey.sql                   claim/rewrap/count DEKs + si
 internal/api/handlers/masterkey_admin.go            rotate-master + rotation-status handlers
 internal/api/handlers/masterkey_admin_test.go
 internal/integration/m10_master_key_rotation_test.go  two-boot end-to-end through nginx (the four exit criteria)
-docs/superpowers/specs/2026-06-03-phase1-m10-master-key-rotation-design.md   (this file)
-docs/superpowers/plans/2026-06-03-phase1-m10-master-key-rotation.md          (the implementation plan)
+docs/superpowers/specs/phase1/2026-06-03-phase1-m10-master-key-rotation-design.md   (this file)
+docs/superpowers/plans/phase1/2026-06-03-phase1-m10-master-key-rotation.md          (the implementation plan)
 ```
 
 ### Modified in M10
@@ -651,5 +651,5 @@ internal/dbtest, internal/blobfixture, internal/integration   test harness
   is the operator-only admin-endpoint precedent.
 - M8 design (`2026-06-02-phase1-m8-integrity-audit-scheduler-design.md`) / M9 design — the in-process worker,
   resumable-from-DB, dep-gated wiring, and `/readyz` conventions M10 reuses.
-- `docs/superpowers/plans/2026-06-03-phase1-m10-master-key-rotation.md` — the implementation plan.
+- `docs/superpowers/plans/phase1/2026-06-03-phase1-m10-master-key-rotation.md` — the implementation plan.
 ```

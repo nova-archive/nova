@@ -16,7 +16,7 @@ import (
 // moderation action — an operator triages the case later via the admin API.
 // The route is public; abuse is bounded by the existing rate-limit middleware
 // and the 64 KiB body cap below. See
-// docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md § HTTP contract.
+// docs/superpowers/specs/phase1/2026-06-02-phase1-m9-moderation-design.md § HTTP contract.
 type DMCAIntakeHandler struct{ q *gen.Queries }
 
 // NewDMCAIntakeHandler builds the handler over the generated queries.

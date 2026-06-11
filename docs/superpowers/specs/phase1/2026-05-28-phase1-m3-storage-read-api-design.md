@@ -14,7 +14,7 @@ fetches its envelope (embedded Kubo), unwraps the per-blob key (keystore), and
 decrypts (envelope v1) — returning typed errors the handler maps to status codes.
 
 **Status:** approved design — implementation plan follows in
-`docs/superpowers/plans/2026-05-28-phase1-m3-storage-read-api.md`.
+`docs/superpowers/plans/phase1/2026-05-28-phase1-m3-storage-read-api.md`.
 
 **Author:** Bug Plowman (operator), Claude (implementation partner).
 
@@ -531,16 +531,16 @@ exercise the whole-object path. This is a documented budget, not a latency SLO
 | `Makefile` | `sqlc-generate`, `codegen-check`, coordinator build/run targets |
 | `.github/workflows/ci.yml` | Add `codegen-check` gate |
 | `docs/specs/openapi.yaml` | Reconciliations: split `private/unlisted` (l.112); streaming-AEAD "Phase 2" (l.117-119) |
-| `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` | Mark M3 status; amend `audit_log` to M6; link M3 plan |
+| `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` | Mark M3 status; amend `audit_log` to M6; link M3 plan |
 
 ---
 
 ## Cross-references
 
-- `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` — Phase 1
+- `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` — Phase 1
   architecture (read pipeline §, container topology §, error handling §).
-- `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` — milestone table.
-- `docs/superpowers/plans/2026-05-25-phase1-m2-envelope-ipfs.md` — M2 plan (deps M3 builds on).
+- `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` — milestone table.
+- `docs/superpowers/plans/phase1/2026-05-25-phase1-m2-envelope-ipfs.md` — M2 plan (deps M3 builds on).
 - `docs/specs/openapi.yaml` — `/health`, `/blob/{cid}`, `/blob/{cid}.json` contracts + schemas.
 - `docs/specs/DATA_MODEL.sql` — `blobs`, `data_encryption_keys`, `collections`,
   `collection_items`, `blob_manifests` (+ migration 0004 `envelope_version`).

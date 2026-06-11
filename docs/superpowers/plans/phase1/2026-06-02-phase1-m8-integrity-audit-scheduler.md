@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26 (per `go.mod`), stdlib `crypto/sha256` (via go-cid `Prefix().Sum`), `context`, `log/slog`, pgx/v5 (`Batch`), sqlc (`:batchexec`, `sqlc.narg`), chi, testcontainers-go (Postgres + nginx). No new third-party dependencies.
 
-**Authoritative spec:** `docs/superpowers/specs/2026-06-02-phase1-m8-integrity-audit-scheduler-design.md` (and the normative `docs/specs/INTEGRITY_AUDIT.md`).
+**Authoritative spec:** `docs/superpowers/specs/phase1/2026-06-02-phase1-m8-integrity-audit-scheduler-design.md` (and the normative `docs/specs/INTEGRITY_AUDIT.md`).
 
 ---
 
@@ -43,7 +43,7 @@ pkg/coordinator/coordinator.go                 Config.IntegrityAudit; build Sche
 cmd/coordinator/main.go                        populate IntegrityAudit defaults; NOVA_INTEGRITY_AUDIT_ENABLED
 internal/config/types.go                       comment only (structs already match)
 docs/specs/INTEGRITY_AUDIT.md                  reconciliations (a)–(e)
-docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md  in-process model reconciliation
+docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md  in-process model reconciliation
 docs/specs/openapi.yaml                        confirm/complete listIntegrityAudits + page params
 docs/ROADMAP.md                                M8 status + links + tag
 ```
@@ -749,7 +749,7 @@ if c.auditScheduler != nil && c.cfg.IntegrityAudit.Enabled {
 ## Task 10: documentation reconciliations
 
 **Files:**
-- Modify: `docs/specs/INTEGRITY_AUDIT.md`, `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`, `docs/specs/openapi.yaml`, `docs/ROADMAP.md`
+- Modify: `docs/specs/INTEGRITY_AUDIT.md`, `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`, `docs/specs/openapi.yaml`, `docs/ROADMAP.md`
 
 - [ ] **Step 1: INTEGRITY_AUDIT.md** — reconciliations (a)–(e) from the design § "Source of truth": metric deferred; webhook deferred (FailureSink seam); `sample_decrypt` whole-envelope v1 clarification; `derivative_state_consistent` sampling-vs-"past hour" note; concrete retention mechanism (monthly create-ahead + pass DELETE@30d + partition DROP@≥1y).
 
@@ -763,7 +763,7 @@ if c.auditScheduler != nil && c.cfg.IntegrityAudit.Enabled {
 
 ```bash
 npx --yes @redocly/cli lint docs/specs/openapi.yaml 2>&1 | tail -5 || echo "(no redocly; skipping)"
-git add docs/specs/INTEGRITY_AUDIT.md docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md docs/specs/openapi.yaml docs/ROADMAP.md
+git add docs/specs/INTEGRITY_AUDIT.md docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md docs/specs/openapi.yaml docs/ROADMAP.md
 git commit -m "docs(m8): reconcile in-process model, deferred metric/webhook, retention, openapi"
 ```
 

@@ -105,7 +105,7 @@ The package path `internal/audit/integrity` is a `.gitkeep` stub today; M8 popul
      partition create-ahead, `DELETE` of `pass` rows older than 30 d, and `DROP` of
      partitions entirely older than the failure-retention window (default ≥ 1 y).
 
-2. **`docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` — reconcile the
+2. **`docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` — reconcile the
    execution model to the normative spec.** The "Integrity audit loop" sketch (lines
    ~511–530) and the M8 milestone bullet (~929–934) describe the scheduler **enqueuing
    `jobs.integrity_audit_run` jobs for the worker pool**. `INTEGRITY_AUDIT.md` is normative
@@ -492,7 +492,7 @@ pkg/coordinator/coordinator.go                 Config.IntegrityAudit; build Sche
 cmd/coordinator/main.go                        populate IntegrityAudit defaults; NOVA_INTEGRITY_AUDIT_ENABLED
 internal/config/types.go                       comment only (structs already match)
 docs/specs/INTEGRITY_AUDIT.md                  reconciliations #1 (a)–(e)
-docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md  in-process model reconciliation (#2)
+docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md  in-process model reconciliation (#2)
 docs/specs/openapi.yaml                        confirm/complete listIntegrityAudits + page params (#3)
 docs/ROADMAP.md                                M8 status + links + tag (#4)
 ```
@@ -538,9 +538,9 @@ internal/dbtest, internal/blobfixture           test harness
 - `docs/specs/ENCRYPTION_ENVELOPE.md` — envelope format + key-unwrap semantics the crypto
   checks verify; `docs/specs/IPFS_IMPORT_RULES.md` — the deterministic CID rules
   `block_hash_valid` re-derives against.
-- `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` § "Integrity audit
+- `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` § "Integrity audit
   loop" — reconciled to the in-process model (reconciliation #2).
-- `docs/superpowers/plans/2026-06-02-phase1-m8-integrity-audit-scheduler.md` — the
+- `docs/superpowers/plans/phase1/2026-06-02-phase1-m8-integrity-audit-scheduler.md` — the
   implementation plan.
 - M7 design (`2026-06-01-phase1-m7-signed-urls-design.md`) — the admin-route + `ServerConfig`
   + background-loop patterns M8 reuses.

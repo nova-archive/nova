@@ -5,7 +5,7 @@
 // auditlog.Writer.WriteTx inside that tx, so the action and its audit record
 // commit or roll back together.
 //
-// See docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md and the
+// See docs/superpowers/specs/phase1/2026-06-02-phase1-m9-moderation-design.md and the
 // normative docs/legal/DMCA_PROCEDURE.md for the transaction step order and the
 // audit-action vocabulary.
 package moderation

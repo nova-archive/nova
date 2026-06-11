@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go, PostgreSQL (sqlc, pgx/v5), XChaCha20-Poly1305 (existing `internal/envelope`), chi router, testcontainers + nginx integration harness.
 
-**Design:** `docs/superpowers/specs/2026-06-03-phase1-m10-master-key-rotation-design.md` is the source of truth; read its "The re-wrap worker", "Operator workflow", and "Stalled-rotation observability" sections before starting.
+**Design:** `docs/superpowers/specs/phase1/2026-06-03-phase1-m10-master-key-rotation-design.md` is the source of truth; read its "The re-wrap worker", "Operator workflow", and "Stalled-rotation observability" sections before starting.
 
 ---
 

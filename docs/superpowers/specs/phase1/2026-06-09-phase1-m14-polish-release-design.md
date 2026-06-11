@@ -364,8 +364,8 @@ scripts/check-migrations-frozen.sh
 docker/nginx/cert-watch.sh
 docs/quickstart.md
 docs/images/quickstart/*.png
-docs/superpowers/specs/2026-06-09-phase1-m14-polish-release-design.md   (this file)
-docs/superpowers/plans/2026-06-09-phase1-m14-polish-release.md          (the implementation plan)
+docs/superpowers/specs/phase1/2026-06-09-phase1-m14-polish-release-design.md   (this file)
+docs/superpowers/plans/phase1/2026-06-09-phase1-m14-polish-release.md          (the implementation plan)
 ```
 
 ### Modified in M14
@@ -387,8 +387,8 @@ Makefile                          smoke description; migrations-frozen target
 CONTRIBUTING.md                   toolchain-currency policy
 README.md                         Phase-1-complete status + quickstart pointer
 docs/ROADMAP.md                   M14 row ✅ + Phase 1 complete-at-RC
-docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md   M14 status; operator-runbook wording
-docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md  signing-deferral line → Phase 5
+docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md   M14 status; operator-runbook wording
+docs/superpowers/specs/phase1/2026-06-08-phase1-m13-setup-wizard-design.md  signing-deferral line → Phase 5
 docs/VOLUNTEER_DEPLOYMENT_GUIDANCE.md   stale pre-M13 claims
 docs/recipes/NGINX_REFERENCE.md         stale single-origin claims
 ```
@@ -432,7 +432,7 @@ docs/legal/OPERATOR_CHECKLIST.md                          the deep runbook quick
 ## Cross-references
 
 - `docs/ROADMAP.md` M14 row; the master plan § "M14 — Polish + docs" (`:1034`–`:1042`) and the M14
-  section of `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` (`:133`–`:138`).
+  section of `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` (`:133`–`:138`).
 - M13 design (`2026-06-08-phase1-m13-setup-wizard-design.md`) § "Out of scope" — the deferral list
   this milestone consumes (and the one line it corrects).
 - `.github/workflows/ci.yml` — every WP1/WP2/WP4/WP6 change lands here.
@@ -440,4 +440,4 @@ docs/legal/OPERATOR_CHECKLIST.md                          the deep runbook quick
   contradiction WP2 resolves.
 - `docker/docker-compose.yml` + `docker/init/entrypoint.sh` — the WP7/WP8 surface.
 - `docs/legal/OPERATOR_CHECKLIST.md` — the deep runbook `docs/quickstart.md` fronts.
-- `docs/superpowers/plans/2026-06-09-phase1-m14-polish-release.md` — the implementation plan.
+- `docs/superpowers/plans/phase1/2026-06-09-phase1-m14-polish-release.md` — the implementation plan.

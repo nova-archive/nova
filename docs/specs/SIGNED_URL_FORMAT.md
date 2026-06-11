@@ -104,7 +104,7 @@ That is exactly four lines, terminated by `\n` between fields and
 > **Implementation status (M7).** The `signing_keys` and
 > `signed_url_revocations` tables are present from M1; the verifier
 > (`internal/auth/signedurl`) is **implemented in M7** per
-> `docs/superpowers/specs/2026-06-01-phase1-m7-signed-urls-design.md`.
+> `docs/superpowers/specs/phase1/2026-06-01-phase1-m7-signed-urls-design.md`.
 > Operators mint signed URLs server-side via
 > `POST /api/v1/admin/signed-urls/sign` (the unwrapped HMAC key never
 > leaves the coordinator). The format below is normative for that

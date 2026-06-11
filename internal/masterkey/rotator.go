@@ -1,7 +1,7 @@
 // Package masterkey implements operator master-key rotation: re-wrapping every
 // per-blob DEK and signing key from a retiring master-key version to the active
 // one, online and in parallel, with no read-path downtime. See
-// docs/specs/ENCRYPTION_ENVELOPE.md and docs/superpowers/specs/2026-06-03-phase1-m10-master-key-rotation-design.md.
+// docs/specs/ENCRYPTION_ENVELOPE.md and docs/superpowers/specs/phase1/2026-06-03-phase1-m10-master-key-rotation-design.md.
 package masterkey
 
 import (

@@ -136,7 +136,7 @@ is where the milestone's correctness lives.
    record the `m13-setup-wizard` tag on completion, and record the deferrals (hardening / signing /
    CI-smoke / quickstart → M14; `dns-01`/`onion` automation → later; `operator.yaml` tuning-knob decode
    → later).
-2. **The master plan (`docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`).** Mark
+2. **The master plan (`docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`).** Mark
    M13 status/links and reconcile its "Onboarding wizard" + container-topology sections with what
    actually ships (notably: setup mode is *folded into the coordinator boot path*, not a second
    long-lived binary; `operator.yaml` is canonical-with-env-overrides, not a wholesale env replacement).
@@ -470,8 +470,8 @@ docker/Dockerfile                                  multi-stage: go-builder → n
 docker/init/entrypoint.sh                          migrate → sentinel check → exec (setup vs normal)
 docker/nginx/nova.conf.template                    two-vhost (public_host + admin_host) — wizard-rendered
 docker/nginx/bootstrap.conf                        /setup/* only — first-run
-docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md   (this file)
-docs/superpowers/plans/2026-06-08-phase1-m13-setup-wizard.md          (the implementation plan)
+docs/superpowers/specs/phase1/2026-06-08-phase1-m13-setup-wizard-design.md   (this file)
+docs/superpowers/plans/phase1/2026-06-08-phase1-m13-setup-wizard.md          (the implementation plan)
 ```
 
 ### Modified in M13
@@ -488,7 +488,7 @@ Makefile                           setup-{install,build,lint,test}; docker build
 .github/workflows/ci.yml           web-setup lane (lint/test/build/hermetic) + docker build lane
 package.json / package-lock.json   add web/setup to workspaces
 docs/ROADMAP.md                    M13 status + tag + deferrals (reconciliation #1)
-docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md   M13 status/links (reconciliation #2)
+docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md   M13 status/links (reconciliation #2)
 docs/THREAT_MODEL.md               boundaries ① / ①a implemented (reconciliation #3)
 docs/specs/openapi.yaml            note-only: ephemeral /setup/* surface (reconciliation #4)
 docs/legal/OPERATOR_CHECKLIST.md   first-run runbook (reconciliation #5)
@@ -542,5 +542,5 @@ web/admin/{package.json,vite.config.ts,tsconfig.json}   the hermetic-SPA build c
   mirrors.
 - M6 design (`2026-05-30-phase1-m6-auth-design.md`) + M6.1 — the local-issuer/external-OIDC mode
   selection and the secrets resolver chain the wizard stages into.
-- `docs/superpowers/plans/2026-06-08-phase1-m13-setup-wizard.md` — the implementation plan.
+- `docs/superpowers/plans/phase1/2026-06-08-phase1-m13-setup-wizard.md` — the implementation plan.
 ```

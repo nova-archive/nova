@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.22, stdlib `crypto/hmac` + `crypto/sha256` + `crypto/subtle` + `crypto/rand` + `encoding/base64`, pgx/v5, sqlc, chi, testcontainers-go (Postgres + nginx). No new third-party dependencies.
 
-**Authoritative spec:** `docs/superpowers/specs/2026-06-01-phase1-m7-signed-urls-design.md` (and the normative `docs/specs/SIGNED_URL_FORMAT.md`).
+**Authoritative spec:** `docs/superpowers/specs/phase1/2026-06-01-phase1-m7-signed-urls-design.md` (and the normative `docs/specs/SIGNED_URL_FORMAT.md`).
 
 ---
 
@@ -47,7 +47,7 @@ docs/specs/DATA_MODEL.sql                     key_state comment reconciliation
 docs/specs/SIGNED_URL_FORMAT.md               fill test vectors; flip M7 status note
 docs/specs/openapi.yaml                       add /signed-urls/sign; reconcile rotate/revoke; invalid_signature codes
 docs/ROADMAP.md                               M7 status + mint endpoint + tag
-docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md   M7 row + link
+docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md   M7 row + link
 ```
 
 **Build/test commands** (repo conventions): `go build ./...`, `go test ./pkg/... ./internal/... ./nova-image/... -short`, `go test ./internal/db/gen/...` after regen (codegen-check), integration via `go test ./internal/integration/ -run M7 -v`. Per the gofmt-skew note, run `gofmt -w` only on files you create/modify; do not reformat pre-existing files.
@@ -334,7 +334,7 @@ if visibility == VisibilityPrivate && !readAuthorized(ctx) {
 ## Task 13: documentation reconciliations
 
 **Files:**
-- Modify: `docs/specs/DATA_MODEL.sql`, `docs/specs/SIGNED_URL_FORMAT.md`, `docs/specs/openapi.yaml`, `docs/ROADMAP.md`, `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md`
+- Modify: `docs/specs/DATA_MODEL.sql`, `docs/specs/SIGNED_URL_FORMAT.md`, `docs/specs/openapi.yaml`, `docs/ROADMAP.md`, `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md`
 
 - [ ] **Step 1: DATA_MODEL.sql** — fix the `key_state` enum comment: `'retired'` = rotated out, still verifies until `retire_after`; `'shredded'` = past grace, `wrapped_key` zeroed. (Design reconciliation #1.)
 
@@ -348,7 +348,7 @@ if visibility == VisibilityPrivate && !readAuthorized(ctx) {
 
 ```bash
 npx --yes @redocly/cli lint docs/specs/openapi.yaml 2>&1 | tail -5 || echo "(no redocly; skipping)"
-git add docs/specs/DATA_MODEL.sql docs/specs/SIGNED_URL_FORMAT.md docs/specs/openapi.yaml docs/ROADMAP.md docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md
+git add docs/specs/DATA_MODEL.sql docs/specs/SIGNED_URL_FORMAT.md docs/specs/openapi.yaml docs/ROADMAP.md docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md
 git commit -m "docs(m7): fill signed-url vectors; openapi sign endpoint; key_state comment; roadmap"
 ```
 

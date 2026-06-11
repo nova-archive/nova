@@ -7,7 +7,7 @@ the friendly surfaces; M14 polishes). It delivers Nova's **operator command cent
 hermetic React + Vite single-page app under `web/admin/` that an operator uses to log in,
 browse and soft-delete blobs, work the moderation queue and DMCA cases, review integrity-audit
 failures, drive key rotation, and inspect the job queue. `docs/ROADMAP.md` M11 row and the
-master breakdown (`docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`
+master breakdown (`docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`
 § "Walking-skeleton milestone breakdown" → M11) commit exactly that surface.
 
 **M11 is not a pure-frontend milestone.** Reading the committed router (`internal/api/server.go`)
@@ -584,8 +584,8 @@ internal/api/handlers/admin_spa.go                  /admin/* static (dist servin
 internal/api/handlers/*_test.go
 internal/integration/m11_admin_spa_test.go          nginx-fronted end-to-end (the exit criteria)
 web/admin/                                           the SPA: package.json, vite.config.ts, tsconfig, index.html, src/* (shell, auth drivers, screens, tokens.css), tests
-docs/superpowers/specs/2026-06-04-phase1-m11-admin-spa-design.md   (this file)
-docs/superpowers/plans/2026-06-04-phase1-m11-admin-spa.md          (the implementation plan)
+docs/superpowers/specs/phase1/2026-06-04-phase1-m11-admin-spa-design.md   (this file)
+docs/superpowers/plans/phase1/2026-06-04-phase1-m11-admin-spa.md          (the implementation plan)
 ```
 
 ### Modified in M11
@@ -650,7 +650,7 @@ docs/design/Nova Brand _standalone_.html   brand tokens (design reference for to
 
 ## Cross-references
 
-- `docs/ROADMAP.md` M11 row + `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`
+- `docs/ROADMAP.md` M11 row + `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`
   § "Walking-skeleton milestone breakdown" (M11) — the committed surface and the `web/admin` layout.
 - `docs/specs/openapi.yaml` — `/api/v1/blobs/{cid}` (GET+DELETE), the new `/admin/blobs` + `/admin/jobs`,
   `/api/v1/auth/config` (the mode-discovery document the SPA drives).
@@ -660,5 +660,5 @@ docs/design/Nova Brand _standalone_.html   brand tokens (design reference for to
   and the SPA-drives-PKCE assignment M11 fulfils; the local-issuer token lifecycle.
 - `internal/api/server.go` — the nil-gated handler + `RequireRole` patterns the new routes follow.
 - `docs/THREAT_MODEL.md` — the hermetic-asset Tier-1 commitment + the admin-origin boundary.
-- `docs/superpowers/plans/2026-06-04-phase1-m11-admin-spa.md` — the implementation plan.
+- `docs/superpowers/plans/phase1/2026-06-04-phase1-m11-admin-spa.md` — the implementation plan.
 ```

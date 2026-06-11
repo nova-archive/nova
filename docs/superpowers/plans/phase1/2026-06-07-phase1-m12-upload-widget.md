@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript (vanilla, no React), Vite 4.5 library mode, Vitest 0.34 (jsdom), `@uppy/core`/`drag-drop`/`tus`/`status-bar` 3.x, `vite-plugin-css-injected-by-js`; Go (`net/http` static handler, chi router); testcontainers + nginx integration. Node-16-safe pins throughout (local Node 16, CI Node 20).
 
-**Design doc:** `docs/superpowers/specs/2026-06-07-phase1-m12-upload-widget-design.md`
+**Design doc:** `docs/superpowers/specs/phase1/2026-06-07-phase1-m12-upload-widget-design.md`
 
 ---
 
@@ -45,7 +45,7 @@
 - `.github/workflows/ci.yml` — widget steps in the `web-admin` job
 - `nginx/nova.conf.example` — `location /widget` proxy note
 - `docs/ROADMAP.md`, `docs/THREAT_MODEL.md`, `docs/legal/OPERATOR_CHECKLIST.md`,
-  `docs/specs/openapi.yaml`, `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`
+  `docs/specs/openapi.yaml`, `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`
 
 ---
 
@@ -1725,14 +1725,14 @@ git commit -m "test(m12): nginx-fronted e2e — widget serving + tus→finalize 
 ## Task 13: Documentation reconciliations
 
 **Files:**
-- Modify: `docs/ROADMAP.md`, `docs/THREAT_MODEL.md`, `docs/legal/OPERATOR_CHECKLIST.md`, `docs/specs/openapi.yaml`, `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`, `nginx/nova.conf.example`
+- Modify: `docs/ROADMAP.md`, `docs/THREAT_MODEL.md`, `docs/legal/OPERATOR_CHECKLIST.md`, `docs/specs/openapi.yaml`, `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`, `nginx/nova.conf.example`
 
 - [ ] **Step 1: `docs/ROADMAP.md` — mark the M12 row done**
 
 Replace the `| **M12** |` table row (the drag-and-drop widget line) with a completed entry matching the M11 row's style:
 
 ```markdown
-| **M12** ✅ | Drag-and-drop upload widget (`web/widget/`): hermetic Vite **library-mode** IIFE bundle exposing the global `NovaUploadWidget` (single-`<script>` embed, stable entry filename, CSS injected at runtime); `@uppy/core`+`drag-drop`+`tus`+`status-bar` (3.x; the maintained `@uppy/status-bar`, **not** the deprecated `@uppy/progress-bar`); the Nova-aware finalize orchestrator (tus `upload-success` is transport-only → `POST .../finalize` → `UploadResult`); `getToken()` resolved **per request** (survives the M6 15-min access TTL; `null` ⇒ public-uploads floor); `mount`/`mountAll` + a `data-nova-upload-widget` auto-bootstrap with a `WeakMap` double-mount guard. Backend slice: a feature-gated coordinator `/widget/*` static seam (`internal/api/handlers/widget_static.go`, strict CSP, no SPA fallback) gated by `NOVA_WIDGET_DIST_DIR`; `web/widget` re-added to the root workspaces; a `hermetic-widget` CI gate. Implemented (tag `m12-upload-widget`). Design: `docs/superpowers/specs/2026-06-07-phase1-m12-upload-widget-design.md`. Plan: `docs/superpowers/plans/2026-06-07-phase1-m12-upload-widget.md`. Deferrals: cross-origin embedding + first-class CORS → operator nginx / later milestone; production nginx two-vhost split + Docker → M13; rich Uppy Dashboard / hosted upload app → later; tus-result preset URLs → later backend change.
+| **M12** ✅ | Drag-and-drop upload widget (`web/widget/`): hermetic Vite **library-mode** IIFE bundle exposing the global `NovaUploadWidget` (single-`<script>` embed, stable entry filename, CSS injected at runtime); `@uppy/core`+`drag-drop`+`tus`+`status-bar` (3.x; the maintained `@uppy/status-bar`, **not** the deprecated `@uppy/progress-bar`); the Nova-aware finalize orchestrator (tus `upload-success` is transport-only → `POST .../finalize` → `UploadResult`); `getToken()` resolved **per request** (survives the M6 15-min access TTL; `null` ⇒ public-uploads floor); `mount`/`mountAll` + a `data-nova-upload-widget` auto-bootstrap with a `WeakMap` double-mount guard. Backend slice: a feature-gated coordinator `/widget/*` static seam (`internal/api/handlers/widget_static.go`, strict CSP, no SPA fallback) gated by `NOVA_WIDGET_DIST_DIR`; `web/widget` re-added to the root workspaces; a `hermetic-widget` CI gate. Implemented (tag `m12-upload-widget`). Design: `docs/superpowers/specs/phase1/2026-06-07-phase1-m12-upload-widget-design.md`. Plan: `docs/superpowers/plans/phase1/2026-06-07-phase1-m12-upload-widget.md`. Deferrals: cross-origin embedding + first-class CORS → operator nginx / later milestone; production nginx two-vhost split + Docker → M13; rich Uppy Dashboard / hosted upload app → later; tus-result preset URLs → later backend change.
 ```
 
 - [ ] **Step 2: `docs/THREAT_MODEL.md` — extend the hermetic-asset boundary**
@@ -1803,7 +1803,7 @@ Find the `upload` tag's description (or the top-level `info`/`tags` block) and a
 
 (If the `upload` tag has no description yet, add one; otherwise append the M12 sentence. Keep the `oapi-codegen` drift gate green — no schema/path change.)
 
-- [ ] **Step 5: `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` — M12 status**
+- [ ] **Step 5: `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` — M12 status**
 
 In the "Walking-skeleton milestone breakdown" section, update the **M12** entry to mark it implemented and link this design + plan (mirror how the M11 entry was annotated on completion). One or two lines:
 
@@ -1811,8 +1811,8 @@ In the "Walking-skeleton milestone breakdown" section, update the **M12** entry 
 **M12 — Widget (implemented, tag `m12-upload-widget`)**
 - Hermetic Uppy + tus embeddable widget (`web/widget/`); single-`<script>` embed;
   `getToken` bearer; coordinator `/widget/*` seam (`NOVA_WIDGET_DIST_DIR`).
-- Design: `docs/superpowers/specs/2026-06-07-phase1-m12-upload-widget-design.md`.
-  Plan: `docs/superpowers/plans/2026-06-07-phase1-m12-upload-widget.md`.
+- Design: `docs/superpowers/specs/phase1/2026-06-07-phase1-m12-upload-widget-design.md`.
+  Plan: `docs/superpowers/plans/phase1/2026-06-07-phase1-m12-upload-widget.md`.
 ```
 
 - [ ] **Step 6: `nginx/nova.conf.example` — add the `location /widget` note**
@@ -1839,7 +1839,7 @@ Expected: PASS. (No sqlc/openapi schema change in M12, so `make sqlc-generate`/`
 - [ ] **Step 8: Commit**
 
 ```bash
-git add docs/ROADMAP.md docs/THREAT_MODEL.md docs/legal/OPERATOR_CHECKLIST.md docs/specs/openapi.yaml docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md nginx/nova.conf.example
+git add docs/ROADMAP.md docs/THREAT_MODEL.md docs/legal/OPERATOR_CHECKLIST.md docs/specs/openapi.yaml docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md nginx/nova.conf.example
 git commit -m "docs(m12): roadmap, threat-model, operator runbook, openapi note, nginx, master plan (m12)"
 ```
 

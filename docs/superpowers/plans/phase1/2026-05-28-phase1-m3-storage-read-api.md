@@ -12,7 +12,7 @@
 
 **Status:** in progress — executing on branch `m3-storage-read-api`.
 
-**Spec:** `docs/superpowers/specs/2026-05-28-phase1-m3-storage-read-api-design.md` (authoritative design).
+**Spec:** `docs/superpowers/specs/phase1/2026-05-28-phase1-m3-storage-read-api-design.md` (authoritative design).
 
 ---
 
@@ -79,7 +79,7 @@ These symbols must exist as described (they do as of the M2 tag). The plan's cod
 | `tools.go` | anchor pinned sqlc generator |
 | `Makefile` | `sqlc-generate`, `codegen-check`, `build-coordinator`, `run-coordinator` |
 | `.github/workflows/ci.yml` | add `codegen-check` gate |
-| `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` | mark M3 status; link this plan |
+| `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` | mark M3 status; link this plan |
 
 ---
 
@@ -2793,7 +2793,7 @@ git commit -s -m "test(m3): integration read path through nginx (exit test)"
 ## Task 17: CI gate, master-plan status, full pass
 
 **Files:**
-- Modify: `.github/workflows/ci.yml`, `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md`
+- Modify: `.github/workflows/ci.yml`, `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md`
 
 - [ ] **Step 17.1: Add `codegen-check` to CI**
 
@@ -2808,7 +2808,7 @@ In `.github/workflows/ci.yml`, in the test/lint job (after `go` is set up), add 
 
 - [ ] **Step 17.2: Update the master plan**
 
-In `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md`:
+In `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md`:
 
 - In the milestone table, change the M3 row to:
   `| M3 | Storage core API (read path) | in progress | [m3 plan](2026-05-28-phase1-m3-storage-read-api.md) |`
@@ -2830,7 +2830,7 @@ Expected: all green. If integration tests are slow, run unit-only with `go test 
 - [ ] **Step 17.4: Commit**
 
 ```bash
-git add .github/workflows/ci.yml docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md
+git add .github/workflows/ci.yml docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md
 git commit -s -m "ci(m3): sqlc codegen-check gate; mark M3 in progress + reconcile audit_log"
 ```
 

@@ -639,5 +639,5 @@ internal/dbtest, internal/blobfixture                    test harness
 - M8 design (`2026-06-02-phase1-m8-integrity-audit-scheduler-design.md`) — the in-process loop, the
   `Maintainer`/partition pattern M9 extends, the pagination helper, and the admin-route + `ServerConfig`
   conventions M9 reuses.
-- `docs/superpowers/plans/2026-06-02-phase1-m9-moderation.md` — the implementation plan.
+- `docs/superpowers/plans/phase1/2026-06-02-phase1-m9-moderation.md` — the implementation plan.
 ```

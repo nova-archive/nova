@@ -61,7 +61,7 @@ The assets Nova protects, ranked by harm if exposed:
 | ② | nginx ↔ coordinator | loopback / unix socket; trusted by colocation |
 | ③ | coordinator ↔ master key | environment variable OR file-mount (e.g., Docker secret at `/run/secrets/master-key-<label>`, per the `NOVA_MASTER_KEY_<LABEL> → _FILE → /run/secrets/master-key-<label>` resolver chain); never written to disk by Nova. v3.1 amendment broadens beyond env-var-only; implemented in M6.1. During a master-key rotation window (M10) both the old and new versions are process-resident simultaneously; this is consistent with the existing process-resident-master-key posture and is bounded to the rotation window. |
 | ④ | coordinator ↔ donor | Nebula overlay + HTTPS/mTLS; the Nebula cert authorizes mesh membership, the federation client cert authorizes HTTP API calls |
-| ⑤ | donor ↔ donor | HTTPS/mTLS inside Nebula; donor-to-donor fetches require a coordinator-issued, source-and-destination-pinned HMAC repair token. The private IPFS swarm key gates Kubo's daemon-level peering as defense in depth, but no donor-to-donor data exchange occurs over Bitswap |
+| ⑤ | donor ↔ donor | HTTPS/mTLS inside Nebula; donor-to-donor fetches require a coordinator-issued, source-and-destination-pinned HMAC repair token *(**Phase 2 amendment**: the HMAC token is replaced by an **Ed25519** asymmetric token — donors hold only the public verify key; see § "Phase 2 amendment (donor federation)")*. The private IPFS swarm key gates Kubo's daemon-level peering as defense in depth, but no donor-to-donor data exchange occurs over Bitswap |
 
 The trust boundary the project most cares about is **④**. The
 volunteer-blind storage argument lives there: across that boundary,
@@ -302,8 +302,14 @@ encryption envelope.
 
 **Residual risk.** A compromised pinned dependency that is updated
 in a future release would still ship malicious code. Phase 5 ships
-release signing (sigstore / cosign); until then, operators verify
-release artifacts against the project's published checksums.
+release signing (sigstore / cosign) for the coordinator; until then,
+operators verify release artifacts against the project's published
+checksums. **Phase 2 amendment:** because Phase 2 instructs volunteers
+to `docker pull` and run a privileged network daemon (`nova-node`),
+release signing + SBOM + provenance for the **donor** image is promoted
+into Phase 2 — the donor walkthrough pins an image digest (never
+`latest`) and verifies the signature. See § "Phase 2 amendment (donor
+federation)".
 
 ## Out of scope
 
@@ -455,6 +461,96 @@ prominently so operators can plan for them.
    operator's behalf. Operators whose federation crosses this
    threshold should treat it with the same seriousness as a
    mass-casualty event, even though it accumulates quietly.
+
+## Phase 2 amendment (donor federation)
+
+Status: **design — pending P2-M0 ratification.** Phase 2 adds machines the
+operator does not own (volunteer donor nodes), which grows the donor-facing
+attack surface. This section enumerates the new adversaries and the mitigations
+now specified, and records which earlier statements in this document it
+**supersedes**. The canonical reasoning is in
+`docs/superpowers/specs/phase2/2026-06-11-phase2-federation-design.md`
+§ "Trust-model exploration"; the load-bearing spec edits land in P2-M0.
+
+### Statements superseded for Phase 2
+
+- **Boundary ⑤ — repair token.** The "HMAC repair token" is replaced by an
+  **Ed25519** asymmetric token. HMAC is symmetric: a verify key handed to every
+  donor would let any donor *mint* tokens. Donors now hold only the coordinator's
+  Ed25519 public key; tokens are single/bounded-use (source-side `jti` replay
+  cache), carry `max_bytes` + a short TTL, and bind `cid`, `source_node_id`,
+  `dest_node_id`, `assignment_id`, and `generation`.
+- **Actor A — CID self-validation.** "Re-hashes the envelope on receipt" is exact
+  only for a single raw block. For any multi-block object the CID is a UnixFS /
+  DAG-PB **root**, not `sha256(bytes)`; the destination donor verifies by
+  **deterministic re-import (`IPFS_IMPORT_RULES`) and root-CID comparison**.
+- **Actor G — release signing.** Promoted from Phase 5 to Phase 2 for the donor
+  image (see the amended residual-risk note above).
+
+### New adversaries
+
+- **A′. Repair-token forgery / replay.** A donor minting tokens, or a malicious
+  destination replaying a valid token to drain a source's daily budget.
+  *Mitigation:* Ed25519 (public-key verification only at donors); single/bounded
+  use; `max_bytes`; short TTL; source/dest/assignment/generation binding.
+- **A″. Assignment replay.** A delayed `ack`/`fail` for a superseded assignment
+  mutating a **reused** `(cid, node_id)` row — marking a stale copy "durable" or
+  cancelling a live one. *Mitigation:* immutable `assignment_id` + `generation`;
+  conditional state transitions (`… WHERE assignment_id=$ AND generation=$ AND
+  state='pending'`).
+- **H. Sybil / failure-domain forgery.** One donor-operator registers many
+  nominal nodes (distinct *declared* geos) on a single host / provider / account
+  to capture placement weight and defeat anti-affinity, or a brand-new node
+  becomes a sole copy of critical content. *Mitigation:* placement uses
+  **operator-verified `failure_domain_id` / `donor_principal_id`** (self-declared
+  geo is informational only); an **orthogonal `trust_state`** (probationary /
+  trusted / suspended) caps `placement_weight`; probationary nodes are **never**
+  the sole or second copy of `important`-class data and are audited more often;
+  they graduate on age + successful transfers + passed audits. This corrects the
+  `VOLUNTEER_DEPLOYMENT_GUIDANCE.md` claim that same-owner nodes are
+  auto-anti-affined — the schema had no owner identifier; Phase 2 adds one.
+- **I. Audit collusion / backdating.** A lying donor satisfies a possession
+  challenge via a co-located cache, a colluding fast peer, or by backdating its
+  self-reported `completed_at`. *Mitigation:* the deadline uses **coordinator
+  receive-time**, not donor-supplied time; the challenge is a **synchronous**
+  single round-trip the coordinator times; the repair transport is Ed25519-token-
+  gated and Bitswap-disabled, so a donor under audit cannot lawfully fetch the
+  block in-window. Honest framing: audits prove **timely retrievability under the
+  node identity**, *not* unique physical residency or independent failure domains.
+- **J. Bandwidth exhaustion.** A coordinator bug or hostile schedule overshoots a
+  donor's agreed budget, tripping its ISP/provider commercial-use heuristics — the
+  exact harm boundary E already worries about. *Mitigation:* Tier-1 "no doomsday
+  override" (`HEALING_PROTOCOL.md`) is enforced at the node that actually sends
+  bytes: the **donor's local token-bucket is authoritative** and refuses
+  over-budget work; coordinator scheduling is only a best-effort reservation;
+  tokens carry `max_bytes`; actuals reconcile via heartbeat.
+
+### Boundary extension
+
+```
+ ④ coordinator ↔ donor : Nebula + mTLS; identity from the VERIFIED cert (not
+                          self-asserted JSON); capability-negotiated at register
+ ⑤ donor ↔ donor       : mTLS + Ed25519 token (single-use, max_bytes, src/dst/gen)
+ ⑥ donor budget        : donor-local token-bucket is the AUTHORITATIVE enforcer
+ ⑦ possession audit    : coordinator-receive-time deadline; synchronous; Bitswap-
+                          disabled; sampling weighted by stored bytes / age / risk
+ Placement anti-affinity keys on operator-verified failure_domain_id /
+ donor_principal_id (④), not self-declared geo. trust_state caps placement weight.
+```
+
+### New residual risks (Phase 2)
+
+8. **Audits are retrievability sampling, not proof-of-replication.** A donor that
+   can produce challenged bytes quickly passes, even if those bytes live on a
+   shared backend or a fast colluding peer. This is acceptable for a
+   coordinator-administered (non-permissionless) network; formal PDP/POR is Phase
+   6+.
+9. **Failure-domain truth depends on operator verification.** Placement safety is
+   only as good as the operator's assignment of `failure_domain_id`; a lazy
+   operator who trusts self-declared geo regains the Sybil exposure H targets.
+10. **Donor metadata correlation persists.** Even metadata-minimal assignments let
+    a donor correlate pin timing against publicly-visible uploads (boundary-A
+    residual risk), now across a larger node set.
 
 ## Disclaimer
 

@@ -4,7 +4,7 @@
 
 **Goal:** Ship a runnable, single-host, single-operator Nova deployment that honors the v3.1 spec floor and onboards both technical and non-technical operators in one Docker command.
 
-**Architecture:** Go monorepo with in-process embedded Kubo, Postgres-backed job queue, local JWT issuer for auth, ephemeral first-run wizard, nginx-fronted dual-origin (public/admin) deployment. See `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` for the authoritative architecture.
+**Architecture:** Go monorepo with in-process embedded Kubo, Postgres-backed job queue, local JWT issuer for auth, ephemeral first-run wizard, nginx-fronted dual-origin (public/admin) deployment. See `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` for the authoritative architecture.
 
 **Tech Stack:** Go 1.22, Postgres 16, Kubo (in-process via go-ipfs `coreapi`), pgx/v5, sqlc, oapi-codegen, goose (migrations), chi router, govips (libvips), goimagehash (PDQ), Uppy + tus.io (widget), React + Vite + Tailwind (admin/setup SPAs), nginx 1.25, certbot, docker-compose, testcontainers-go.
 
@@ -12,7 +12,7 @@
 
 ## Plan structure
 
-This master plan summarizes all 14 milestones with their goals and exit criteria. **Only M1 is expanded into bite-sized tasks here.** Each subsequent milestone gets its own detailed plan document at the start of that milestone, saved to `docs/superpowers/plans/2026-05-25-phase1-m{N}-{name}.md`.
+This master plan summarizes all 14 milestones with their goals and exit criteria. **Only M1 is expanded into bite-sized tasks here.** Each subsequent milestone gets its own detailed plan document at the start of that milestone, saved to `docs/superpowers/plans/phase1/2026-05-25-phase1-m{N}-{name}.md`.
 
 | Milestone | Theme | Status | Plan |
 |---|---|---|---|
@@ -79,7 +79,7 @@ After M14: Phase 1 release-candidate tag, then Phase 2 planning.
 
 **Exit:** integration test: login → call protected endpoint → succeed; expired access token → 401; refresh → succeed; external OIDC mode → local-issuer endpoints return **404 `external_oidc_active`** (clients discover the IdP via `GET /api/v1/auth/config` and drive PKCE themselves; an external-issuer token verifies through the bearer middleware); production binary refuses to start with `auth: anonymous`.
 
-**Scope reconciliation (settled at M6 planning):** M6 ships auth infrastructure only. The collection-management API (`/api/v1/collections*`) and authenticated metadata read/update (`GET/PATCH /api/v1/blobs|images/{cid}`) — forward-referenced to "M6" by M3/M4/M5 — are deferred to a later REST/admin milestone (consumed first by the M11 admin SPA). The `audit_log` writer + its admin read endpoint move to **M9** (M6 emits structured logs for auth security events instead). See `docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md`.
+**Scope reconciliation (settled at M6 planning):** M6 ships auth infrastructure only. The collection-management API (`/api/v1/collections*`) and authenticated metadata read/update (`GET/PATCH /api/v1/blobs|images/{cid}`) — forward-referenced to "M6" by M3/M4/M5 — are deferred to a later REST/admin milestone (consumed first by the M11 admin SPA). The `audit_log` writer + its admin read endpoint move to **M9** (M6 emits structured logs for auth security events instead). See `docs/superpowers/specs/phase1/2026-05-30-phase1-m6-auth-design.md`.
 
 ### M7 — Signed URLs + signing-key rotation
 **Goal:** Operator mints a signed URL via API; expired or revoked URLs fail; signing-key rotation works with grace window.
@@ -545,7 +545,7 @@ The job queue uses Postgres-backed leasing (`SELECT … FOR UPDATE SKIP LOCKED`)
 -- +goose Up
 -- +goose StatementBegin
 -- Migration 0002: job queue table (partitioned by created_at, monthly).
--- See docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md
+-- See docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md
 -- § "Job lifecycle".
 
 CREATE TYPE job_state AS ENUM (
@@ -2274,12 +2274,12 @@ git push origin m1-foundation
 
 - [ ] **Step 18.4: Update master plan to mark M1 done**
 
-Edit this file (`docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md`) and change the M1 status from `**active**` to `**completed**` in the milestone table.
+Edit this file (`docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md`) and change the M1 status from `**active**` to `**completed**` in the milestone table.
 
 - [ ] **Step 18.5: Commit and push the status update**
 
 ```bash
-git add docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md
+git add docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md
 git commit -s -m "docs(plans): mark M1 completed"
 git push origin main
 ```
@@ -2317,7 +2317,7 @@ Plan complete.
 
 ## Execution handoff
 
-**Plan complete and saved to `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md`. Two execution options:**
+**Plan complete and saved to `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md`. Two execution options:**
 
 **1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration
 

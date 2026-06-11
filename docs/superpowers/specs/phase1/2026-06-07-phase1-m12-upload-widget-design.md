@@ -8,7 +8,7 @@ delivers Nova's **embeddable drag-and-drop upload widget**: a hermetic, framewor
 JavaScript bundle under `web/widget/` that an operator drops into any HTML page with a single
 `<script>` tag to let users upload images (and other blob products) straight into their Nova node.
 `docs/ROADMAP.md` M12 row and the master breakdown
-(`docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` § "Walking-skeleton milestone
+(`docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` § "Walking-skeleton milestone
 breakdown" → M12) commit exactly that surface: Uppy + tus.io, embeds via `<script src=".../widget.js">`,
 calls `/api/v1/uploads/*` with a bearer token, hermetic build with no external CDN.
 
@@ -531,8 +531,8 @@ web/widget/src/*.test.ts                         Vitest: uploader (boundary), au
 internal/api/handlers/widget_static.go           /widget/* static (dist + demo; CSP; caching; 404 when unset; no SPA fallback)
 internal/api/handlers/widget_static_test.go
 internal/integration/m12_upload_widget_test.go   nginx-fronted end-to-end (the exit criteria)
-docs/superpowers/specs/2026-06-07-phase1-m12-upload-widget-design.md   (this file)
-docs/superpowers/plans/2026-06-07-phase1-m12-upload-widget.md          (the implementation plan)
+docs/superpowers/specs/phase1/2026-06-07-phase1-m12-upload-widget-design.md   (this file)
+docs/superpowers/plans/phase1/2026-06-07-phase1-m12-upload-widget.md          (the implementation plan)
 ```
 
 ### Modified in M12
@@ -551,7 +551,7 @@ docs/ROADMAP.md                     M12 status + tag + deferrals (reconciliation
 docs/THREAT_MODEL.md                hermetic widget bundle + same-origin embedding / CORS-deferred (reconciliation #3)
 docs/legal/OPERATOR_CHECKLIST.md    widget runbook: NOVA_WIDGET_DIST_DIR, embed snippet, getToken, floor, CORS caveat (reconciliation #4)
 docs/specs/openapi.yaml             note-only: /widget/* static surface; upload contract unchanged (reconciliation #1)
-docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md   M12 status/links
+docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md   M12 status/links
 ```
 
 ### Reused unchanged
@@ -596,7 +596,7 @@ web/admin/{package.json,vite.config.ts,tsconfig.json}   the build conventions th
 
 ## Cross-references
 
-- `docs/ROADMAP.md` M12 row + `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md`
+- `docs/ROADMAP.md` M12 row + `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md`
   § "Walking-skeleton milestone breakdown" (M12) + the upload data-flow (`:388`–`:399`) — the
   committed surface and the `web/widget` layout.
 - `docs/specs/openapi.yaml` `/api/v1/uploads*` + `UploadResult` — the tus + finalize contract the
@@ -610,5 +610,5 @@ web/admin/{package.json,vite.config.ts,tsconfig.json}   the build conventions th
   motivates per-request `getToken`; the resource-server boundary the widget relies on.
 - `nginx/nova.conf.example` — the upload location (`proxy_request_buffering off`) and the CSP already
   declaring the widget bundle hermetic; the `location /admin` proxy the test mirrors for `/widget`.
-- `docs/superpowers/plans/2026-06-07-phase1-m12-upload-widget.md` — the implementation plan.
+- `docs/superpowers/plans/phase1/2026-06-07-phase1-m12-upload-widget.md` — the implementation plan.
 ```

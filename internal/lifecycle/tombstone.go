@@ -7,7 +7,7 @@
 // The neutral, irreversible destruction is TombstoneTree, shared with
 // internal/moderation so the crypto-shred lives in exactly one place. Owner
 // soft-delete (SoftDelete) and the overdue-soft-delete sweep (Sweeper) build on
-// it. See docs/superpowers/specs/2026-06-04-phase1-m11-admin-spa-design.md
+// it. See docs/superpowers/specs/phase1/2026-06-04-phase1-m11-admin-spa-design.md
 // § "The content-lifecycle primitive".
 package lifecycle
 

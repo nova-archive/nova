@@ -93,7 +93,7 @@ auth that floor was standing in for.
    with a statement that this is the Phase-0 v2 baseline and that `internal/db/migrations/`
    is the Phase-1 source of truth sqlc consumes.
 
-3. **`docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` — M6 row + exit fix.**
+3. **`docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` — M6 row + exit fix.**
    Mark M6 status; link this plan. **Amend the M6 exit criterion**: the phrase "external
    OIDC mode → local-issuer endpoints return 404 **and redirects to issuer**" is
    self-contradictory (a response cannot be both 404 and a redirect). Replace with: "when
@@ -211,7 +211,7 @@ Migration-only (header note in reconciliation #2). goose up/down, mirroring 0005
 
 ```sql
 -- 0006: local-issuer auth — password credentials + rotating refresh tokens.
--- See docs/superpowers/specs/2026-05-30-phase1-m6-auth-design.md.
+-- See docs/superpowers/specs/phase1/2026-05-30-phase1-m6-auth-design.md.
 
 ALTER TABLE users ADD COLUMN password_hash text;            -- NULL for external-OIDC users
 ALTER TABLE users ADD COLUMN disabled boolean NOT NULL DEFAULT false;
@@ -617,7 +617,7 @@ internal/upload/store.go                     persist owner_id on session/blob
 docker/nginx/nova.dev.conf                   proxy /api/v1/auth, /api/v1/users/me, /api/v1/admin
 docs/specs/openapi.yaml                      add /api/v1/auth/* paths + schemas; broaden bearerAuth desc
 docs/specs/DATA_MODEL.sql                    header fix (Phase-0 baseline; migrations are source of truth)
-docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md   M6 status + exit-criterion amendment
+docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md   M6 status + exit-criterion amendment
 docs/specs/ARCHITECTURE_DECISIONS.md         external-OIDC role-mapping note
 go.mod / go.sum                              go-jose/v4 direct; add coreos/go-oidc/v3
 ```
@@ -626,9 +626,9 @@ go.mod / go.sum                              go-jose/v4 direct; add coreos/go-oi
 
 ## Cross-references
 
-- `docs/superpowers/specs/2026-05-25-phase1-single-node-mvp-design.md` § "Authentication
+- `docs/superpowers/specs/phase1/2026-05-25-phase1-single-node-mvp-design.md` § "Authentication
   architecture", § "Onboarding wizard" (Steps 4–5).
-- `docs/superpowers/plans/2026-05-25-phase1-single-node-mvp.md` § M6.
+- `docs/superpowers/plans/phase1/2026-05-25-phase1-single-node-mvp.md` § M6.
 - `docs/specs/openapi.yaml` (`bearerAuth`, `getCurrentUser`, `User`, `Error`).
 - `docs/specs/DATA_MODEL.sql` (`users`, `user_role`, `audit_log`).
 - `docs/specs/ARCHITECTURE_DECISIONS.md` T1.19, T1.20, T1.21; Tier-3 operator-SSO freedom.
