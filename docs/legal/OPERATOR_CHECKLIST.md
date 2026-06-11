@@ -214,6 +214,16 @@ incidents arise.
 - Process the moderation queue within your declared SLA.
 - Process DMCA notices within your declared SLA (Nova's takedown
   action is fast; the human review is the bottleneck).
+- **After any takedown/tombstone, purge the nginx content cache.** nginx
+  caches `/blob` and `/i` 200-responses for up to a year
+  (`proxy_cache_valid` in the rendered `nova.conf`), and nothing purges
+  the cache on delete — a removed blob can otherwise keep being served
+  from the edge cache. Either restart the prod nginx (the cache lives on
+  a tmpfs since M14, so a restart clears it):
+  `docker compose -f docker/docker-compose.yml --env-file docker/.env --profile prod restart nginx`
+  — or purge without downtime:
+  `docker compose … exec nginx sh -c 'rm -rf /var/cache/nginx/nova/*' && docker compose … exec nginx nginx -s reload`.
+  A structural fix (automatic purge on tombstone) is future work.
 - Review the audit log monthly for unexpected privileged actions.
 - Rotate signing keys (HMAC for signed URLs) at your declared
   cadence (default every 90 days; `POST /api/v1/admin/keys/rotate-signing`).
@@ -401,8 +411,15 @@ start. This is the escape hatch for operators with their own provisioning toolin
 - [ ] `http-01` (prod profile, certbot) — **CT-log disclosure**: requesting a publicly
       trusted certificate publishes your hostname to Certificate Transparency logs
       (`crt.sh` and friends). If that is a deanonymization concern, choose `dns-01`,
-      `static`, or `onion` instead. M13 ships a best-effort renewal scaffold; **initial
-      issuance is an operator handoff** and full deploy-hook/reload wiring lands in M14.
+      `static`, or `onion` instead. Since M14 the flow is **fully automated**: the
+      certbot sidecar issues the certificate on first boot (a self-signed placeholder
+      lets nginx start and serve the ACME challenge), deploys it atomically into the
+      config volume, and nginx hot-reloads on every renewal (`docker/nginx/cert-watch.sh`);
+      the ACME account/lineage persists in the `nova-letsencrypt` volume. No manual
+      certbot steps remain. RECOMMENDED before pointing at production ACME: one
+      `--staging` dry run (`docker compose … exec certbot certbot certonly --staging
+      --webroot -w /var/lib/certbot/webroot -d <host> --email <you> --agree-tos
+      --non-interactive`) to validate reachability without burning rate limits.
 - [ ] `dns-01` / `onion` — the wizard renders the config and prints **operator-handoff
       instructions** (supply DNS-API credentials out of band for `dns-01`; run Tor and
       supply the self-signed cert for `onion`). Full automation is deferred.

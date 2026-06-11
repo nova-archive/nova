@@ -133,7 +133,7 @@ After M14: Phase 1 release-candidate tag, then Phase 2 planning.
 ### M14 — Polish, docs, smoke test in CI
 **Goal:** Phase 1 is release-ready. Every human-action test from the design spec is documented as a runbook step; CI runs a docker-compose smoke test on every PR.
 
-**Deliverables:** `docs/quickstart.md`; `docs/operator-runbook.md`; CI `make smoke` against the full compose stack; release-candidate tag `v0.1.0-rc1`; sigstore signing deferred to Phase 5.
+**Deliverables:** `docs/quickstart.md`; `docs/operator-runbook.md` (satisfied by the M13-expanded `docs/legal/OPERATOR_CHECKLIST.md` — no separate runbook file exists or is needed); CI `make smoke` against the full compose stack; release-candidate tag `v0.1.0-rc1`; sigstore signing deferred to Phase 5.
 
 **Exit:** Bug runs through `docs/quickstart.md` on a fresh VPS; everything works; tag `v0.1.0-rc1`.
 

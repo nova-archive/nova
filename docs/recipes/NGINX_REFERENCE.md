@@ -13,7 +13,10 @@ The reference config assumes:
   or on a Unix domain socket. The reference uses TCP for clarity.
 - Certbot has already obtained a certificate (or the operator
   supplied one statically). See `OPERATOR_CHECKLIST.md` for the
-  TLS-mode choice.
+  TLS-mode choice. (This recipe is for operators running nginx on
+  the host themselves. In the Docker deployment the setup wizard
+  renders the equivalent config and, since M14, `http-01` issuance
+  and renewal-reload are fully automated — see `docs/quickstart.md`.)
 - The file lands in `/etc/nginx/conf.d/nova.conf`, which is
   included inside `http { }` automatically by the default nginx
   layout.

@@ -1031,10 +1031,25 @@ ready to render the surface.
 - Design: `docs/superpowers/specs/2026-06-08-phase1-m13-setup-wizard-design.md`.
   Plan: `docs/superpowers/plans/2026-06-08-phase1-m13-setup-wizard.md`.
 
-**M14 — Polish + docs (~week 14)**
-- End-to-end smoke test in CI.
-- Operator quickstart in `docs/quickstart.md`.
-- Phase 1 release-candidate tag.
+**M14 — Polish + docs (implemented, tags `m14-polish-release` + `v0.1.0-rc1`)**
+- Full-stack end-to-end smoke in CI (`scripts/smoke.sh`, blocking `smoke` job): image
+  build → headless `novactl setup --config-file` → prod profile → anonymous upload →
+  byte-identical `/blob` read → `/i/*` transform → operator login + DELETE → 404/410.
+- Operator quickstart in `docs/quickstart.md` (screenshot capture is a pending human
+  action; file list in `docs/images/quickstart/README.md`). The companion
+  `docs/operator-runbook.md` deliverable is satisfied by the M13-expanded
+  `docs/legal/OPERATOR_CHECKLIST.md` — no separate runbook file exists or is needed.
+- Security housecleaning: golangci-lint v2 migration; migration-immutability CI check
+  (replaces the dead schema-drift diff); full Dependabot triage (25 alerts, none
+  production-exploitable; quic-go v0.59.1 + otlptracehttp v1.43.0 patched); Vite 8 +
+  Vitest 4 on Node 22 across all three SPAs; `dependabot.yml` + toolchain-currency policy.
+- The M13 certbot deferral closed: http-01 initial issuance automated
+  (`docker/certbot/certbot-loop.sh`) + renewal hot-reload (`docker/nginx/cert-watch.sh`).
+- Container hardening floors (healthchecks, read-only rootfs, `cap_drop: [ALL]`,
+  `no-new-privileges`). Release signing (sigstore/cosign) → Phase 5.
+- Phase 1 release-candidate tag `v0.1.0-rc1`.
+- Design: `docs/superpowers/specs/2026-06-09-phase1-m14-polish-release-design.md`.
+  Plan: `docs/superpowers/plans/2026-06-09-phase1-m14-polish-release.md`.
 
 Each milestone ends with a working artifact that can be
 demonstrated or tested. M1–M5 form the walking skeleton; M6–M10

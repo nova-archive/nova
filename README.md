@@ -10,12 +10,13 @@ provides drag-and-drop image hosting with on-the-fly transforms.
 Future product layers (`nova-video`, `nova-audio`, `nova-archive`,
 `nova-document`) will share the same storage core.
 
-> **Status:** Phase 1 in progress. Single-node MVP through milestone
-> M6.2: foundation, envelope+IPFS, storage+read, upload pipeline,
-> image transforms, OIDC-shaped auth + keystore secret-mount, audit
-> remediation. Federation and streaming-AEAD envelope arrive in
-> Phase 2. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for per-milestone
-> status and slot assignments through M14.
+> **Status:** Phase 1 (single-node MVP) is **complete** at
+> `v0.1.0-rc1` — all fourteen milestones (foundation through setup
+> wizard, Docker production, and release polish) are tagged. New
+> operators: start at [`docs/quickstart.md`](docs/quickstart.md).
+> Federation and the streaming-AEAD envelope arrive in Phase 2,
+> which is next. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for
+> per-milestone status.
 
 ## Who is this for?
 
@@ -105,29 +106,32 @@ nginx/          reference reverse-proxy configuration
 
 ## Phase 1 status
 
-Phase 0 (specifications) is complete. Phase 1 (single-node MVP) is
-underway. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the per-milestone
-progress checklist (M1 through M12 are tagged, M13 is complete on its
-branch; M14 remains).
+Phase 0 (specifications) and Phase 1 (single-node MVP) are complete;
+Phase 1 closed at the `v0.1.0-rc1` release candidate. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for the per-milestone progress
+checklist (M1 through M14 are tagged). Phase 2 (federation +
+streaming-AEAD envelope) is next.
 
 ## Try Nova (developer setup)
 
 > **Dev walkthrough.** This section boots a single-node coordinator
 > against a local Postgres + embedded IPFS for kicking the tires. For
-> a production-style first-run, M13 ships a setup wizard + Docker
-> profiles: `docker compose --profile setup up` (in `docker/`), then
-> open the loopback-only wizard at `http://127.0.0.1:8444/setup/`
-> (or run the headless `novactl setup`). See
+> a production-style first-run, follow the operator quickstart at
+> [`docs/quickstart.md`](docs/quickstart.md): `docker compose
+> --profile setup up` (in `docker/`), then open the loopback-only
+> wizard at `http://127.0.0.1:8444/setup/` (or run the headless
+> `novactl setup`). See
 > [`docs/legal/OPERATOR_CHECKLIST.md`](docs/legal/OPERATOR_CHECKLIST.md)
 > § "First-run setup (M13)" for the three first-run paths, TLS-mode
-> guidance, and the secrets-backup obligation. The full operator
-> quickstart (`docs/quickstart.md`) lands in M14.
+> guidance, and the secrets-backup obligation.
 
 ### Prerequisites
 
 - Linux host (or WSL2). macOS works but `govips`/`libvips` host setup
   varies; on macOS install `libvips` via Homebrew before `go run`.
-- **Go** 1.22 or newer.
+- **Go** 1.26 or newer (`go.mod` pins the toolchain).
+- **Node** 22 (`.nvmrc` is authoritative) — only needed to build the
+  SPAs/widget (`web/*`); the Go dev walkthrough below does not use it.
 - **Docker** + `docker compose` plugin.
 - `pkgconf`, `gcc`, `openssl`. The `govips` cgo build needs the first
   two; `openssl` is used here to generate dev keys.

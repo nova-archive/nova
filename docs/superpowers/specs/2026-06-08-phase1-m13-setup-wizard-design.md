@@ -118,7 +118,7 @@ is where the milestone's correctness lives.
   healthcheck matrix, seccomp/AppArmor profiles. **M14 / Phase 5.** M13 ships the Tier-1 floors the
   startup validator already requires (non-root UID, hardened Kubo, swarm-key-or-explicit-DHT,
   master-key loaded, sentinel present in normal mode) — not a security-audited 1.0 appliance.
-- **Release signing (sigstore/cosign) + `release.yml` image push.** M14.
+- **Release signing (sigstore/cosign) + `release.yml` image push.** **Phase 5** (per the master plan; this line previously said M14 in error).
 - **CI end-to-end smoke test + screenshot-rich `docs/quickstart.md`.** **M14.** M13 ships the inline
   first-run orientation page in lieu of external prose.
 - **Full `dns-01` / `.onion` automation** — DNS-provider credential plugins, bundled Tor. Later; M13
