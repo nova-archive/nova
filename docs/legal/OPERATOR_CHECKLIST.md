@@ -221,8 +221,9 @@ incidents arise.
   from the edge cache. Either restart the prod nginx (the cache lives on
   a tmpfs since M14, so a restart clears it):
   `docker compose -f docker/docker-compose.yml --env-file docker/.env --profile prod restart nginx`
-  — or purge without downtime:
-  `docker compose … exec nginx sh -c 'rm -rf /var/cache/nginx/nova/*' && docker compose … exec nginx nginx -s reload`.
+  — or purge without downtime (same `-f`/`--env-file`/`--profile prod`
+  flags as above):
+  `docker compose -f docker/docker-compose.yml --env-file docker/.env --profile prod exec nginx sh -c 'rm -rf /var/cache/nginx/nova/* && nginx -s reload'`.
   A structural fix (automatic purge on tombstone) is future work.
 - Review the audit log monthly for unexpected privileged actions.
 - Rotate signing keys (HMAC for signed URLs) at your declared
@@ -417,9 +418,9 @@ start. This is the escape hatch for operators with their own provisioning toolin
       config volume, and nginx hot-reloads on every renewal (`docker/nginx/cert-watch.sh`);
       the ACME account/lineage persists in the `nova-letsencrypt` volume. No manual
       certbot steps remain. RECOMMENDED before pointing at production ACME: one
-      `--staging` dry run (`docker compose … exec certbot certbot certonly --staging
-      --webroot -w /var/lib/certbot/webroot -d <host> --email <you> --agree-tos
-      --non-interactive`) to validate reachability without burning rate limits.
+      `--staging` dry run
+      (`docker compose -f docker/docker-compose.yml --env-file docker/.env --profile prod exec certbot certbot certonly --staging --webroot -w /var/lib/certbot/webroot -d <host> --email <you> --agree-tos --non-interactive`)
+      to validate reachability without burning rate limits.
 - [ ] `dns-01` / `onion` — the wizard renders the config and prints **operator-handoff
       instructions** (supply DNS-API credentials out of band for `dns-01`; run Tor and
       supply the self-signed cert for `onion`). Full automation is deferred.
