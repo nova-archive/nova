@@ -119,6 +119,10 @@ services:
       - CHOWN # root-phase entrypoint chown -R of the mounted volumes to nova
       - SETUID # gosu drop root -> nova for migrate + the coordinator exec
       - SETGID # supplementary-group setup for the same gosu drop
+      - DAC_READ_SEARCH # restart path: chown -R must descend into dirs an earlier
+      #   boot already made nova-owned 0700 (/etc/nova/tls, the Kubo keystore);
+      #   with cap_drop ALL, root cannot traverse those without this read-only
+      #   DAC bypass — without it every restart after first boot crash-loops.
 
   # ── Setup profile: first-run wizard front ──────────────────────────
   nginx-setup:

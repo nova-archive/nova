@@ -39,7 +39,9 @@ func ProvisionTLS(a Answers, tlsDir string) (TLSResult, error) {
 			HandoffInstructions: "http-01: the certbot prod profile obtains a certificate " +
 				"via the ACME HTTP-01 webroot challenge. Certificate Transparency (CT) log " +
 				"disclosure of the hostname (" + a.Hostname + ") is expected. " +
-				"Run `certbot certonly --webroot` after Nova is started with HTTP enabled.",
+				"Issuance and renewal-reload are fully automated in the prod profile " +
+				"(the certbot sidecar issues on first boot; nginx reloads on renewal) — " +
+				"no manual certbot step is required.",
 		}, nil
 	case "dns-01":
 		return TLSResult{

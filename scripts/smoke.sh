@@ -9,11 +9,14 @@
 #      two-vhost nova.conf + .bootstrap-complete sentinel.
 #   4. Bring up the prod profile (coordinator + nginx + certbot).
 #   5. Prove upload → read-back → transform → delete through nginx TLS:
-#        [1/5] anonymous multipart PNG upload (public vhost :8443)
-#        [2/5] byte-identical read-back of /blob/{cid}
-#        [3/5] image transform /i/{cid}/w320.png → 200
-#        [4/5] operator login (admin vhost :8445) + DELETE /api/v1/blobs/{cid}
-#        [5/5] deleted blob no longer served (404/410)
+#        [1/6] anonymous multipart PNG upload (public vhost :8443)
+#        [2/6] byte-identical read-back of /blob/{cid}
+#        [3/6] image transform /i/{cid}/w320.png → 200
+#        [4/6] operator login (admin vhost :8445) + DELETE /api/v1/blobs/{cid}
+#        [5/6] deleted blob no longer served (404/410)
+#        [6/6] coordinator restart comes back healthy (the entrypoint's
+#              root-phase chown -R must survive the cap_drop floors on
+#              RESTART, when nova-owned 0700 dirs already exist)
 #
 # Self-contained and idempotent: artifacts live in a mktemp dir; teardown is
 # `down -v` in the EXIT trap. The seeded docker/.env persists across runs
@@ -146,7 +149,7 @@ COL_ID="$("${DC[@]}" exec -T postgres psql -U nova -d nova -tA -c \
 [[ -n "$COL_ID" ]] || fail "public-collection seed returned an empty id (operator user missing?)"
 echo "[smoke]       collection_id=$COL_ID"
 
-echo "[smoke] [1/5] Anonymous multipart PNG upload..."
+echo "[smoke] [1/6] Anonymous multipart PNG upload..."
 python3 - "$TMP/fixture.png" <<'PYEOF'
 import struct, sys, zlib
 def chunk(t, d):
@@ -174,7 +177,7 @@ CID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cid"])' 
 [[ -n "$CID" ]] || fail "upload response contained an empty cid"
 echo "[smoke]       cid=$CID"
 
-echo "[smoke] [2/5] Read-back byte identity (/blob/$CID)..."
+echo "[smoke] [2/6] Read-back byte identity (/blob/$CID)..."
 code="$("${CURL_PUB[@]}" -o "$TMP/readback.png" -w '%{http_code}' "$PUB/blob/$CID")" \
     || fail "read-back request failed"
 [[ "$code" == "200" ]] || fail "read-back returned $code (want 200)"
@@ -182,13 +185,13 @@ cmp -s "$TMP/fixture.png" "$TMP/readback.png" || fail "read-back bytes differ fr
 
 # w320 is the smallest width in the shipped allowlist (nova-image
 # DefaultConfig AllowedWidths: 320/512/1024/2048; anything else 400s).
-echo "[smoke] [3/5] Image transform (/i/$CID/w320.png)..."
+echo "[smoke] [3/6] Image transform (/i/$CID/w320.png)..."
 code="$("${CURL_PUB[@]}" -o "$TMP/transform.png" -w '%{http_code}' "$PUB/i/$CID/w320.png")" \
     || fail "transform request failed"
 [[ "$code" == "200" ]] || fail "transform returned $code (want 200)"
 [[ -s "$TMP/transform.png" ]] || fail "transform returned an empty body"
 
-echo "[smoke] [4/5] Operator login via admin vhost + DELETE via public vhost (/api/v1/blobs/$CID)..."
+echo "[smoke] [4/6] Operator login via admin vhost + DELETE via public vhost (/api/v1/blobs/$CID)..."
 code="$("${CURL_ADM[@]}" -o "$TMP/login.json" -w '%{http_code}' \
     -H 'Content-Type: application/json' \
     -d "{\"username\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}" \
@@ -211,14 +214,33 @@ if [[ "$code" != 2* ]]; then
     fail "delete returned $code (want 2xx)"
 fi
 
-echo "[smoke] [5/5] Deleted blob no longer served..."
+echo "[smoke] [5/6] Deleted blob no longer served..."
 # nginx caches /blob 200s for 1y; bust the cache key with a benign query param
 # (the signed-URL guard only engages on sig/exp/aud/kid) so the probe reaches
-# the coordinator instead of the step-[2/5] cache entry.
+# the coordinator instead of the step-[2/6] cache entry.
 code="$("${CURL_PUB[@]}" -o /dev/null -w '%{http_code}' "$PUB/blob/$CID?nocache=$RANDOM")" \
     || fail "post-delete read request failed"
 if [[ "$code" != "404" && "$code" != "410" ]]; then
     fail "deleted blob still served: GET /blob/$CID returned $code (want 404 or 410)"
 fi
 
-echo "[smoke] PASS — upload → read → transform → delete proven through the prod stack."
+echo "[smoke] [6/6] Coordinator restart survives the hardening floors..."
+# Regression guard for the cap_drop/read_only floors: the entrypoint's root
+# phase (chown -R over volumes that an earlier boot already made nova-owned
+# 0700, e.g. /etc/nova/tls and the Kubo keystore) must work on RESTART, not
+# just first boot — this is exactly the path a first-boot-only smoke misses.
+"${DC[@]}" --profile prod restart coordinator || fail "coordinator restart failed"
+restart_code=""
+for i in {1..30}; do
+    restart_code="$("${CURL_PUB[@]}" -o /dev/null -w '%{http_code}' "$PUB/health?nocache=$RANDOM" 2>/dev/null || true)"
+    if [[ "$restart_code" == "200" ]]; then
+        echo "[smoke]       healthy again after restart"
+        break
+    fi
+    sleep 2
+    if [[ $i -eq 30 ]]; then
+        fail "coordinator did not come back healthy after restart (last code: ${restart_code:-none})"
+    fi
+done
+
+echo "[smoke] PASS — upload → read → transform → delete → restart proven through the prod stack."
