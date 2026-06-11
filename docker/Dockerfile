@@ -31,8 +31,10 @@ RUN npm run -w @nova/admin build \
 # The entrypoint runs as root, chowns mounted volumes to the nova user,
 # then drops privileges via gosu for migrate + the final coordinator exec.
 FROM debian:bookworm-slim AS runtime
+# curl exists solely for the compose healthcheck probe of /health — the
+# image ships no other HTTP client (no wget, no busybox).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libvips42 ca-certificates gosu && rm -rf /var/lib/apt/lists/*
+    libvips42 ca-certificates gosu curl && rm -rf /var/lib/apt/lists/*
 RUN groupadd -r nova && useradd -r -g nova -u 10001 nova
 COPY --from=go-builder /out/coordinator /out/novactl /out/migrate /usr/local/bin/
 COPY --from=node-builder /src/web/admin/dist  /usr/share/nova/admin

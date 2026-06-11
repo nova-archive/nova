@@ -56,6 +56,13 @@ services:
       - /run/postgresql
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add:
+      - CHOWN # entrypoint chown -R of PGDATA to the postgres user
+      - DAC_OVERRIDE # root-phase reads/writes inside the postgres-owned PGDATA
+      - FOWNER # chmod 00700 on PGDATA after it is chowned to postgres
+      - SETUID # su-exec drop root -> postgres for initdb + the server
+      - SETGID # supplementary-group setup for the same su-exec drop
 
   coordinator:
     build:
@@ -91,8 +98,27 @@ services:
     # the coordinator exits 0 after the wizard commits; the supervisor
     # restarts it in normal mode.
     restart: unless-stopped
+    # /health is served on NOVA_LISTEN_ADDR (:9000) in both setup and normal
+    # mode; curl is in the runtime image solely for this probe.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # Rootfs is immutable; every writable path the entrypoint/coordinator
+    # touches (NOVA_CONFIG_DIR, NOVA_SECRETS_DIR, NOVA_KUBO_REPO, the upload
+    # tmp dir) is one of the named volumes above, which stay writable.
+    read_only: true
+    tmpfs:
+      - /tmp # libvips / stdlib scratch space
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add:
+      - CHOWN # root-phase entrypoint chown -R of the mounted volumes to nova
+      - SETUID # gosu drop root -> nova for migrate + the coordinator exec
+      - SETGID # supplementary-group setup for the same gosu drop
 
   # ── Setup profile: first-run wizard front ──────────────────────────
   nginx-setup:
@@ -106,8 +132,26 @@ services:
     depends_on:
       - coordinator
     restart: unless-stopped
+    # nginx -t validates the config, not serving — accepted floor: a broken
+    # mount/config flips unhealthy, an upstream outage does not.
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx # client_body/proxy temp dirs
+      - /run # nginx.pid (/var/run is a symlink to /run in alpine)
+      - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add:
+      - CHOWN # master chowns the temp/cache dirs to the worker user
+      - SETUID # master drops worker processes to the nginx user
+      - SETGID # supplementary-group setup for the same worker drop
 
   # ── Prod profile: wizard-rendered nova.conf ────────────────────────
   nginx:
@@ -146,8 +190,32 @@ services:
     depends_on:
       - coordinator
     restart: unless-stopped
+    # nginx -t validates the config, not serving — accepted floor: a broken
+    # mount/config flips unhealthy, an upstream outage does not.
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx # proxy_cache_path /var/cache/nginx/nova + temp dirs
+      - /run # nginx.pid (/var/run is a symlink to /run in alpine)
+      - /tmp
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add:
+      - NET_BIND_SERVICE # in-container listeners on 80/443 (<1024)
+      - CHOWN # master chowns the temp/cache dirs to the worker user
+      - SETUID # master drops worker processes to the nginx user
+      - SETGID # supplementary-group setup for the same worker drop
+      # The TLS key/cert under /etc/nova are nova-owned mode 600 (the
+      # coordinator entrypoint chown -Rs the shared config volume); the nginx
+      # master (root) needs read-only DAC bypass to load them, and
+      # cert-watch.sh needs it to hash the cert for the reload watcher.
+      - DAC_READ_SEARCH
 
   # ── Prod profile: Let's Encrypt issuance + renewal (http-01) ───────
   certbot:
@@ -182,8 +250,25 @@ services:
     #      differs, which triggers the nginx-side reload.
     entrypoint: ["/bin/sh", "/certbot-loop.sh"]
     restart: unless-stopped
+    # Process-liveness only: the loop is a best-effort sidecar (mostly asleep
+    # between 12h cycles), so "the loop shell is alive" is the honest signal.
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "certbot-loop.sh"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # No read_only here on purpose: certbot churns /etc/letsencrypt plus its
+    # work/log dirs (/var/lib/letsencrypt, /var/log/letsencrypt) on the
+    # rootfs, and the loop writes placeholder/deployed certs into /etc/nova.
     security_opt:
       - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add:
+      # The shared config volume is chown -Red to nova by the coordinator
+      # entrypoint; the loop (root) writes placeholder + deployed certs into
+      # those nova-owned dirs/files, which needs the DAC bypass.
+      - DAC_OVERRIDE
 
 volumes:
   postgres-data:
