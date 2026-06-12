@@ -1,18 +1,35 @@
 # Simulations
 
 Analytical tools that stress-test architectural decisions before they
-calcify in production code. Each script is self-contained and uses
-only the Python standard library, so it can be checked into the repo
-and re-run by anyone.
+calcify in production code. The four Python scripts here are
+self-contained and use only the Python standard library; the `go/`
+directory holds a heavier **calibrated-hybrid** simulator that drives
+Nova's real storage primitives (see below).
 
 ## Files
 
-| File | Phase 0 spec it validates | What it answers |
+| File | Spec it validates | What it answers |
 |---|---|---|
 | `orchestrator_resilience.py` | `HEALING_PROTOCOL.md` § "Empirical thresholds" | How big does the network need to be to clear Tier 1 within target windows? |
 | `sybil_concentration.py` | `THREAT_MODEL.md` § A, `POSSESSION_AUDIT.md` | At what sybil ratio does coordinated withdrawal cause data loss? |
 | `long_tail_churn.py` | `HEALING_PROTOCOL.md` § "Slow-attrition detection" | Does the `federation.shrinking` webhook provide useful warning lead? |
 | `key_rotation_load.py` | `ENCRYPTION_ENVELOPE.md` § "Master key versioning" | How long does `novactl keys rotate-master` take under realistic load? |
+| `go/` (`novasim`) | 2026-06-12 resilience & post-1.0 design | Where does the **single-operator** architecture break down (coordinator egress ceiling, capacity→centrality fragility, HA/peering deltas)? |
+
+### `go/` — calibrated-hybrid simulator (`novasim`)
+
+Unlike the Python models, `novasim` measures real per-operation costs from
+`internal/envelope` + `internal/ipfs` and feeds them into a scaled
+discrete-event resilience model. It is gated behind the `novasim` build tag, so
+it never enters the default `go build ./...` / CI surface:
+
+```sh
+go test -tags novasim ./simulations/go/model/...
+go run  -tags novasim ./simulations/go/cmd/novasim <calibrate|coordinator|sweep|scenario|availability>
+```
+
+See [`go/README.md`](go/README.md) and
+`docs/superpowers/specs/phase2/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
 
 ### `orchestrator_resilience.py`
 

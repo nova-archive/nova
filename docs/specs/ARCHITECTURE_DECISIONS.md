@@ -110,11 +110,21 @@ cannot opt out.
 |---|---|---|
 | T1.25 | Donor-blind storage: a conforming federation never asks donors to hold plaintext; donors hold envelope ciphertext only | `ENCRYPTION_ENVELOPE.md`; `THREAT_MODEL.md` |
 | T1.26 | Not operator-blind: the coordinator decrypts on every read and on transform; this is intentional, not a defect | `ENCRYPTION_ENVELOPE.md` § "Trust-model note"; `THREAT_MODEL.md` |
-| T1.27 | Single-coordinator topology; multi-master HA is an explicit non-goal | `THREAT_MODEL.md` § "Out of scope" |
-| T1.28 | Each operator runs an independent federation; cross-federation peering is not a Phase 1–5 goal | `FEDERATION_PROTOCOL.md` § "Out of scope"; `HEALING_PROTOCOL.md` § "Out of scope" |
+| T1.27 | A federation has exactly **one logical authoritative state history**. Multiple coordinator replicas MAY serve concurrently when sharing that one strongly-consistent authority; global control-plane operations require a fenced leader term. Independent concurrent authoritative histories (multi-master with divergent writable databases) remain prohibited | `THREAT_MODEL.md` § "Out of scope"; 2026-06-12 resilience design |
+| T1.28 | Federations remain independently governed and independently keyed. Optional **inter-federation peering** MAY replicate **opaque ciphertext** and encrypted recovery packages only — never user catalogs, moderation authority, legal holds, master keys, or assignment histories; every object has exactly one home federation, and peers never receive plaintext or active DEKs | `FEDERATION_PROTOCOL.md` § "Out of scope"; `HEALING_PROTOCOL.md` § "Out of scope"; 2026-06-12 resilience design |
 
 A Tier 1 change requires a spec version bump, an implementation
 gate, and a corresponding update to this table.
+
+`T1.27` and `T1.28` were **reframed** (not relaxed) by the second-pass
+resilience analysis in
+`docs/superpowers/specs/phase2/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
+The single-coordinator deployment remains correct and sufficient for the entire
+1.0 line; the reframing makes room for two deliberate **post-1.0** phases —
+multi-coordinator single-authority HA (Phase 6) and opaque inter-federation
+replica peering (Phase 7) — without ever permitting two authorities to diverge.
+Until those phases land, every conforming deployment is single-coordinator and
+single-federation.
 
 ## Tier 2: Operator-tunable parameters
 
@@ -136,6 +146,27 @@ threat tolerance.
 | `mass_casualty_window_seconds` | 3600 | 60..86400 | `HEALING_PROTOCOL.md`; `FEDERATION_PROTOCOL.md` |
 | `capacity_runway_floor_days` | 7 | 1..90 | `HEALING_PROTOCOL.md` § "Slow-attrition detection" |
 | `reputation_floor` | 0.5 | 0.0..1.0 | `HEALING_PROTOCOL.md`; `POSSESSION_AUDIT.md` |
+
+### Diversity and concentration alerting (alert, not prevent)
+
+Nova **alerts** on dangerous network homogeneity; it does **not** refuse to place
+a replica purely for homogeneity. Placement gains *soft* failure-domain
+anti-affinity (a preference, never a veto — a hard ceiling could block healing
+into the only surviving capacity during a casualty). These webhooks parallel the
+existing `federation.degraded` / `federation.shrinking` signals. Rationale and
+simulation evidence: the 2026-06-12 resilience design.
+
+| Key | Default | Range | Where documented |
+|---|---|---|---|
+| `concentration.largest_share_warn` | 0.30 | 0.10..0.90 | 2026-06-12 resilience design |
+| `concentration.normalized_entropy_warn` | 0.50 | 0.0..1.0 | 2026-06-12 resilience design |
+| `concentration.check_interval_seconds` | 3600 | 60..86400 | 2026-06-12 resilience design |
+
+Webhooks: `federation.concentrated` (a failure-domain dimension —
+provider / ASN / region / principal — exceeds `largest_share_warn`) and
+`federation.homogeneous` (a dimension's normalized entropy falls below
+`normalized_entropy_warn`). Dashboard metrics: pin-incidence Gini (per node) and
+per-dimension largest-share / top-k share / normalized entropy.
 
 ### Federation and liveness
 
@@ -213,7 +244,7 @@ violations.
 - How donor candidates are vetted prior to receiving a Nebula cert + `swarm.key` bundle. The protocol provides the cryptographic gates (cert issuance, revocation, reputation) the operator uses to enforce whatever policy they choose.
 - Whether to issue invites manually, through a closed application form, through an automated portal with proof-of-work, or any other mechanism the operator builds on top of the cert-issuance API. A reference pattern is documented in `docs/recipes/AUTOMATED_ONBOARDING.md` but is not part of the protocol.
 - Identity verification thresholds — none, email confirmation, OIDC binding, KYC, deposit, character references. Operator policy.
-- Whether to require diversity (geographic, ISP, provider) in the donor pool. Operator policy informed by `HEALING_PROTOCOL.md` empirical thresholds and `OPERATOR_CHECKLIST.md` recommendations.
+- Whether to require diversity (geographic, ISP, provider, ASN) in the donor pool. Operator policy informed by `HEALING_PROTOCOL.md` empirical thresholds and `OPERATOR_CHECKLIST.md` recommendations. Nova *alerts* on dangerous homogeneity (Tier 2 § "Diversity and concentration alerting") but never enforces a diversity floor — acting on the alert is the operator's freedom.
 
 ### Governance and community
 
@@ -227,7 +258,7 @@ violations.
 - Whether the operator runs adapter packages for specific application stacks (Mastodon plugin, forum integration, etc.). These adapters live in separate repositories and are not part of the protocol.
 - Whether to front the coordinator with a CDN (and accept the plaintext-cache implication documented in `CLOUDFLARE.md`).
 - Whether to integrate with external SSO (Authelia, generic OIDC, SAML). Nova accepts bearer tokens; the issuer is operator-chosen.
-- Whether to run a hot-spare coordinator on cold standby for read-availability after primary failure. The architecture is compatible (see `docs/recipes/COLD_STANDBY.md`) but Nova does not ship the failover orchestration.
+- Whether to run a hot-spare coordinator on cold standby for read-availability after primary failure. The architecture is compatible (see `docs/recipes/COLD_STANDBY.md`) but Nova does not ship the failover orchestration. (Automating and hardening this pattern into multi-coordinator single-authority HA is the proposed post-1.0 Phase 6 — see `ROADMAP.md` and the 2026-06-12 resilience design.)
 
 ## What this document deliberately excludes
 

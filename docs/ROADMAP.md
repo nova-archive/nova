@@ -207,15 +207,53 @@ v2 addition: full severe-content workflow per
 
 Chaos testing, security audit, documentation polish, public 1.0.
 
-## Phase 6+ — Research
+## Phase 6 — Multi-coordinator, single-authority HA (post-1.0)
 
-Speculative directions: end-user client direct integration, browser-
-resident pinning via WASM, FFI bindings for non-Go embedding,
-additional product modules (`nova-video`, `nova-audio`, `nova-archive`,
-`nova-document`), read-only secondary coordinator for read-availability
-during primary failover, formal Provable Data Possession / Proof of
-Retrievability, hot-tier / cold-tier auto-migration, optional S3
-read-only adapter product layer.
+Remove the coordinator as an availability single point of failure without ever
+allowing two authorities to diverge. Several active coordinators behind
+redundant ingress read one **strongly-consistent Postgres authority** (primary +
+fenced streaming standbys); **exactly one fenced control-plane leader**
+(monotonic control-term token) runs orchestration, liveness transitions, audits,
+lifecycle sweeps, master-key rotation, and cert revocation. Reads and donor-API
+traffic are active-active. Builds on and automates the manual
+`docs/recipes/COLD_STANDBY.md` pattern with mechanical fencing.
 
-(v3.1: streaming-AEAD envelope was promoted from Phase 6+ research
-to a Phase 2 deliverable. See above.)
+Groundwork (surfaced by the second-pass resilience analysis so it is not built
+as accidental tech debt): job-queue + control-plane fencing tokens
+(`lease_id`/`generation`, `coordinator_leases(term)`), origin-location tracking
+with a transactional outbox for the Kubo-pin/Postgres-commit boundary,
+multi-endpoint donor config with `since_seq` cursor preservation, replicated or
+shared upload staging, cross-instance signed-URL revocation, and redundant
+Nebula lighthouses + Kubo bootstrap peers. Reframes `T1.27`; explicitly rejects
+independent writable masters. Design + simulation evidence:
+`docs/superpowers/specs/phase2/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
+
+## Phase 7 — Opaque inter-federation replica peering (post-1.0)
+
+Off-site durability and disaster recovery across operators **without merging
+trust domains**. A `peer/v1` protocol (distinct from donor `fed/v1`) in which a
+peer stores **opaque ciphertext only** — never keys, plaintext, catalog,
+moderation state, or assignment history. Invariants: every object has exactly
+one home federation; peers count as at most one failure domain each (lease- and
+audit-gated); no transit / no re-export without home authorization; signed,
+generation-ordered tombstones propagate crypto-shred even to peers that no
+longer hold the object; optional **encrypted DR packages** (Postgres base backup
++ WAL + manifests, encrypted under a recovery key the peer does not hold) turn
+peering from ciphertext durability into full federation reconstruction. Peering
+replicates bytes, not authority. Reframes `T1.28`.
+
+## Phase 8+ — Research
+
+Speculative directions: end-user client direct integration, browser-resident
+pinning via WASM, FFI bindings for non-Go embedding, additional product modules
+(`nova-video`, `nova-audio`, `nova-archive`, `nova-document`), formal Provable
+Data Possession / Proof of Retrievability, hot-tier / cold-tier auto-migration,
+optional S3 read-only adapter product layer, erasure coding for large archival
+objects.
+
+(v3.1: streaming-AEAD envelope was promoted from Phase 6+ research to a Phase 2
+deliverable. v3.2 — 2026-06-12: multi-coordinator HA and inter-federation
+peering were promoted from the Phase 6+ research grab-bag into deliberate
+post-1.0 Phases 6 and 7, and the remaining research items renumbered to
+Phase 8+; the earlier "read-only secondary coordinator" research line is
+superseded by Phase 6. See the 2026-06-12 resilience design.)
