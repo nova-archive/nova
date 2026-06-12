@@ -1,0 +1,10 @@
+{
+  "host": "bugbear",
+  "cores": 16,
+  "measured": true,
+  "encrypt_bytes_per_sec_per_core": 963124812.6836916,
+  "decrypt_bytes_per_sec_per_core": 912673668.7741611,
+  "key_unwrap_seconds": 4.40119375e-7,
+  "import_bytes_per_sec": 372730017.9926063,
+  "notes": "measured on bugbear (16 logical cores); AEAD obj=4194304 B, import obj=4194304 B ×40"
+}
