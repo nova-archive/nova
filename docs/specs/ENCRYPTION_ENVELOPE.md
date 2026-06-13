@@ -1,6 +1,15 @@
 # Encryption Envelope
 
-Status: **Phase 0 v2 — normative.** `internal/envelope` must conform exactly.
+Status: **Phase 0 v3 — normative.** `internal/envelope` must conform exactly.
+
+> **Amended by P2-M0 (2026-06-13)** — the v2 streaming-AEAD **record/DAG layout
+> (D2) and per-chunk AAD construction (D3) are deferred to P2-M8** (golden
+> vectors + crypto review): the "chunk N == block N" guarantee and the
+> CID-in-AAD scheme in the v2 section below are **superseded, not settled**. The
+> v2 Range benefit is reframed to **bounded-memory authenticated Range
+> decryption at the origin** (D12), not ciphertext-serving CDN edges. The v1
+> single-shot format is unchanged. See
+> `docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
 
 ## Purpose
 
@@ -404,26 +413,35 @@ streaming AEAD while preserving every Tier 1 commitment (donor-
 blindness, deterministic CIDs, master-key wrapping, per-blob
 crypto-shredding).
 
-Status: **planned design sketch.** The authoritative v2 spec lands
-when Phase 2 begins. This section reserves the wire-format slots
-and constrains Phase 1 implementations to leave v2 room.
+Status: **planned design sketch — record/DAG layout + AAD authoritative in
+P2-M8.** This section reserves the wire-format slots and constrains Phase 1
+implementations to leave v2 room. The exact encrypted-record ↔ IPFS-block
+mapping (D2) and the per-chunk AAD commitment (D3) are settled in **P2-M8** with
+golden vectors and a focused crypto review; the sketches below are illustrative,
+not normative, until then.
 
 ### Goals
 
 - **Range-serveable encrypted blobs.** HTTP 206 with the correct
   `Content-Range` for any byte range, decrypting only the chunks
   that cover the range.
-- **CDN-compatible partial-object caching.** Edges can store and
-  serve individual ciphertext chunks without coordinating with the
-  origin per byte range.
+- **Bounded-memory authenticated Range decryption at the origin (D12).** The
+  coordinator fetches and decrypts only the records covering the requested range
+  and returns a plaintext `206` — without buffering the whole object. (The
+  earlier "CDN edges serve individual ciphertext chunks" framing is dropped:
+  Nova's default read path decrypts at the coordinator, so a ciphertext-caching
+  edge would require a Nova-aware intermediary and is not the default.)
 - **First-byte latency independent of object size.** The gateway
   decrypts the first relevant chunk and starts streaming
   immediately; subsequent chunks decrypt in parallel with delivery.
-- **Federation reuse.** Streaming chunks align with IPFS block
-  boundaries (256 KiB, the chunker we already mandate). Chunk N ==
-  block N. Donors fetch and serve whole IPFS blocks as today;
-  donor-to-donor repair, possession audits, and partial-read
-  serving all share the same per-block infrastructure.
+- **Federation reuse.** Donors fetch and serve whole IPFS blocks as today, so
+  donor-to-donor repair, possession audits, and partial-read serving share the
+  same per-block infrastructure. **(D2 — the earlier "chunk N == block N"
+  guarantee is superseded.)** A 40-byte header + ciphertext + 16-byte tag per
+  record cannot align with fixed 256 KiB UnixFS leaves, so the authoritative
+  encrypted-record ↔ block mapping is settled in **P2-M8** (e.g. a custom DAG
+  with one raw leaf per record, a fixed-size encrypted record, or a
+  ciphertext-offset → block map in `blob_manifests`).
 
 ### Wire format (sketch)
 
@@ -461,12 +479,13 @@ counter, and the base_nonce is per-blob random. The AAD binds the
 chunk to its position and to the eventual CID, so a tampered
 envelope that swaps two chunks fails authentication on at least one.
 
-Note: the `cid_v1_prefix` in AAD is the CID's multihash bytes (not
-the human-readable CID string), computed and committed *before* the
-last chunk's tag is finalized. The CID itself is computed over the
-envelope bytes after encryption; the prefix used in AAD comes from
-an intermediate commitment scheme. The full spec works this out in
-Phase 2.
+Note (D3 — **deferred to P2-M8**): binding per-chunk AAD to the final `cid` is
+circular — the CID is computed over ciphertext that already contains the tags.
+P2-M8 resolves this by binding AAD to a **canonical header commitment**
+(`hash(canonical_header) ‖ chunk_index ‖ total_chunks ‖ plaintext_len`), not the
+final CID; the content address authenticates the whole object while per-chunk
+AAD prevents reordering/substitution. Exact construction + vectors land in P2-M8
+under crypto review. The `cid_v1_prefix`-in-AAD sketch above is **superseded**.
 
 ### Range read path
 
@@ -510,7 +529,10 @@ ships:
 - Tier 1 commitments (donor-blind, single-coordinator, deterministic
   CIDs) are unchanged.
 
-### What requires deliberation before Phase 2 implementation
+### What requires deliberation — authoritative in P2-M8
+
+These items are settled in **P2-M8** (the streaming-envelope design milestone)
+with golden vectors and a focused crypto review, before any v2 write/read code:
 
 - Authoritative test vectors covering chunk-boundary edge cases,
   final-chunk marker presence/absence, and AAD substitution attacks.
