@@ -1,7 +1,16 @@
 # Federation Protocol
 
-Status: **Phase 0 v2 — normative.** `internal/federation` (coordinator
+Status: **Phase 0 v3 — normative.** `internal/federation` (coordinator
 side) and `cmd/node` (donor side) must conform exactly.
+
+> **Amended by P2-M0 (2026-06-13)** — Ed25519 repair tokens (was HMAC,
+> D1), re-import + root-CID transfer verification (was `hash(bytes) ==
+> cid`, D4), durable `pin_changes` log + `snapshot_required` recovery and
+> fail-closed capability-negotiated change-log kinds (D7), identity from
+> the verified mTLS cert + capability negotiation (D-cap), donor-
+> authoritative bandwidth budgets (D11), and `assignment_id`/`generation`
+> on the change log + ack/fail (D6). See
+> `docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
 
 ## Purpose
 
@@ -57,6 +66,8 @@ Request:
 ```json
 {
   "client_version": "0.1.0",
+  "supported_protocols": ["fed/v1"],
+  "capabilities": ["pin-change-log/v1", "snapshot/v1", "repair-stream/v1", "audit-block-hash/v1"],
   "nebula_cert_fingerprint": "sha256:f8...",
   "federation_cert_fingerprint": "sha256:a3...",
   "display_name": "tor-relay-archive-1",
@@ -75,6 +86,8 @@ Response `201 Created` (or `200 OK` if already registered):
 ```json
 {
   "node_id": "550e8400-e29b-41d4-a716-446655440000",
+  "selected_protocol": "fed/v1",
+  "required_capabilities": ["pin-change-log/v1", "snapshot/v1"],
   "config": {
     "heartbeat_interval_seconds": 300,
     "pins_poll_interval_seconds": 600,
@@ -85,6 +98,20 @@ Response `201 Created` (or `200 OK` if already registered):
   }
 }
 ```
+
+**Identity and capability negotiation (D-cap).** The coordinator derives node
+identity from the **verified mTLS federation certificate**, not from any
+self-asserted field in the request body; the request's
+`nebula_cert_fingerprint` / `federation_cert_fingerprint` are matched against
+the verified peer cert and rejected on mismatch. The coordinator selects the
+highest common `fed/vN` from `supported_protocols` and the intersecting
+`capabilities`, returning `selected_protocol` + `required_capabilities`; if no
+compatible set exists it **fails registration** with a clear, machine-readable
+error (`incompatible_protocol` / `missing_capability`) rather than degrading
+silently. `geo_declared` is **informational only** — placement anti-affinity
+uses the operator-verified `failure_domain_id` / `donor_principal_id` set
+coordinator-side (see `HEALING_PROTOCOL.md`), never the donor's self-declared
+geo.
 
 ### `POST /fed/v1/heartbeat`
 
@@ -128,8 +155,8 @@ Response `200 OK`:
 ```json
 {
   "changes": [
-    { "seq": 4172837, "kind": "assign", "cid": "bafy...", "byte_size": 1048576, "priority": "tier1" },
-    { "seq": 4172838, "kind": "unpin",  "cid": "bafy..." }
+    { "seq": 4172837, "kind": "assign", "assignment_id": "7c9e...", "generation": 1, "cid": "bafy...", "byte_size": 1048576, "source": { "node_id": "f47a...", "nebula_addr": "10.42.0.5:9443", "token": "<ed25519-repair-token>" } },
+    { "seq": 4172838, "kind": "unpin",  "assignment_id": "7c9e...", "generation": 2, "cid": "bafy..." }
   ],
   "next_seq": 4172839,
   "current_epoch": 421
@@ -137,7 +164,21 @@ Response `200 OK`:
 ```
 
 `kind` is one of `assign`, `unpin`. The donor applies changes in
-sequence order.
+sequence order, keyed by `(assignment_id, generation)` so a delayed or
+duplicated change is idempotent (D6). The **`priority`/`tier1` flag is never
+sent to donors** — it is coordinator-only scheduling metadata that would leak
+"this is the federation's last safe copy" (master design § component ownership).
+
+**Durable backing + recovery (D7).** The change log is backed by the durable
+`pin_changes(sequence bigserial, node_id, assignment_id, generation, kind, cid,
+created_at)` table (see `DATA_MODEL.sql`) with a retention window. When a donor's
+`since_seq` predates retention, the coordinator returns a machine-readable
+**`snapshot_required`** error rather than an incomplete diff; the donor then
+recovers via `GET /fed/v1/pins/snapshot`. An **unknown `kind`** for a
+state-mutating change **fails closed** — the donor stops and re-syncs rather
+than silently skipping it — and new `kind` values are introduced via
+**capability negotiation** (D-cap), never as silent backward-compatible
+additions.
 
 ### `GET /fed/v1/pins/snapshot`
 
@@ -162,9 +203,10 @@ Response `200 OK`:
   "data": [
     {
       "cid": "bafy...",
+      "assignment_id": "7c9e...",
+      "generation": 1,
       "byte_size": 1048576,
-      "assigned_at": "2026-05-09T12:34:56Z",
-      "priority": "tier1"
+      "assigned_at": "2026-05-09T12:34:56Z"
     }
   ],
   "cursor": "eyJsYXN0X2NpZCI6ICJiYWZ5..."  ,
@@ -179,12 +221,18 @@ against the new snapshot.
 ### `POST /fed/v1/pins/{cid}/ack`
 
 Sent when the donor has successfully pinned a CID locally. The donor
-has verified the envelope CID matches the bytes it received.
+has verified the CID by **deterministic re-import + root-CID comparison**
+(see "Repair transport" → D4), not a flat byte hash. The `ack` carries the
+`assignment_id` + `generation` it is acking; the coordinator applies the
+transition conditionally (`… WHERE assignment_id=$ AND generation=$ AND
+state='pending'`) so a delayed ack for a superseded assignment is rejected (D6).
 
 Request:
 
 ```json
 {
+  "assignment_id": "7c9e...",
+  "generation": 1,
   "byte_size": 1048576,
   "ipfs_pin_status": "pinned",
   "fetched_from_node_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
@@ -207,6 +255,8 @@ Request:
 
 ```json
 {
+  "assignment_id": "7c9e...",
+  "generation": 1,
   "reason": "out_of_space",
   "details": "free_bytes=12345 < required=1048576"
 }
@@ -214,7 +264,12 @@ Request:
 
 `reason` ∈ {`out_of_space`, `blob_unavailable`, `policy_filter`,
 `network_error`, `kubo_error`, `source_unauthorized`, `cid_mismatch`,
-`other`}.
+`budget_exceeded`, `other`}.
+
+`budget_exceeded` is the donor's **authoritative** local token-bucket refusing
+work that would exceed its configured daily budget (D11); the coordinator's
+schedule is only a best-effort reservation. `cid_mismatch` is the re-import +
+root-CID verification (D4) failing.
 
 `source_unauthorized` and `cid_mismatch` are donor-detected misuse
 of the repair transport (see below) and trigger reputation hits on
@@ -242,30 +297,49 @@ GET /fed/v1/blob/{cid}
 
 Authentication:
 - Client mTLS cert must be a valid federation cert.
-- Request must carry `X-Nova-Repair-Token: <token>`, where `token`
-  is a coordinator-issued, time-limited, source-and-destination-
-  pinned grant (HMAC-signed by the coordinator's federation
-  signing key).
+- Request must carry `X-Nova-Repair-Token: <token>`, where `token` is a
+  coordinator-issued, time-limited, source-and-destination-pinned grant
+  **signed with the coordinator's Ed25519 federation repair-signing key** (D1).
+  The signature is **asymmetric**: the coordinator holds the private key; donors
+  hold only the **public** key, delivered via `config_updates` on heartbeats.
+  (The earlier "HMAC-signed" design was unimplementable — an HMAC verify-key is
+  symmetric, so distributing it would let any donor mint tokens.)
 
-Token claims:
+Token claims (D1):
+- `jti` — unique token id, for single/bounded-use replay defense
 - `cid` — the requested blob
+- `assignment_id` + `generation` — the assignment this transfer serves
 - `source_node_id` — must match the donor receiving the request
 - `dest_node_id` — must match the requester's federation cert
-- `not_before` / `not_after` — short window, default 5 min
+- `not_before` / `not_after` — short window, ≤ `repair_token_ttl_seconds`
+- `max_bytes` — upper bound the source will serve under this token
+- `protocol_version` — the negotiated `fed/vN`
 
 The source donor:
-1. Verifies the token signature (using a coordinator pubkey
-   delivered via `config_updates` in heartbeats).
-2. Confirms `source_node_id` is its own.
-3. Confirms it locally holds the CID.
-4. Streams the envelope bytes; debits its own daily bandwidth budget.
-5. Logs the transfer for the coordinator's reconciliation.
+1. Verifies the token's **Ed25519 signature** with the coordinator public key
+   (delivered via `config_updates`).
+2. Confirms `source_node_id` is its own and `dest_node_id` matches the verified
+   requester cert.
+3. Enforces **single/bounded-use** via a local `jti` replay cache, so a
+   malicious destination cannot replay a valid token to drain the source's
+   budget.
+4. Confirms it locally holds the CID.
+5. Streams the envelope bytes (up to `max_bytes`), debiting its **authoritative
+   local token-bucket** — it refuses (`budget_exceeded`) if serving would exceed
+   its configured daily budget (D11), regardless of any coordinator reservation.
+6. Logs the transfer for the coordinator's reconciliation (heartbeat/transfer
+   reports reconcile actual bytes against the best-effort reservation).
 
 The destination donor:
-1. Receives the bytes.
-2. Verifies the envelope CID (`hash(bytes) == cid`).
+1. Receives the bytes (CAR stream or raw envelope).
+2. Verifies the CID by **deterministic re-import through `IPFS_IMPORT_RULES.md`
+   and comparing the computed root CID** to the assigned CID — or, for a CAR,
+   verifies every block and the root (D4). A flat `hash(bytes) == cid` is wrong
+   for any multi-block UnixFS/DAG-PB object: the CID is a DAG root, not
+   `sha256(bytes)`. `github.com/ipld/go-car/v2` is already a dependency.
 3. Pins locally.
-4. Sends `ack` with `fetched_from_node_id = source_node_id`.
+4. Sends `ack` with `fetched_from_node_id = source_node_id`, plus
+   `assignment_id` and `generation`.
 
 **This is the only sanctioned repair path in Phase 2.** Bitswap-
 backed `ipfs pin add` for repair is explicitly disabled by the donor
@@ -279,13 +353,14 @@ designation in the `assign` change-log entry:
 {
   "seq": 4172837,
   "kind": "assign",
+  "assignment_id": "7c9e...",
+  "generation": 1,
   "cid": "bafy...",
   "byte_size": 1048576,
-  "priority": "tier1",
   "source": {
     "node_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
     "nebula_addr": "10.42.0.5:9443",
-    "token": "eyJhbGciOiJIUzI1NiI..."
+    "token": "<ed25519-repair-token>"
   }
 }
 ```
@@ -317,7 +392,7 @@ Donor                                           Coordinator
   |   GET /fed/v1/blob/{cid}     (donor-to-donor)    |
   |     X-Nova-Repair-Token: ... ────────────────────►other donor
   |                              ◄── envelope bytes  |
-  |   verify CID == hash(bytes)                      |
+  |   verify via re-import + root-CID compare (D4)   |
   |   ipfs block put                                 |
   | POST /fed/v1/pins/{cid}/ack ────────────────────►|
   |                              ◄── 204            |
@@ -416,19 +491,30 @@ Operator-tunable in `operator.yaml` under `federation`:
 
 `/fed/v1/` is the v1 namespace. Breaking changes require a `/fed/v2/`
 prefix and a transition period during which both are supported.
-Backwards-compatible additions (new optional fields, new endpoints,
-new change-log `kind` values) are made within v1.
+Backwards-compatible additions (new optional fields, new endpoints) are made
+within v1. **New change-log `kind` values are NOT silently backward-compatible**
+(D7): because a `kind` can drive a state-mutating operation an old donor would
+misapply, new kinds are gated by **capability negotiation** (D-cap) and an
+unknown kind **fails closed** at the donor.
 
 The donor node's `client_version` field in `register` lets the
 coordinator emit deprecation warnings for outdated clients via
-`config_updates.deprecation_message` on heartbeats.
+`config_updates.deprecation_message` on heartbeats; `supported_protocols` +
+`capabilities` (not the free-form version string) are the **interop contract**.
 
 ## Out of scope
 
 - Push notifications from coordinator to donor (would require donor
   to listen on the public internet).
-- Multi-coordinator federation (cross-operator). Each operator runs
-  an independent federation; donor nodes belong to exactly one.
+- Multi-coordinator HA and cross-operator peering are **out of scope for the
+  1.0 line** (every conforming 1.0 deployment is single-coordinator,
+  single-federation; donor nodes belong to exactly one federation). The Tier-1
+  invariants `T1.27`/`T1.28` were **reframed** (not relaxed) to make room for two
+  deliberate **post-1.0** phases — multi-coordinator *single-authority* HA
+  (Phase 6) and opaque inter-federation *ciphertext-only* peering (Phase 7);
+  independent concurrent authoritative histories (multi-master) remain
+  prohibited. See
+  `docs/superpowers/specs/phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
 - Storage proofs are specified separately in
   `docs/specs/POSSESSION_AUDIT.md`. Donor acks are taken at face
   value in Phase 2's first cut; possession spot-checks raise
