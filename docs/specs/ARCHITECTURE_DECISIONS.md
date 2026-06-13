@@ -69,8 +69,8 @@ cannot opt out.
 | T1.4 | Master-key wrapping with XChaCha20-Poly1305; per-row `master_key_version_id` tracks which master key wrapped each entry | `ENCRYPTION_ENVELOPE.md` § "Master key versioning" |
 | T1.5 | Crypto-shred refuses when `data_encryption_keys.legal_hold = true` | `ENCRYPTION_ENVELOPE.md` § "Pre-conditions" |
 | T1.6 | The CID stored in `blobs.cid` is the CID of the entire envelope (header, ciphertext, tag) — true for both v1 and v2 | `ENCRYPTION_ENVELOPE.md` § "Envelope wire format" |
-| T1.7 | Deterministic IPFS import (CID v1, sha2-256, base32, fixed 256 KiB chunker, balanced layout). v2 streaming-AEAD chunk boundaries align with IPFS block boundaries — chunk N == block N. | `IPFS_IMPORT_RULES.md` |
-| T1.7a | (Phase 2) v2 streaming-AEAD envelope: per-chunk XChaCha20-Poly1305 with chunk-counter-derived nonces; AAD binds `chunk_index || total_chunks || cid`. Range reads supported on v2 encrypted blobs. | `ENCRYPTION_ENVELOPE.md` § "Planned v2: Streaming-AEAD" |
+| T1.7 | Deterministic IPFS import (CID v1, sha2-256, base32, fixed 256 KiB chunker, balanced layout). **(P2-M0)** The v2 streaming-AEAD **record ↔ block mapping is authoritative in P2-M8**; the earlier "chunk N == block N" phrasing is superseded pending that milestone. v1 determinism is unchanged. | `IPFS_IMPORT_RULES.md` |
+| T1.7a | (Phase 2) v2 streaming-AEAD envelope: per-chunk XChaCha20-Poly1305 with chunk-counter-derived nonces. **(P2-M0)** The per-chunk **AAD construction is authoritative in P2-M8** — it binds a canonical header commitment, not the final `cid` (which is circular); the earlier "AAD binds chunk_index/total_chunks/cid" phrasing is superseded pending that milestone. Range reads supported on v2 encrypted blobs. | `ENCRYPTION_ENVELOPE.md` § "Planned v2: Streaming-AEAD" |
 
 ### Transport and federation
 
@@ -78,11 +78,13 @@ cannot opt out.
 |---|---|---|
 | T1.8 | All federation traffic transits a private Nebula overlay; donor inbound endpoints bind only to the Nebula interface | `FEDERATION_PROTOCOL.md` § "Authentication" |
 | T1.9 | HTTPS + mTLS over Nebula with a separate federation client cert; Nebula cert authorizes overlay, federation cert authorizes HTTP API | `FEDERATION_PROTOCOL.md` § "Authentication (v2)" |
-| T1.10 | Donor-to-donor repair fetches require a coordinator-issued, source-and-destination-pinned HMAC repair token | `FEDERATION_PROTOCOL.md` § "Repair transport" |
+| T1.10 | Donor-to-donor repair fetches require a coordinator-issued, source-and-destination-pinned **Ed25519** repair token (asymmetric — donors hold only the public key; single/bounded-use via a `jti` replay cache). **(P2-M0: was HMAC; FED v3 is the implementation gate.)** | `FEDERATION_PROTOCOL.md` § "Repair transport" |
 | T1.11 | Bitswap-backed repair fetch is explicitly disabled; the orchestrator dictates source designation | `FEDERATION_PROTOCOL.md` § "Repair transport"; `HEALING_PROTOCOL.md` |
 | T1.12 | Bandwidth budgets are inviolable; no doomsday override | `HEALING_PROTOCOL.md` § "Why bandwidth budgets are inviolable" |
 | T1.13 | Five-state liveness model (`active`/`suspect`/`unreachable`/`evicted`/`revoked`); healing engages at `unreachable`, not `evicted` | `FEDERATION_PROTOCOL.md` § "Liveness state machine" |
-| T1.14 | Tier 1 healing (CIDs at one acked pin) takes strict priority over Tier 2; no interleaving | `HEALING_PROTOCOL.md` § "Why Tier 1 is strict" |
+| T1.14 | Tier 1 healing (CIDs at one **acked** pin) takes strict priority over Tier 2; no interleaving. **(P2-M0)** Durability is **acked-only** — pending assignments are never durable and never lift a CID out of Tier 1. | `HEALING_PROTOCOL.md` § "Why Tier 1 is strict" |
+| T1.29 | **(P2-M0)** Replica placement applies operator-verified **failure-domain anti-affinity** as a **soft preference (never a veto)**, and steady-state placement weight is **decoupled from donor bandwidth** (bandwidth governs repair-source selection only). Self-declared geo is informational. | `HEALING_PROTOCOL.md` § "Reputation and audit-aware placement"; phase6 resilience design |
+| T1.30 | **(P2-M0)** Donor `trust_state` (`probationary`/`trusted`/`suspended`), orthogonal to liveness and reputation, caps `placement_weight`; a **probationary node is never the sole or second copy of `important`-class data**. | `HEALING_PROTOCOL.md` § "Reputation and audit-aware placement" |
 
 ### IPFS hardening
 
@@ -115,6 +117,13 @@ cannot opt out.
 
 A Tier 1 change requires a spec version bump, an implementation
 gate, and a corresponding update to this table.
+
+**P2-M0 (2026-06-13)** amended `T1.10` (HMAC → Ed25519), clarified `T1.14`
+(acked-only durability), flagged `T1.7`/`T1.7a` as v2-layout/AAD-authoritative in
+P2-M8, and added `T1.29` (failure-domain anti-affinity + bandwidth-decoupled
+placement) and `T1.30` (donor trust/probation), with the `FEDERATION_PROTOCOL.md`
+v3 and `HEALING_PROTOCOL.md` v3 spec bumps as the implementation gates. See
+`docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
 
 `T1.27` and `T1.28` were **reframed** (not relaxed) by the second-pass
 resilience analysis in
