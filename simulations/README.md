@@ -29,7 +29,7 @@ go run  -tags novasim ./simulations/go/cmd/novasim <calibrate|coordinator|sweep|
 ```
 
 See [`go/README.md`](go/README.md) and
-`docs/superpowers/specs/phase2/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
+`docs/superpowers/specs/phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
 
 ### `orchestrator_resilience.py`
 

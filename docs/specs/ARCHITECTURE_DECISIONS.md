@@ -118,7 +118,7 @@ gate, and a corresponding update to this table.
 
 `T1.27` and `T1.28` were **reframed** (not relaxed) by the second-pass
 resilience analysis in
-`docs/superpowers/specs/phase2/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
+`docs/superpowers/specs/phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
 The single-coordinator deployment remains correct and sufficient for the entire
 1.0 line; the reframing makes room for two deliberate **post-1.0** phases —
 multi-coordinator single-authority HA (Phase 6) and opaque inter-federation

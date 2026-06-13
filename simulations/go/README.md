@@ -5,7 +5,7 @@ driving Nova's **real** storage primitives for calibration, then running a
 discrete-event resilience model at scale on the measured constants.
 
 Companion to the design doc:
-[`docs/superpowers/specs/phase2/2026-06-12-resilience-and-post-1.0-architecture-design.md`](../../docs/superpowers/specs/phase2/2026-06-12-resilience-and-post-1.0-architecture-design.md).
+[`docs/superpowers/specs/phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`](../../docs/superpowers/specs/phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md).
 
 ## Why a second simulator
 

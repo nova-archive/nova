@@ -226,7 +226,7 @@ multi-endpoint donor config with `since_seq` cursor preservation, replicated or
 shared upload staging, cross-instance signed-URL revocation, and redundant
 Nebula lighthouses + Kubo bootstrap peers. Reframes `T1.27`; explicitly rejects
 independent writable masters. Design + simulation evidence:
-`docs/superpowers/specs/phase2/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
+`docs/superpowers/specs/phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
 
 ## Phase 7 — Opaque inter-federation replica peering (post-1.0)
 
