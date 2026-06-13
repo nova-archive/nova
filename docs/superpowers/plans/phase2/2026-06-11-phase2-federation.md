@@ -16,7 +16,7 @@ This master plan summarizes all milestones with goals and exit criteria. **Only 
 
 | Milestone | Theme | Status | Plan | Tier-1? |
 |---|---|---|---|:--:|
-| P2-M0 | Spec reconciliation (docs only) | pending | this document, § P2-M0 | **Yes** |
+| P2-M0 | Spec reconciliation (docs only) | in progress | [dedicated design](../../specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md) + [plan](2026-06-13-phase2-m0-spec-reconciliation.md) (authoritative); summary § P2-M0 | **Yes** |
 | P2-M1 | Build / repo separation | pending | this document, § P2-M1 | — |
 | P2-M2 | Identity, registration, capability negotiation | pending | tbd | — |
 | P2-M3 | Assignment synchronization | pending | tbd | partial |
@@ -53,6 +53,7 @@ The federation release (P2-M7) is shippable independent of the v2 envelope work 
 **Goal:** A donor syncs assignments via the durable change log, recovers via snapshot after a long offline period, and applies idempotently with generations.
 **Deliverables:** `pin_changes` table + retention; `GET /fed/v1/pins/changes` + `/snapshot` + `snapshot_required`; node-local cursor store; `assignment_id`/`generation` end-to-end; ack/fail/unpin conditional state machine.
 **Exit:** integration test — apply a change stream; kill+restart the donor mid-stream (idempotent resume); expire the cursor past retention → `snapshot_required` → snapshot recovery; a delayed ack for a superseded generation is rejected.
+**Forward-compat (post-1.0):** `assignment_id`/`generation` + the `pin_changes` log are also the Phase 6 multi-endpoint donor-failover prerequisites (a donor preserves its `since_seq` cursor across coordinators) — design them HA-compatibly; build no Phase-6 failover logic. See the phase6 resilience design.
 
 ### P2-M4 — v1 opaque replication vertical slice
 **Goal:** The coordinator places a v1 blob on a donor, which fetches from the coordinator-as-source, verifies by re-import + root-CID, pins, and acks — the first real federation release.
@@ -63,6 +64,7 @@ The federation release (P2-M7) is shippable independent of the v2 envelope work 
 **Goal:** Donor loss triggers acked-only Tier-1 healing within the SLA, never exceeding budgets, respecting failure-domain anti-affinity.
 **Deliverables:** 5-state liveness reconciliation; `internal/orchestrator` tick loop over `blob_replication_state`; unreachable-triggered enqueue (node index); strict Tier-1 (acked-only, D5); durable in-flight reservations; failure-domain anti-affinity placement (D8); mass-casualty + slow-attrition webhooks; chaos tests; sim alignment.
 **Exit:** integration/chaos test — kill a multi-CID donor → Tier-1 cleared within target, no budget exceeded, replicas land in distinct failure domains; `federation.degraded`/`shrinking` fire correctly.
+**Placement-weight calibration (D8):** this milestone **calibrates the steady-state placement-weight formula** (direction set in P2-M0: decoupled from bandwidth, `~sqrt(free)×trust` + soft anti-affinity; bandwidth = repair-source only) and **emits the concentration metrics** (pin-incidence Gini + per-dimension largest-share / top-k / entropy) feeding the Tier-2 `federation.concentrated`/`federation.homogeneous` alerts. Alert, not prevent.
 
 ### P2-M6 — Possession audits & reputation
 **Goal:** Audits detect lying donors and gate placement; probationary nodes graduate on evidence.
@@ -93,6 +95,12 @@ The federation release (P2-M7) is shippable independent of the v2 envelope work 
 
 ## P2-M0 — Spec Reconciliation: Detailed Tasks
 
+> **Superseded by the dedicated P2-M0 plan** (2026-06-13):
+> [`2026-06-13-phase2-m0-spec-reconciliation.md`](2026-06-13-phase2-m0-spec-reconciliation.md),
+> which expands these tasks and folds in the post-1.0 future-proofing from the
+> phase6 resilience design. The summary below is kept for historical context;
+> the dedicated plan is the authoritative task list.
+>
 > Documentation-only. Each amended spec gets a **version bump** in its `Status:` line and a one-line changelog entry referencing this design. Cross-check every edit against the design doc's reconciliation table.
 
 ### Files for P2-M0

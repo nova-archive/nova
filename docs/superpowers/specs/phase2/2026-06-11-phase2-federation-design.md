@@ -427,6 +427,59 @@ off-box (it stays computationally opaque without the per-blob key).
   base cadence ≈ 6 MiB/day per donor (≈0.012 % of a 50 GB/day budget). Size-weighted
   sampling raises cadence for large nodes while keeping the per-donor fraction small.
 
+## Forward-compatibility with post-1.0 HA/peering
+
+The second-pass resilience analysis
+([`../phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`](../phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md))
+promoted two items out of the research grab-bag into deliberate **post-1.0**
+phases — multi-coordinator *single-authority* HA (Phase 6) and opaque
+inter-federation *ciphertext-only* peering (Phase 7). The single-coordinator
+architecture remains correct and sufficient for the **entire 1.0 line**; Phase 2
+builds none of that machinery. But several Phase 2 structures are *also* the
+Phase 6/7 prerequisites, so Phase 2 designs them HA-compatibly now to avoid
+accidental rework later.
+
+**Governing rule.** Phase 2 MAY introduce structures it needs for its own
+correctness that *also* serve Phase 6/7; it MUST NOT introduce structures used
+**only** by Phase 6 runtime logic. The former are built; the latter are named
+here as additive future work and left unbuilt.
+
+**Phase 2 structures that double as Phase 6/7 prerequisites (built now):**
+
+| Phase 2 structure | Phase 2 purpose | Post-1.0 role |
+|---|---|---|
+| `pin_assignments.assignment_id` + `generation` (D6) | safe ack/fail under superseded assignments | the immutable handle multi-endpoint donor failover keys on (Phase 6) |
+| `pin_changes` change-log + `since_seq` / `snapshot_required` (D7) | durable incremental assignment sync | the cursor a donor preserves when failing over between coordinators (Phase 6) |
+| operator-verified `failure_domain_id` / `donor_principal_id` (D8) | placement anti-affinity + Sybil resistance | the unit a Phase 7 peer counts as "at most one failure domain"; feeds concentration alerting |
+| acked-only durability (D5) | correct Tier-1 safety | the durability semantics HA replicas and peer custodians must preserve |
+
+**Phase 6/7-only work — named, NOT built in Phase 2:**
+
+- **Control-plane / job-queue fencing.** `internal/jobs/queue.go` `Complete`/`Fail`
+  guard only on `state='leased'` (no lease-owner/generation token). Contained
+  *today* (one queue per coordinator process; idempotent handlers). Phase 6 adds
+  `jobs.lease_id`/`lease_generation` + `coordinator_leases(subsystem, holder,
+  term, expires_at)` **additively**; every control mutation and issued repair
+  token then carries the current term. **Phase 2 obligation:** do not deepen the
+  gap — the orchestrator stays single-leader-per-process, and repair tokens
+  already carry per-assignment `generation`, forward-compatible with a future
+  control term.
+- **Origin-location tracking** (`origin_locations(cid, coordinator_id, state,
+  failure_domain)` + a transactional outbox for the non-atomic
+  Kubo-pin/Postgres-commit boundary) — Phase 6. Phase 2 keeps the single-origin
+  model and only notes that boundary as a known residual.
+- **Multi-endpoint donor config + failover, replicated/shared upload staging,
+  cross-instance signed-URL revocation, shared ingress rate-limiting, redundant
+  Nebula lighthouses + Kubo bootstrap peers** — all Phase 6; per-process in
+  Phase 2 by design.
+- **Opaque inter-federation peering** (`peer/v1`, immutable `home_federation_id`,
+  generation-ordered tombstones, encrypted DR packages) — Phase 7. Peering
+  replicates **bytes, not authority**.
+
+The Tier-1 reframes `T1.27` (one logical authoritative history; fenced
+multi-replica serving allowed) and `T1.28` (opaque-ciphertext-only peering) are
+already in `ARCHITECTURE_DECISIONS.md`; P2-M0 does not re-edit them.
+
 ## Milestone breakdown
 
 Mirrors Phase 1: the master plan details P2-M0 + P2-M1; later milestones get
@@ -477,5 +530,10 @@ formal spec amendment.
 - Threat model amendment: `docs/THREAT_MODEL.md` § "Phase 2 amendment".
 - Donor operations: `docs/VOLUNTEER_DEPLOYMENT_GUIDANCE.md`,
   `docs/quickstart/donor.md`.
-- Empirical: `simulations/orchestrator_resilience.py`.
-- Implementation plan: [`../../plans/phase2/2026-06-11-phase2-federation.md`](../../plans/phase2/2026-06-11-phase2-federation.md).
+- Empirical: `simulations/orchestrator_resilience.py`; calibrated-hybrid
+  `novasim` + post-1.0 resilience design:
+  [`../phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`](../phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md).
+- P2-M0 (spec reconciliation) design + plan:
+  [`2026-06-13-phase2-m0-spec-reconciliation-design.md`](2026-06-13-phase2-m0-spec-reconciliation-design.md),
+  [`../../plans/phase2/2026-06-13-phase2-m0-spec-reconciliation.md`](../../plans/phase2/2026-06-13-phase2-m0-spec-reconciliation.md).
+- Implementation plan (master): [`../../plans/phase2/2026-06-11-phase2-federation.md`](../../plans/phase2/2026-06-11-phase2-federation.md).
