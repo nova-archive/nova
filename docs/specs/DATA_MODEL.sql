@@ -27,9 +27,15 @@
 --   - moderation_decisions gains scheduled_tombstone_at and legal_hold
 --     to support DMCA quarantine-first flow
 --   - blob_manifests + blob_blocks added for proof-readiness (Phase 2
---     possession audits and Phase 6+ formal POR/PDP)
+--     possession audits and Phase 8+ formal POR/PDP)
 --   - integrity_audits + pin_audits + node reputation added for
 --     Phase 1 local fixity and Phase 2 donor spot-checks
+--
+-- Phase 2 (P2-M0, 2026-06-13) schema deltas appear below as COMMENTARY only
+-- (search "P2-M0"); the executable DDL ships as a new, non-frozen Phase 2
+-- migration in P2-M3. No Phase 1 migration is modified (migrations-frozen gate
+-- stays green). See
+-- docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md.
 --
 -- Conventions:
 --   - All timestamps are timestamptz, defaulted to now() where appropriate.
@@ -447,6 +453,20 @@ CREATE INDEX nodes_status_idx ON nodes (status);
 CREATE INDEX nodes_last_seen_idx ON nodes (last_seen_at);
 CREATE INDEX nodes_reputation_idx ON nodes (reputation_score) WHERE status IN ('active', 'suspect');
 
+-- P2-M0 (D8/D9) — Phase 2 `nodes` deltas (COMMENTARY; live DDL in P2-M3):
+--   ALTER TABLE nodes ADD COLUMN donor_principal_id   uuid;        -- operator-verified owner (Sybil + anti-affinity)
+--   ALTER TABLE nodes ADD COLUMN failure_domain_id    text;        -- operator-verified placement domain
+--   ALTER TABLE nodes ADD COLUMN provider             text;        -- hosting provider (failure-domain dimension)
+--   ALTER TABLE nodes ADD COLUMN asn                  integer;     -- autonomous system (failure-domain dimension)
+--   ALTER TABLE nodes ADD COLUMN operator_verified_at timestamptz; -- when the operator verified the above
+--   ALTER TABLE nodes ADD COLUMN trust_state          text NOT NULL DEFAULT 'probationary'
+--       CHECK (trust_state IN ('probationary','trusted','suspended'));  -- D9: orthogonal to status + reputation
+--   ALTER TABLE nodes ADD COLUMN placement_weight     real NOT NULL DEFAULT 0.0;  -- capped while probationary
+-- Placement anti-affinity uses operator-verified failure_domain_id /
+-- donor_principal_id, NOT self-declared geo_declared (which stays informational).
+-- Steady-state placement weight is decoupled from bandwidth (HEALING D8);
+-- bandwidth governs repair-source selection only.
+
 -- ----------------------------------------------------------------------------
 -- Pin assignments
 --
@@ -467,6 +487,43 @@ CREATE TABLE pin_assignments (
 CREATE INDEX pin_assignments_node_state_idx ON pin_assignments (node_id, state);
 CREATE INDEX pin_assignments_state_idx ON pin_assignments (state);
 CREATE INDEX pin_assignments_cid_state_idx ON pin_assignments (cid, state);
+
+-- P2-M0 (D6/D7) — Phase 2 assignment-versioning + durable change log
+-- (COMMENTARY; live DDL in P2-M3):
+--   ALTER TABLE pin_assignments ADD COLUMN assignment_id uuid NOT NULL DEFAULT gen_random_uuid();
+--   ALTER TABLE pin_assignments ADD COLUMN generation    bigint NOT NULL DEFAULT 1;
+--   -- (cid, node_id) stays the natural current-assignment key; assignment_id is the
+--   -- immutable handle carried in the change log + repair tokens + ack/fail. State
+--   -- transitions are conditional, so a delayed ack/fail for a superseded
+--   -- assignment is a no-op (D6):
+--   --   UPDATE pin_assignments SET state='acked', acked_at=now()
+--   --    WHERE assignment_id = $1 AND generation = $2 AND state = 'pending';
+--
+--   CREATE TABLE pin_changes (                       -- D7: durable change log backing since_seq
+--       sequence      bigserial PRIMARY KEY,
+--       node_id       uuid NOT NULL REFERENCES nodes (id) ON DELETE CASCADE,
+--       assignment_id uuid NOT NULL,
+--       generation    bigint NOT NULL,
+--       kind          text NOT NULL,                 -- 'assign' | 'unpin' (donor fails closed on unknown)
+--       cid           text NOT NULL,
+--       created_at    timestamptz NOT NULL DEFAULT now()
+--   );
+--   -- Retention window pruned; when a donor's since_seq predates retention the
+--   -- coordinator returns snapshot_required (FEDERATION_PROTOCOL.md).
+--
+--   CREATE TABLE blob_replication_state (            -- durable projection: no per-tick full scans
+--       cid                 text PRIMARY KEY REFERENCES blobs (cid) ON DELETE CASCADE,
+--       healthy_acked_count integer NOT NULL DEFAULT 0,
+--       in_flight_count     integer NOT NULL DEFAULT 0,
+--       target_count        integer NOT NULL,
+--       safety_tier         smallint NOT NULL,        -- 1 = Tier-1 (acked-only), 2 = Tier-2
+--       updated_at          timestamptz NOT NULL DEFAULT now()
+--   );
+--   -- Updated in the same transaction as assignment/liveness changes; a periodic
+--   -- full reconciliation rebuilds it as a correctness audit (HEALING_PROTOCOL.md).
+--
+-- Forward-compat (NOT Phase 2): Phase 6 HA adds jobs.lease_id/lease_generation +
+-- coordinator_leases(term) and origin_locations ADDITIVELY. Do NOT add them here.
 
 -- ----------------------------------------------------------------------------
 -- Pin audits (v2 — Phase 2 possession spot-checks)
@@ -492,6 +549,13 @@ CREATE TABLE pin_audits (
 
 CREATE INDEX pin_audits_node_result_idx ON pin_audits (node_id, result, challenged_at DESC);
 CREATE INDEX pin_audits_blob_idx ON pin_audits (blob_cid, challenged_at DESC);
+
+-- P2-M0 (D10) — Phase 2 pin_audits deltas (COMMENTARY; live DDL in P2-M3):
+--   ALTER TABLE pin_audits ADD COLUMN received_at timestamptz;  -- coordinator receive-time; AUTHORITATIVE for the deadline
+--   -- completed_at (above) is donor-supplied and ADVISORY only; the pass/fail
+--   -- deadline decision uses received_at, never completed_at (POSSESSION_AUDIT.md).
+--   -- Sampling is weighted by stored bytes / pin count / node age / risk,
+--   -- computed from nodes + pin_assignments counts (no new columns required).
 
 -- ----------------------------------------------------------------------------
 -- Integrity audits (v2 — Phase 1 local fixity)
