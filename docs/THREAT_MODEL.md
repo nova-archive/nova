@@ -197,7 +197,7 @@ establish that the user uses Nova at all.
 **Residual risk.** Traffic-volume analysis can fingerprint popular
 content over time. Operators who care about this should serve all
 content at uniform rate, which Nova does not implement; padding is
-a Phase 6+ research direction.
+a Phase 8+ research direction.
 
 ### E. Network observer at the donor's ISP
 
@@ -416,7 +416,7 @@ per-blob HMAC token model.
 
 A full S3 API is forever out of scope. A read-only adapter that
 maps `GET /s3/bucket/key` → operator-maintained key→CID lookup →
-`GET /blob/{cid}` is conceptually possible as a Phase 6+
+`GET /blob/{cid}` is conceptually possible as a Phase 8+
 adapter product layer, but low priority: deployments wanting an
 S3 interface are better served by Garage or MinIO. Nova is the
 right tool when the integration target is "anything that takes an
@@ -464,7 +464,7 @@ prominently so operators can plan for them.
 
 ## Phase 2 amendment (donor federation)
 
-Status: **design — pending P2-M0 ratification.** Phase 2 adds machines the
+Status: **ratified by P2-M0 (2026-06-13); normative.** Phase 2 adds machines the
 operator does not own (volunteer donor nodes), which grows the donor-facing
 attack surface. This section enumerates the new adversaries and the mitigations
 now specified, and records which earlier statements in this document it
@@ -544,7 +544,7 @@ now specified, and records which earlier statements in this document it
    can produce challenged bytes quickly passes, even if those bytes live on a
    shared backend or a fast colluding peer. This is acceptable for a
    coordinator-administered (non-permissionless) network; formal PDP/POR is Phase
-   6+.
+   8+.
 9. **Failure-domain truth depends on operator verification.** Placement safety is
    only as good as the operator's assignment of `failure_domain_id`; a lazy
    operator who trusts self-declared geo regains the Sybil exposure H targets.
