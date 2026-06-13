@@ -41,9 +41,19 @@ Located in [`phase2/`](phase2/).
 | Doc | Scope |
 |---|---|
 | [phase2/2026-06-11-phase2-federation-design.md](phase2/2026-06-11-phase2-federation-design.md) | **Master design** — donor nodes, binary split, mesh federation, healing, possession audits, streaming-AEAD; spec-reconciliation backlog |
+| [phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md](phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md) | P2-M0 — spec reconciliation (+ post-1.0 future-proofing) |
 
 Per-milestone Phase 2 designs (P2-M0 … P2-M10) are added to `phase2/` as each
 milestone begins, mirroring the Phase 1 cadence.
+
+## Phase 6 — Multi-coordinator single-authority HA (post-1.0, design-only)
+
+Located in [`phase6/`](phase6/). A forward-looking second-pass analysis/design,
+not a 1.0 milestone; no implementation plan yet.
+
+| Doc | Scope |
+|---|---|
+| [phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md](phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md) | Resilience analysis (multiplex decomposition, `novasim` calibrated-hybrid simulator) + post-1.0 HA (Phase 6) & opaque inter-federation peering (Phase 7) architecture; draft Tier-1 reframes |
 
 ## Tooling
 

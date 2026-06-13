@@ -39,6 +39,10 @@ Located in [`phase2/`](phase2/).
 | Plan | Scope |
 |---|---|
 | [phase2/2026-06-11-phase2-federation.md](phase2/2026-06-11-phase2-federation.md) | **Master plan** — milestone table P2-M0 … P2-M10; P2-M0 (spec reconciliation) and P2-M1 (repo separation) detailed |
+| [phase2/2026-06-13-phase2-m0-spec-reconciliation.md](phase2/2026-06-13-phase2-m0-spec-reconciliation.md) | P2-M0 — spec reconciliation (docs-only gate; detailed authority) |
 
 Each subsequent Phase 2 milestone gets its own detailed plan in `phase2/` at the
 start of that milestone, the same cadence Phase 1 used.
+
+> Phase 6 (post-1.0 multi-coordinator HA) is **design-only** so far — see the
+> specs index `phase6/` entry; no implementation plan yet.
