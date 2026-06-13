@@ -1,11 +1,21 @@
 # Healing Protocol
 
-Status: **Phase 0 v2 — normative.** Specifies the orchestrator's
+Status: **Phase 0 v3 — normative.** Specifies the orchestrator's
 bandwidth-aware healing algorithm. `internal/orchestrator` (Phase 2)
 implements this protocol. The simulation under
 `simulations/orchestrator_resilience.py` is the empirical reference;
 its conclusions (network-size thresholds, priority-queue
 effectiveness) are baked into the parameters below.
+
+> **Amended by P2-M0 (2026-06-13)** — durability classification is now
+> **acked-only** (D5; pending never lifts a CID out of Tier 1); placement
+> gains **soft failure-domain anti-affinity** and a steady-state weight
+> **decoupled from donor bandwidth** (D8; bandwidth = repair-source selection
+> only, exact formula a Tier-2 tunable calibrated in P2-M5); an orthogonal
+> **`trust_state`/probation** placement cap (D9); best-effort reservations with
+> a donor-authoritative budget (D11); and a durable **`blob_replication_state`**
+> projection instead of per-tick full scans. See
+> `docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
 
 ## Purpose
 
@@ -29,9 +39,15 @@ This document specifies:
 ## Inputs and state
 
 The orchestrator runs in the coordinator process and reads only from
-the storage core's database. It does not maintain any persistent
-in-process state; on restart, it rebuilds everything from
-`pin_assignments`, `nodes`, and `blobs`.
+the storage core's database. It keeps **no persistent in-process state**; the
+authoritative durability view is a **durable `blob_replication_state`
+projection** (per-CID acked / in-flight / target counts + safety tier) updated
+**in the same transaction** as assignment/liveness changes, so the tick loop
+does **not** re-aggregate `pin_assignments ⨝ nodes ⨝ blobs` from scratch every
+tick (prohibitively costly at millions of CIDs). A periodic full reconciliation
+rebuilds the projection as a correctness audit. The per-tick SQL below is the
+*logical* definition of the counts the projection maintains, not a literal
+per-tick full scan.
 
 Per-tick reads:
 
@@ -52,15 +68,21 @@ SELECT pa.cid,
  WHERE n.status IN ('active', 'suspect')
  GROUP BY pa.cid;
 
--- Effective replication count (used for tier classification).
--- Pending pins count partially because they are dispatched but not durable.
-effective_count = acked_count + 0.5 * pending_count
+-- Durability classification is ACKED-ONLY (D5; Tier-1 T1.14).
+-- A pending assignment is dispatched but NOT durable: a CID with one acked
+-- copy is one failure from loss no matter how many pins are pending, so
+-- pending pins NEVER lift a CID out of Tier 1. pending_count is used only as
+-- an in-flight reservation to avoid double-scheduling the same CID.
+durable_count = acked_count
 ```
 
 In-process derived state (per tick):
 
-- `tier1[]` — CIDs with `0 < effective_count < 2`.
-- `tier2[]` — CIDs with `2 <= effective_count < target_replication`.
+- `tier1[]` — CIDs with `0 < durable_count < 2` (exactly one acked copy among
+  healthy nodes). Pending assignments do not change this set.
+- `tier2[]` — CIDs with `2 <= durable_count < target_replication`.
+- In-flight `pending_count` is consulted only to skip CIDs that already have
+  enough pending reservations in progress — never to reclassify their tier.
 - `node.step_capacity` — `min(remaining_daily_budget, link_speed * step_seconds)`
   per surviving node, computed from acked egress in the trailing 24h.
 
@@ -131,13 +153,23 @@ not affect total time-to-empty). For each CID:
    Asymmetric selection, weighted by reputation.
 3. If no holder qualifies, skip this CID for this tick (no progress
    possible until either capacity refreshes or a daily budget resets).
-4. Pick a destination: a uniformly random alive node that does not
-   already hold the CID, whose `policy_filters` accept the blob's
-   size and product class. Retry on collision.
-5. Insert a `pin_assignments(cid, dest, state='pending')` row, debit
-   the source's `step_capacity`, mint a repair-transport token (see
-   `FEDERATION_PROTOCOL.md` § "Repair transport"), and emit a change-
-   log entry of `kind: 'assign'` with the source designation embedded.
+4. Pick a destination among alive nodes that do not already hold the CID and
+   whose `policy_filters` accept the blob's size and product class, applying
+   **soft failure-domain anti-affinity** (D8): prefer a node in a
+   `failure_domain_id` (then `donor_principal_id` / `provider` / `asn`) not
+   already holding this CID, weighted by the steady-state placement weight
+   (see "Reputation and audit-aware placement"). Anti-affinity is a
+   **preference, never a veto** — if no distinct domain has capacity, place into
+   the best available rather than block healing. Exclude nodes whose
+   `trust_state` bars them from this content class (D9). Retry on collision.
+5. Insert a `pin_assignments(cid, dest, assignment_id, generation,
+   state='pending')` row as a **best-effort reservation** (D11 — the donor's
+   local token-bucket is authoritative and may still refuse `budget_exceeded`),
+   debit the source's `step_capacity`, mint an **Ed25519** repair-transport
+   token carrying `max_bytes` (see `FEDERATION_PROTOCOL.md` § "Repair
+   transport"), update `blob_replication_state` in the same transaction, and
+   emit a change-log entry of `kind: 'assign'` with the source designation
+   embedded.
 6. The donor's next `pins/changes` poll picks up the assignment;
    the donor fetches from the designated source via
    `GET /fed/v1/blob/{cid}` over Nebula, verifies the envelope CID,
@@ -148,8 +180,10 @@ rate determines responsiveness.
 
 ## Why Tier 1 is strict
 
-A CID at one acked pin is **one failure away from total loss**. A
-CID at two acked pins is non-compliant but safe. The simulation
+A CID at one acked pin is **one failure away from total loss**, regardless of
+how many pins are *pending* (D5: pending assignments are not durable and never
+satisfy the Tier-1 trigger). A CID at two acked pins is non-compliant but safe.
+The simulation
 confirms (see `simulations/README.md`) that strict Tier-1 priority is
 the difference between sub-hour Tier-1 recovery at ~25 nodes versus
 multi-hour partial recovery at the same scale when work is
@@ -207,6 +241,14 @@ func selectSource(cid string, holders []*Node, stepCap map[NodeID]int64,
 This concentrates healing work on high-bandwidth, high-reputation
 donors during recovery and shields residential or newly-onboarded
 donors from egress spikes.
+
+**Repair-source selection is the one place bandwidth/capacity weighting belongs
+(D8).** Fast donors do the heavy lifting *during recovery* — but steady-state
+replica *placement* is deliberately decoupled from bandwidth (see "Reputation
+and audit-aware placement"), so fast nodes stop *accreting* a disproportionate
+share of the corpus. The second-pass resilience analysis measured that
+bandwidth-weighted placement turns a single high-bandwidth-cohort purge into a
+~64 % data-loss event, versus ~7.5 % under diversity-optimized placement.
 
 ## Trickle pacing
 
@@ -320,10 +362,36 @@ places:
 1. **Source selection.** Higher-reputation holders are weighted
    more heavily. A node with score 0.5 carries half as much
    recovery work as an equivalent-capacity node at 1.0.
-2. **Initial placement.** When the orchestrator places pins for a
-   newly-uploaded blob, candidates are sampled with probability
-   proportional to `capacity * reputation`. New nodes start at
-   reputation 1.0 (probationary trust); failed audits decrement.
+2. **Initial / steady-state placement (D8 — decoupled from bandwidth).** When
+   the orchestrator places pins for a newly-uploaded or under-replicated blob,
+   the steady-state placement weight is **decoupled from donor bandwidth**:
+   bandwidth governs *repair-source selection only*, never placement. The
+   normative **direction** is `~sqrt(free_capacity) × trust` with **soft
+   failure-domain anti-affinity**; the **exact weight formula is a Tier-2
+   tunable, calibrated in P2-M5** against real donor populations and a
+   steady-state-churn model (the direction is settled by the resilience
+   analysis; the precise form is not). Placement MUST NOT be sampled
+   proportional to bandwidth/capacity as the old `capacity * reputation` rule
+   did.
+
+**Trust state and probation (D9 — orthogonal to liveness and reputation).** A
+node carries a `trust_state` ∈ {`probationary`, `trusted`, `suspended`},
+separate from the 5-state liveness enum and from `reputation_score`, with a
+`placement_weight` cap. New nodes enter `probationary`: capped data volume,
+higher audit cadence, and **never the sole or second copy of `important`-class
+data** (so a fresh Sybil cannot capture critical-data custody). Nodes graduate
+to `trusted` on age + successful transfers + passed audits; a `suspended` node
+takes no new placement. Audit *frequency* being probationary is not enough on
+its own — placement *weight* must be capped too.
+
+**Concentration is alerted on, not enforced.** Soft anti-affinity is a
+preference; the hard signal is an operator alert. The P2-M5 healing/metrics
+layer MUST emit pin-incidence Gini (per node) and per-dimension
+(provider / ASN / region / principal) largest-share / top-k / normalized
+entropy so the Tier-2 `federation.concentrated` / `federation.homogeneous`
+webhooks (see `ARCHITECTURE_DECISIONS.md`) have data. Placement never refuses a
+replica purely for homogeneity — a hard ceiling could block healing into the
+only surviving capacity during a casualty.
 
 A node whose reputation drops below an operator-configured floor
 (default 0.5) is excluded from new assignments and any acked pins
@@ -373,9 +441,11 @@ Operator-tunable in `operator.yaml` under `orchestrator`:
 | `capacity_runway_check_interval_seconds` | 3600       | 60..86400 — how often runway is recomputed |
 | `priority_queue`                      | `strict`      | `strict` only; non-strict is rejected |
 | `source_selection`                    | `weighted_capacity_reputation` | also accepted: `random_holder` (debug only) |
-| `destination_selection`               | `random_non_holder` | also accepted: `weighted_remaining_budget` (Phase 2+ experiment) |
+| `destination_selection`               | `diversity_anti_affinity` | **(D8)** soft failure-domain anti-affinity + bandwidth-decoupled placement weight; `random_non_holder` accepted (debug); `weighted_remaining_budget` experimental |
 | `reputation_floor`                    | 0.5           | Nodes below this excluded from new assignments |
-| `pending_weight`                      | 0.5           | Weight applied to pending pins in effective_count |
+| `pending_weight`                      | 0.5           | **(D5)** orders Tier-2 scheduling only; pending pins do NOT count toward durability and cannot affect the acked-only Tier-1 trigger |
+| `placement_weight.mode`               | `diversity`   | **(D8)** steady-state placement weight; `diversity` = `~sqrt(free)×trust` + soft anti-affinity (decoupled from bandwidth; formula calibrated in P2-M5). `capacity_weighted` accepted for A/B only — deprecated, manufactures purge fragility |
+| `placement.anti_affinity`             | `soft`        | **(D8)** `soft` only — anti-affinity is a preference, never a veto |
 
 ## Restart behaviour
 
@@ -388,21 +458,31 @@ On coordinator restart:
    re-syncs the assignment view.
 
 There is no leader-election or cluster-replication of the
-orchestrator in Phase 2. Single-coordinator deployments are the
-target. Multi-coordinator HA is an explicit non-goal.
+orchestrator in Phase 2; single-coordinator deployments are the target for the
+entire 1.0 line. Multi-coordinator HA is **out of scope for 1.0** and was
+reframed (Tier-1 `T1.27`) into a deliberate **post-1.0 Phase 6** —
+multi-coordinator *single-authority* HA with exactly one **fenced** control-plane
+leader running the orchestrator (independent writable masters remain
+prohibited). Phase 2's immutable `assignment_id`/`generation` and durable
+`pin_changes` log are forward-compatible prerequisites for that work; see the
+phase6 resilience design.
 
 ## Out of scope
 
-- Cross-federation replication (peering between independent
-  operators). Each federation is autonomous.
+- Cross-federation replication is **out of scope for 1.0**; each federation is
+  autonomous. Tier-1 `T1.28` was reframed into a deliberate **post-1.0 Phase 7**
+  — opaque **ciphertext-only** inter-federation peering (peers never receive
+  keys, plaintext, catalog, or assignment history; every object has exactly one
+  home federation). See the phase6 resilience design.
 - Hot-tier / cold-tier auto-migration. Tier classes are designed in
   but only `hot` is implemented; the cold-tier orchestrator is
   Phase 3+.
 - Erasure-coded replication (Reed-Solomon) instead of simple
-  replication. Phase 6+ research; would substantially change the
-  data model.
+  replication. **Phase 8+ research**; would substantially change the
+  data model and interacts badly with the failure-domain diversity this
+  protocol is trying to increase.
 - Formal storage proofs (PDP/POR). Phase 2 ships challenge-response
-  spot-checks (`POSSESSION_AUDIT.md`); formal proofs are Phase 6+
+  spot-checks (`POSSESSION_AUDIT.md`); formal proofs are **Phase 8+**
   research and not on the MVP path.
 
 ## Cross-references
