@@ -1,7 +1,14 @@
 # Possession Audit
 
-Status: **Phase 2 deliverable, normative.** `internal/audit/possession`
+Status: **Phase 2 deliverable v2, normative.** `internal/audit/possession`
 must conform exactly when Phase 2 federation is implemented.
+
+> **Amended by P2-M0 (2026-06-13)** — the challenge deadline is decided by
+> **coordinator receive-time**, not the donor-supplied `completed_at` (D10); a
+> **synchronous** single-round-trip challenge→response is the primary design
+> (the two-call form is a documented fallback); sampling is **weighted by
+> stored bytes / pin count / node age / risk**, not flat per node. See
+> `docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
 
 ## Purpose
 
@@ -26,7 +33,7 @@ node IDs that prevent ad-hoc fetches.
 
 - **Not formal Provable Data Possession.** No homomorphic tags, no
   zero-knowledge proofs, no Merkle commitments beyond what IPFS
-  already provides. PDP/POR research is Phase 6+.
+  already provides. PDP/POR research is Phase 8+.
 - **Not Filecoin-style Proof-of-Replication or Proof-of-Spacetime.**
   No tokenomics, no sealing, no continuous-state attestation. Nova's
   trust model assumes a coordinator-administered network, not a
@@ -40,6 +47,15 @@ The audit is a low-cost, high-value pragmatic check: enough rigor
 to make donor acks meaningful, no more.
 
 ## Challenge protocol
+
+**Synchronous single-round-trip is the primary design (D10).** The coordinator
+issues the challenge and the donor returns `result_hash` **in the same HTTP
+response**; the coordinator measures latency and decides the deadline from its
+**own receive-time**, never from a donor-supplied timestamp (a lying donor would
+backdate it). The two-call form below (a separate `/audit/response` POST) is
+kept only as a documented fallback; even there, the deadline is decided by the
+coordinator's receive-time of the response, and any donor `completed_at` is
+advisory.
 
 ### Challenge
 
@@ -92,7 +108,9 @@ Implementation requirements on the donor:
   responds with `404` and no `result_hash`. This is a clean
   failure indication.
 - The donor's HTTP server returns the response within the deadline
-  or the coordinator times out.
+  or the coordinator times out. **The coordinator stamps the response
+  receive-time itself**; any donor-supplied `completed_at` is advisory and is
+  never used for the pass/fail deadline decision (D10).
 
 ### Verification
 
@@ -108,8 +126,9 @@ INSERT INTO pin_audits (
 
 `result`:
 
-- `pass` — `result_hash` matches `sha256(block_bytes || nonce)` AND
-  `completed_at < deadline`.
+- `pass` — `result_hash` matches `sha256(block_bytes || nonce)` AND the
+  coordinator **received** the response before the deadline (coordinator
+  receive-time, not the donor-supplied `completed_at`; D10).
 - `fail` — hash mismatch, deadline exceeded, donor returned 404, or
   donor returned an error.
 - `skip` — the audit could not run (e.g., donor was `unreachable`
@@ -119,11 +138,12 @@ INSERT INTO pin_audits (
 
 | Parameter | Default | Notes |
 |---|---|---|
-| Per-node challenge interval | 1 hour | Each donor receives ~1 challenge per hour |
+| Base per-node challenge interval | 1 hour | Baseline cadence, **modulated by the size/risk weight below — not flat** (D10) |
+| **Sampling weight (D10)** | `~ stored_bytes × pin_count × age_factor × risk` | A donor holding more bytes / more pins is challenged proportionally more; flat per-node sampling under-audits large custodians |
 | Newly-acked pin priority | within 15 min | New acks get challenged once shortly after to verify the donor isn't lying immediately on receipt |
-| Reputation-weighted skip | nodes ≥ 0.95 challenged 25 % less often | Trusted nodes get fewer challenges |
-| Reputation-weighted increase | nodes < 0.5 challenged 4× more often | Probation oversampling |
-| Challenge deadline | 30 seconds | Tight enough that on-demand network fetch fails |
+| Trust/reputation-weighted skip | `trusted` & reputation ≥ 0.95 challenged 25 % less often | Trusted nodes get fewer challenges |
+| Trust/reputation-weighted increase | `probationary` or reputation < 0.5 challenged 4× more often | Probation oversampling (D9 `trust_state`) |
+| Challenge deadline | 30 seconds | **Coordinator receive-time** window; tight enough that on-demand network fetch fails |
 | Block selection | uniform random over `blob_blocks` rows for the CID | Single-block blobs use the only block |
 | Per-coordinator audit budget | 1 % of node bandwidth_budget_bytes_per_day | Audits do not consume meaningful donor budget |
 
@@ -156,14 +176,21 @@ challenge window.
 
 The federation protocol's repair-transport design (see
 `FEDERATION_PROTOCOL.md` § "Repair transport") binds every repair
-fetch to a coordinator-issued, time-limited, source-and-destination-
-pinned token. A donor cannot mint repair tokens. Therefore a donor
-under audit cannot lawfully fetch the block from another peer
-during the audit window.
+fetch to a coordinator-issued, time-limited, source-and-destination-pinned
+**Ed25519** token (donors hold only the public key, so they cannot mint tokens;
+D1). Therefore a donor under audit cannot lawfully fetch the block from another
+peer during the audit window.
 
 A donor that bypasses the protocol (uses Bitswap, opens
 unauthenticated HTTP to other peers, etc.) is malicious and the
 audit's deadline-based detection is the appropriate response.
+
+**What a pass proves (and does not).** A passed audit demonstrates **timely
+retrievability of the challenged block under the node's federation identity**,
+within the coordinator-measured deadline — *not* unique physical residency. The
+Ed25519 source-and-destination-pinned repair tokens (D1) and the
+Bitswap-disabled repair path are what make "timely retrievability under the node
+identity" a meaningful possession signal.
 
 ## Audit-aware orchestration
 
@@ -211,9 +238,16 @@ CREATE TABLE pin_audits (
     bytes_verified    bigint,
     error             text,
     challenged_at     timestamptz NOT NULL DEFAULT now(),
-    completed_at      timestamptz
+    received_at       timestamptz,         -- P2-M0 D10: coordinator receive-time; AUTHORITATIVE for the deadline
+    completed_at      timestamptz          -- donor-supplied; ADVISORY only, never the deadline basis (D10)
 );
 ```
+
+> **P2-M0 note (D10).** `received_at` (coordinator receive-time) is the
+> authoritative deadline basis; donor `completed_at` is advisory. Sampling
+> weight (stored bytes / pin count / node age / risk) is computed from existing
+> `nodes` / `pin_assignments` counts, not new columns. The live DDL ships as a
+> new Phase 2 migration in P2-M3; Phase 1 migrations stay frozen.
 
 ## What this does not protect against
 
