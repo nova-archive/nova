@@ -30,17 +30,11 @@ const prefix = "nova_ut_"
 //   - err:  non-nil only on RNG or encoding failure
 func Generate() (wire string, id uuid.UUID, hash string, err error) {
 	id = uuid.New()
-
-	secret := make([]byte, 32)
-	if _, err = rand.Read(secret); err != nil {
-		return "", uuid.Nil, "", fmt.Errorf("uploadtoken: generate secret: %w", err)
+	secret, err := GenerateSecret()
+	if err != nil {
+		return "", uuid.Nil, "", err
 	}
-
-	idPart := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(id[:])
-	secretPart := base64.RawURLEncoding.EncodeToString(secret)
-	wire = prefix + idPart + "." + secretPart
-	hash = HashSecret(secret)
-	return wire, id, hash, nil
+	return BuildWire(id, secret), id, HashSecret(secret), nil
 }
 
 // ParseWire decodes a wire-format upload token into its UUID and raw secret.
@@ -77,6 +71,26 @@ func ParseWire(raw string) (uuid.UUID, []byte, error) {
 	}
 
 	return id, secret, nil
+}
+
+// GenerateSecret mints 32 random secret bytes for use with BuildWire and
+// HashSecret. Callers who need to obtain a DB-assigned id before building the
+// wire token should call GenerateSecret, insert the hash into the DB, then call
+// BuildWire with the DB-returned id and the same secret bytes.
+func GenerateSecret() ([]byte, error) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("uploadtoken: generate secret: %w", err)
+	}
+	return secret, nil
+}
+
+// BuildWire encodes a UUID and raw secret into the nova_ut_ wire format.
+// The caller is responsible for storing HashSecret(secret) in the DB.
+func BuildWire(id uuid.UUID, secret []byte) string {
+	idPart := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(id[:])
+	secretPart := base64.RawURLEncoding.EncodeToString(secret)
+	return prefix + idPart + "." + secretPart
 }
 
 // HashSecret returns hex(sha256(secret)).

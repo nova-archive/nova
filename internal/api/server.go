@@ -36,32 +36,33 @@ type AuthConfigDescriptor struct {
 
 // ServerConfig carries the handlers + knobs the router needs.
 type ServerConfig struct {
-	Version         string
-	Blob            *handlers.BlobHandler
-	Upload          *handlers.UploadHandler
-	Limiter         *ratelimit.Limiter
-	Verifiers       []auth.Verifier
-	Issuer          IssuerHandlers       // nil => external mode (auth/* 404 except config)
-	AuthConfig      AuthConfigDescriptor // always served at /api/v1/auth/config
-	Me              *handlers.MeHandler
-	PublicUploads   bool
-	LoginLimiter    *ratelimit.Limiter
-	TrustedProxies  []netip.Prefix                   // gates XFF trust for rate-limit + source-IP recording
-	Ready           *handlers.ReadyHandler           // nil ⇒ /readyz returns 200 with no checks
-	SignedURLGuard  func(http.Handler) http.Handler  // nil ⇒ no signed-URL verification on reads
-	SigningAdmin    *handlers.SigningAdminHandler    // nil ⇒ signed-URL admin endpoints 404
-	MasterKeyAdmin  *handlers.MasterKeyAdminHandler  // nil ⇒ master-key rotation endpoints 404
-	AuditAdmin      *handlers.AuditAdminHandler      // nil ⇒ integrity-audit listing 404
-	ModerationAdmin *handlers.ModerationAdminHandler // nil ⇒ /api/v1/admin/moderation/* 404
-	AuditLogAdmin   *handlers.AuditLogAdminHandler   // nil ⇒ /api/v1/admin/audit-log 404
-	DMCAIntake      *handlers.DMCAIntakeHandler      // nil ⇒ public /legal/dmca unmounted
-	BlobMeta        *handlers.BlobMetaHandler        // nil ⇒ /api/v1/blobs/{cid} GET+DELETE 404
-	BlobsAdmin      *handlers.BlobsAdminHandler      // nil ⇒ /api/v1/admin/blobs 404
-	JobsAdmin       *handlers.JobsAdminHandler       // nil ⇒ /api/v1/admin/jobs 404
-	AdminSPA        *handlers.AdminSPAHandler        // nil ⇒ /admin/* static unmounted
-	WidgetStatic    *handlers.WidgetStaticHandler    // nil ⇒ /widget/* static unmounted
-	Setup           *handlers.SetupHandler           // nil ⇒ /setup/* unmounted (normal mode)
-	CORSConfig      config.CORS                      // CORS for upload routes; disabled (zero) by default
+	Version           string
+	Blob              *handlers.BlobHandler
+	Upload            *handlers.UploadHandler
+	Limiter           *ratelimit.Limiter
+	Verifiers         []auth.Verifier
+	Issuer            IssuerHandlers       // nil => external mode (auth/* 404 except config)
+	AuthConfig        AuthConfigDescriptor // always served at /api/v1/auth/config
+	Me                *handlers.MeHandler
+	PublicUploads     bool
+	LoginLimiter      *ratelimit.Limiter
+	TrustedProxies    []netip.Prefix                     // gates XFF trust for rate-limit + source-IP recording
+	Ready             *handlers.ReadyHandler             // nil ⇒ /readyz returns 200 with no checks
+	SignedURLGuard    func(http.Handler) http.Handler    // nil ⇒ no signed-URL verification on reads
+	SigningAdmin      *handlers.SigningAdminHandler      // nil ⇒ signed-URL admin endpoints 404
+	MasterKeyAdmin    *handlers.MasterKeyAdminHandler    // nil ⇒ master-key rotation endpoints 404
+	AuditAdmin        *handlers.AuditAdminHandler        // nil ⇒ integrity-audit listing 404
+	ModerationAdmin   *handlers.ModerationAdminHandler   // nil ⇒ /api/v1/admin/moderation/* 404
+	AuditLogAdmin     *handlers.AuditLogAdminHandler     // nil ⇒ /api/v1/admin/audit-log 404
+	DMCAIntake        *handlers.DMCAIntakeHandler        // nil ⇒ public /legal/dmca unmounted
+	BlobMeta          *handlers.BlobMetaHandler          // nil ⇒ /api/v1/blobs/{cid} GET+DELETE 404
+	UploadTokensAdmin *handlers.UploadTokensAdminHandler // nil ⇒ /api/v1/admin/upload-tokens 404
+	BlobsAdmin        *handlers.BlobsAdminHandler        // nil ⇒ /api/v1/admin/blobs 404
+	JobsAdmin         *handlers.JobsAdminHandler         // nil ⇒ /api/v1/admin/jobs 404
+	AdminSPA          *handlers.AdminSPAHandler          // nil ⇒ /admin/* static unmounted
+	WidgetStatic      *handlers.WidgetStaticHandler      // nil ⇒ /widget/* static unmounted
+	Setup             *handlers.SetupHandler             // nil ⇒ /setup/* unmounted (normal mode)
+	CORSConfig        config.CORS                        // CORS for upload routes; disabled (zero) by default
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -220,6 +221,12 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 				}
 				if cfg.JobsAdmin != nil {
 					r.Get("/jobs", cfg.JobsAdmin.List)
+				}
+				// Upload-token mint/list/revoke (P2-M0.3); operator-only.
+				if cfg.UploadTokensAdmin != nil {
+					r.With(bearer.RequireRole("operator")).Post("/upload-tokens", cfg.UploadTokensAdmin.Mint)
+					r.With(bearer.RequireRole("operator")).Get("/upload-tokens", cfg.UploadTokensAdmin.List)
+					r.With(bearer.RequireRole("operator")).Delete("/upload-tokens/{id}", cfg.UploadTokensAdmin.Revoke)
 				}
 				r.Handle("/*", http.HandlerFunc(adminNotFound))
 			})

@@ -393,6 +393,7 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		c.lifecycleSweeper = lifecycle.NewSweeper(lifeSvc, cfg.ContentLifecycle.SweepInterval, cfg.ContentLifecycle.SweepEnabled, slog.Default())
 		sc.BlobMeta = handlers.NewBlobMetaHandler(q, lifeSvc)
 		sc.BlobsAdmin = handlers.NewBlobsAdminHandler(q)
+		sc.UploadTokensAdmin = handlers.NewUploadTokensAdminHandler(q)
 		sc.JobsAdmin = handlers.NewJobsAdminHandler(jobs.NewAdminStore(pool))
 	}
 
