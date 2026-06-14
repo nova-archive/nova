@@ -88,6 +88,15 @@ coordinator:
   public_ipfs_dht: false
 `
 
+func TestUploadLimitDefaults(t *testing.T) {
+	cfg, err := config.LoadFromFile("testdata/operator.minimal.yaml")
+	require.NoError(t, err)
+	require.Equal(t, 16, cfg.Uploads.Limits.MaxConcurrentGlobal)
+	require.Equal(t, 4, cfg.Uploads.Limits.MaxConcurrentPerSession)
+	require.Equal(t, 100, cfg.Uploads.Limits.MaxFilesPerSession)
+	require.False(t, cfg.Uploads.CORS.Enabled) // default off
+}
+
 func TestPublicUploadsRequiresTosURL(t *testing.T) {
 	t.Parallel()
 

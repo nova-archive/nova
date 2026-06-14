@@ -154,6 +154,12 @@ const (
 	DefaultUploadSessionTTLSecs = 86400
 	// DefaultMaxConcurrentAssembly bounds concurrent in-memory assembly.
 	DefaultMaxConcurrentAssembly = 8
+	// DefaultMaxConcurrentGlobalUploads bounds total concurrent tus uploads.
+	DefaultMaxConcurrentGlobalUploads = 16
+	// DefaultMaxConcurrentPerSession bounds concurrent uploads per session.
+	DefaultMaxConcurrentPerSession = 4
+	// DefaultMaxFilesPerSession bounds the number of files per upload session.
+	DefaultMaxFilesPerSession = 100
 )
 
 // Uploads configures the M4 write path. Zero-valued fields are filled with the
@@ -165,6 +171,29 @@ type Uploads struct {
 	TmpDir                string `yaml:"tmp_dir"`
 	// PublicUploads allows unauthenticated uploads; requires tos_url (T1.20).
 	PublicUploads bool `yaml:"public_uploads,omitempty"`
+
+	// CORS configures cross-origin resource sharing for the upload endpoint.
+	// Disabled by default; enabling it applies spec tus defaults for methods/headers.
+	CORS CORS `yaml:"cors,omitempty"`
+	// Limits caps concurrent and per-session upload activity.
+	Limits UploadLimits `yaml:"limits,omitempty"`
+}
+
+// CORS configures the Access-Control-* response headers for the upload endpoint.
+type CORS struct {
+	Enabled          bool     `yaml:"enabled"`
+	AllowedOrigins   []string `yaml:"allowed_origins,omitempty"`
+	AllowedMethods   []string `yaml:"allowed_methods,omitempty"`
+	AllowedHeaders   []string `yaml:"allowed_headers,omitempty"`
+	ExposedHeaders   []string `yaml:"exposed_headers,omitempty"`
+	AllowCredentials bool     `yaml:"allow_credentials,omitempty"`
+}
+
+// UploadLimits caps concurrent and per-session upload activity.
+type UploadLimits struct {
+	MaxConcurrentGlobal     int `yaml:"max_concurrent_global,omitempty"`
+	MaxConcurrentPerSession int `yaml:"max_concurrent_per_session,omitempty"`
+	MaxFilesPerSession      int `yaml:"max_files_per_session,omitempty"`
 }
 
 // SignedURLs configures the M7 signed-URL verifier/rotation/minting. Defaults

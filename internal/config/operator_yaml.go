@@ -42,6 +42,36 @@ func applyUploadDefaults(cfg *Config) {
 	if cfg.Uploads.MaxConcurrentAssembly <= 0 {
 		cfg.Uploads.MaxConcurrentAssembly = DefaultMaxConcurrentAssembly
 	}
+	if cfg.Uploads.Limits.MaxConcurrentGlobal <= 0 {
+		cfg.Uploads.Limits.MaxConcurrentGlobal = DefaultMaxConcurrentGlobalUploads
+	}
+	if cfg.Uploads.Limits.MaxConcurrentPerSession <= 0 {
+		cfg.Uploads.Limits.MaxConcurrentPerSession = DefaultMaxConcurrentPerSession
+	}
+	if cfg.Uploads.Limits.MaxFilesPerSession <= 0 {
+		cfg.Uploads.Limits.MaxFilesPerSession = DefaultMaxFilesPerSession
+	}
+	// When CORS is enabled, fill in spec tus defaults for methods/headers only
+	// if the operator has not provided their own lists.
+	if cfg.Uploads.CORS.Enabled {
+		if len(cfg.Uploads.CORS.AllowedMethods) == 0 {
+			cfg.Uploads.CORS.AllowedMethods = []string{
+				"GET", "POST", "PATCH", "HEAD", "DELETE", "OPTIONS",
+			}
+		}
+		if len(cfg.Uploads.CORS.AllowedHeaders) == 0 {
+			cfg.Uploads.CORS.AllowedHeaders = []string{
+				"Authorization", "Content-Type", "Tus-Resumable",
+				"Upload-Length", "Upload-Offset", "Upload-Metadata",
+			}
+		}
+		if len(cfg.Uploads.CORS.ExposedHeaders) == 0 {
+			cfg.Uploads.CORS.ExposedHeaders = []string{
+				"Location", "Upload-Offset", "Tus-Resumable",
+				"X-Nova-Cid", "X-Nova-Envelope-Version",
+			}
+		}
+	}
 }
 
 // validate enforces the v3.1 refuse-to-start floors and basic shape.
