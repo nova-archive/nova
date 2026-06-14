@@ -301,6 +301,16 @@ func run() error {
 			}
 			return config.CORS{}
 		}(),
+		UploadLimits: func() config.UploadLimits {
+			if opCfg != nil {
+				return opCfg.Uploads.Limits // already defaulted by applyUploadDefaults
+			}
+			return config.UploadLimits{
+				MaxConcurrentGlobal:     config.DefaultMaxConcurrentGlobalUploads,
+				MaxConcurrentPerSession: config.DefaultMaxConcurrentPerSession,
+				MaxFilesPerSession:      config.DefaultMaxFilesPerSession,
+			}
+		}(),
 	})
 	if err != nil {
 		return fmt.Errorf("coordinator: %w", err)

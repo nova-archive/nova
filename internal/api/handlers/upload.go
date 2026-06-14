@@ -13,14 +13,22 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/nova-archive/nova/internal/api/httputil"
 	"github.com/nova-archive/nova/internal/api/middleware"
 	"github.com/nova-archive/nova/internal/auth"
+	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/upload"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 )
 
 const tusVersion = "1.0.0"
+
+// UploadTokenQuerier reads upload-token rows for scope + file-ceiling checks.
+type UploadTokenQuerier interface {
+	GetUploadTokenByID(ctx context.Context, id pgtype.UUID) (gen.UploadToken, error)
+	CountActiveSessionsByToken(ctx context.Context, id pgtype.UUID) (int64, error)
+}
 
 // SessionStore is the tus surface the handler depends on (satisfied by
 // *upload.Store).
@@ -42,6 +50,11 @@ type UploadHandler struct {
 	trustedProxies  []netip.Prefix
 	imageAccepts    func(mime string) bool
 	imagePresetURLs func(cid string) map[string]string
+
+	// Admission gate + token enforcement (set via SetUploadCaps).
+	adm                *admission
+	maxFilesPerSession int
+	tokens             UploadTokenQuerier
 }
 
 // NewUploadHandler builds the upload handler. recordIP=false (paranoid mode)
@@ -68,9 +81,30 @@ func (h *UploadHandler) SetImageHooks(accepts func(mime string) bool, presetURLs
 	h.imagePresetURLs = presetURLs
 }
 
+// SetUploadCaps installs the concurrency admission gate, the per-credential
+// active-session file ceiling, and the token querier used for scope + ceiling
+// enforcement. Until this is called (e.g. in tests) the handler applies no caps
+// or token-scope checks. tokens may be nil to disable token-aware checks.
+func (h *UploadHandler) SetUploadCaps(maxConcurrentGlobal, maxConcurrentPerSession, maxFilesPerSession int, tokens UploadTokenQuerier) {
+	h.adm = newAdmission(maxConcurrentGlobal, maxConcurrentPerSession)
+	h.maxFilesPerSession = maxFilesPerSession
+	h.tokens = tokens
+}
+
 // CreateTus handles POST /api/v1/uploads (tus Creation extension).
 func (h *UploadHandler) CreateTus(w http.ResponseWriter, r *http.Request) {
 	rid := middleware.RequestIDFromContext(r.Context())
+
+	// Admission gate: bound concurrent in-flight creates (global + per-cred).
+	if h.adm != nil {
+		release, ok := h.adm.TryAcquire(admissionKey(r))
+		if !ok {
+			writeTooMany(w, "too_many_concurrent", "upload concurrency limit reached, retry", rid)
+			return
+		}
+		defer release()
+	}
+
 	if r.Header.Get("Tus-Resumable") != tusVersion {
 		httputil.WriteError(w, http.StatusBadRequest, "bad_request", "Tus-Resumable: 1.0.0 required", rid)
 		return
@@ -95,6 +129,55 @@ func (h *UploadHandler) CreateTus(w http.ResponseWriter, r *http.Request) {
 		p.CollectionID = &col
 	}
 	p.OwnerID = ownerFromContext(r.Context())
+
+	// Token scope + file-ceiling enforcement (only when authenticated via an upload token).
+	credID := credentialFromContext(r.Context())
+	if credID != "" && h.tokens != nil {
+		tid, err := uuid.Parse(credID)
+		if err == nil {
+			pgTID := pgtype.UUID{Bytes: tid, Valid: true}
+
+			// Per-credential active-session file ceiling.
+			if h.maxFilesPerSession > 0 {
+				n, err := h.tokens.CountActiveSessionsByToken(r.Context(), pgTID)
+				if err == nil && int(n) >= h.maxFilesPerSession {
+					writeTooMany(w, "too_many_files", "active upload limit reached for this credential, retry", rid)
+					return
+				}
+			}
+
+			// Scope bindings from the token row.
+			tok, err := h.tokens.GetUploadTokenByID(r.Context(), pgTID)
+			if err == nil {
+				// Collection binding: authoritative.
+				if tok.CollectionID.Valid {
+					bound := uuid.UUID(tok.CollectionID.Bytes)
+					if p.CollectionID != nil && *p.CollectionID != bound {
+						httputil.WriteError(w, http.StatusForbidden, "scope_violation", "collection_id not permitted for this credential", rid)
+						return
+					}
+					p.CollectionID = &bound
+				}
+				// Product binding: authoritative.
+				if tok.Product.Valid {
+					boundProduct := string(tok.Product.BlobProduct)
+					if p.Product != "" && p.Product != boundProduct {
+						httputil.WriteError(w, http.StatusForbidden, "scope_violation", "product not permitted for this credential", rid)
+						return
+					}
+					p.Product = boundProduct
+				}
+				// Max-file-size binding: tighten the effective ceiling.
+				if tok.MaxFileSize.Valid && length > tok.MaxFileSize.Int64 {
+					httputil.WriteError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "upload exceeds the size limit for this credential", rid)
+					return
+				}
+			}
+
+			p.UploadTokenID = &tid
+		}
+	}
+
 	id, err := h.store.Create(r.Context(), p)
 	if err != nil {
 		if errors.Is(err, upload.ErrTooLarge) {
@@ -135,6 +218,17 @@ func (h *UploadHandler) PatchTus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// Admission gate: bound concurrent in-flight chunk transfers.
+	if h.adm != nil {
+		release, ok := h.adm.TryAcquire(admissionKey(r))
+		if !ok {
+			writeTooMany(w, "too_many_concurrent", "upload concurrency limit reached, retry", rid)
+			return
+		}
+		defer release()
+	}
+
 	if r.Header.Get("Content-Type") != "application/offset+octet-stream" {
 		httputil.WriteError(w, http.StatusBadRequest, "bad_request", "Content-Type must be application/offset+octet-stream", rid)
 		return
@@ -375,4 +469,33 @@ func ownerFromContext(ctx context.Context) *uuid.UUID {
 		}
 	}
 	return nil
+}
+
+// credentialFromContext returns the upload-token credential id (empty for
+// interactive/JWT logins).
+func credentialFromContext(ctx context.Context) string {
+	if id, ok := auth.IdentityFromContext(ctx); ok {
+		return id.CredentialID
+	}
+	return ""
+}
+
+// admissionKey is the per-credential concurrency bucket: credential id if
+// present, else user id, else remote IP.
+func admissionKey(r *http.Request) string {
+	if id, ok := auth.IdentityFromContext(r.Context()); ok {
+		if id.CredentialID != "" {
+			return "cred:" + id.CredentialID
+		}
+		if id.UserID != "" {
+			return "user:" + id.UserID
+		}
+	}
+	return "ip:" + r.RemoteAddr
+}
+
+// writeTooMany writes a 429 Too Many Requests with Retry-After: 2.
+func writeTooMany(w http.ResponseWriter, code, msg, rid string) {
+	w.Header().Set("Retry-After", "2")
+	httputil.WriteError(w, http.StatusTooManyRequests, code, msg, rid)
 }

@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -14,25 +15,29 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/nova-archive/nova/internal/api/middleware"
 	"github.com/nova-archive/nova/internal/auth"
+	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/upload"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 	"github.com/stretchr/testify/require"
 )
 
 type fakeStore struct {
-	createID  uuid.UUID
-	createErr error
-	sess      *upload.Session
-	getErr    error
-	newOff    int64
-	appendErr error
-	finRes    *storage.PutResult
-	finErr    error
+	createID   uuid.UUID
+	createErr  error
+	lastParams upload.CreateParams
+	sess       *upload.Session
+	getErr     error
+	newOff     int64
+	appendErr  error
+	finRes     *storage.PutResult
+	finErr     error
 }
 
 func (f *fakeStore) Create(ctx context.Context, p upload.CreateParams) (uuid.UUID, error) {
+	f.lastParams = p
 	return f.createID, f.createErr
 }
 func (f *fakeStore) Get(ctx context.Context, id uuid.UUID) (*upload.Session, error) {
@@ -294,4 +299,213 @@ func TestMultipartRejectsBodyExceedingMaxBytesReader(t *testing.T) {
 	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 	require.Contains(t, rec.Body.String(), "payload_too_large")
 	require.Equal(t, "", mp.gotPC.Product, "Put must not be called when the body exceeds MaxBytesReader")
+}
+
+// ---------------------------------------------------------------------------
+// Admission cap + token scope tests (Part C / Part E of Task 8)
+// ---------------------------------------------------------------------------
+
+// fakeTokenQuerier is a configurable UploadTokenQuerier for handler tests.
+type fakeTokenQuerier struct {
+	count    int64
+	countErr error
+	tok      gen.UploadToken
+	tokErr   error
+}
+
+func (f *fakeTokenQuerier) GetUploadTokenByID(_ context.Context, _ pgtype.UUID) (gen.UploadToken, error) {
+	return f.tok, f.tokErr
+}
+
+func (f *fakeTokenQuerier) CountActiveSessionsByToken(_ context.Context, _ pgtype.UUID) (int64, error) {
+	return f.count, f.countErr
+}
+
+// tusHeaders returns the minimum required headers for a CreateTus request.
+func tusHeaders(length string, extraMeta ...string) map[string]string {
+	h := map[string]string{
+		"Tus-Resumable": "1.0.0",
+		"Upload-Length": length,
+	}
+	if len(extraMeta) > 0 {
+		h["Upload-Metadata"] = extraMeta[0]
+	}
+	return h
+}
+
+// b64 encodes s as standard base64 (tus Upload-Metadata value format).
+func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+// contextWithTokenIdentity returns a request whose context carries an upload-token
+// identity (CredentialID = tokenID.String(), UserID = userID.String()).
+func contextWithTokenIdentity(r *http.Request, tokenID, userID uuid.UUID) *http.Request {
+	return r.WithContext(auth.ContextWithIdentity(r.Context(), auth.Identity{
+		CredentialID: tokenID.String(),
+		UserID:       userID.String(),
+		Role:         "uploader",
+	}))
+}
+
+// TestCreateTus_TooManyFiles: when the active-session count for a credential
+// meets or exceeds maxFilesPerSession, CreateTus returns 429 too_many_files.
+func TestCreateTus_TooManyFiles(t *testing.T) {
+	t.Parallel()
+	credID := uuid.New()
+	userID := uuid.New()
+	fs := &fakeStore{createID: uuid.New()}
+	ft := &fakeTokenQuerier{count: 1} // count=1 >= maxFilesPerSession=1
+	h := NewUploadHandler(fs, &fakeMP{}, 1<<20, false, nil)
+	h.SetUploadCaps(16, 4, 1, ft)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads", nil)
+	for k, v := range tusHeaders("5") {
+		req.Header.Set(k, v)
+	}
+	req = contextWithTokenIdentity(req, credID, userID)
+	rr := httptest.NewRecorder()
+	h.CreateTus(rr, req)
+
+	require.Equal(t, http.StatusTooManyRequests, rr.Code)
+	require.Equal(t, "2", rr.Header().Get("Retry-After"))
+	require.Contains(t, rr.Body.String(), "too_many_files")
+}
+
+// TestCreateTus_TooManyConcurrent: when the global admission slot is occupied,
+// CreateTus returns 429 too_many_concurrent.
+func TestCreateTus_TooManyConcurrent(t *testing.T) {
+	t.Parallel()
+	ft := &fakeTokenQuerier{count: 0}
+	h := NewUploadHandler(&fakeStore{createID: uuid.New()}, &fakeMP{}, 1<<20, false, nil)
+	h.SetUploadCaps(1, 1, 100, ft)
+
+	// Occupy the single global slot directly.
+	rel, ok := h.adm.TryAcquire("test-occupier")
+	require.True(t, ok, "should acquire the only global slot")
+	defer rel()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads", nil)
+	for k, v := range tusHeaders("5") {
+		req.Header.Set(k, v)
+	}
+	rr := httptest.NewRecorder()
+	h.CreateTus(rr, req)
+
+	require.Equal(t, http.StatusTooManyRequests, rr.Code)
+	require.Equal(t, "2", rr.Header().Get("Retry-After"))
+	require.Contains(t, rr.Body.String(), "too_many_concurrent")
+}
+
+// TestCreateTus_ScopeCollectionConflict: token binds collection X; request
+// provides a different collection_id → 403 scope_violation.
+func TestCreateTus_ScopeCollectionConflict(t *testing.T) {
+	t.Parallel()
+	credID := uuid.New()
+	userID := uuid.New()
+	boundCol := uuid.New()
+	otherCol := uuid.New()
+
+	tok := gen.UploadToken{
+		CollectionID: pgtype.UUID{Bytes: boundCol, Valid: true},
+	}
+	ft := &fakeTokenQuerier{count: 0, tok: tok}
+	h := NewUploadHandler(&fakeStore{createID: uuid.New()}, &fakeMP{}, 1<<20, false, nil)
+	h.SetUploadCaps(16, 4, 100, ft)
+
+	meta := "collection_id " + b64(otherCol.String())
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads", nil)
+	for k, v := range tusHeaders("5", meta) {
+		req.Header.Set(k, v)
+	}
+	req = contextWithTokenIdentity(req, credID, userID)
+	rr := httptest.NewRecorder()
+	h.CreateTus(rr, req)
+
+	require.Equal(t, http.StatusForbidden, rr.Code)
+	require.Contains(t, rr.Body.String(), "scope_violation")
+}
+
+// TestCreateTus_ScopeProductConflict: token binds product "image"; request
+// sends product "video" → 403 scope_violation.
+func TestCreateTus_ScopeProductConflict(t *testing.T) {
+	t.Parallel()
+	credID := uuid.New()
+	userID := uuid.New()
+
+	tok := gen.UploadToken{
+		Product: gen.NullBlobProduct{BlobProduct: gen.BlobProductImage, Valid: true},
+	}
+	ft := &fakeTokenQuerier{count: 0, tok: tok}
+	h := NewUploadHandler(&fakeStore{createID: uuid.New()}, &fakeMP{}, 1<<20, false, nil)
+	h.SetUploadCaps(16, 4, 100, ft)
+
+	meta := "product " + b64("video")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads", nil)
+	for k, v := range tusHeaders("5", meta) {
+		req.Header.Set(k, v)
+	}
+	req = contextWithTokenIdentity(req, credID, userID)
+	rr := httptest.NewRecorder()
+	h.CreateTus(rr, req)
+
+	require.Equal(t, http.StatusForbidden, rr.Code)
+	require.Contains(t, rr.Body.String(), "scope_violation")
+}
+
+// TestCreateTus_ScopeMaxFileSizeExceeded: token binds max_file_size=10;
+// request Upload-Length=100 → 413 payload_too_large.
+func TestCreateTus_ScopeMaxFileSizeExceeded(t *testing.T) {
+	t.Parallel()
+	credID := uuid.New()
+	userID := uuid.New()
+
+	tok := gen.UploadToken{
+		MaxFileSize: pgtype.Int8{Int64: 10, Valid: true},
+	}
+	ft := &fakeTokenQuerier{count: 0, tok: tok}
+	h := NewUploadHandler(&fakeStore{createID: uuid.New()}, &fakeMP{}, 1<<20, false, nil)
+	h.SetUploadCaps(16, 4, 100, ft)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads", nil)
+	for k, v := range tusHeaders("100") {
+		req.Header.Set(k, v)
+	}
+	req = contextWithTokenIdentity(req, credID, userID)
+	rr := httptest.NewRecorder()
+	h.CreateTus(rr, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rr.Code)
+	require.Contains(t, rr.Body.String(), "payload_too_large")
+}
+
+// TestCreateTus_HappyPathWithToken: token binds collection X, request omits
+// collection_id. Expects 201, the store CreateParams carry the token ID and
+// the bound collection.
+func TestCreateTus_HappyPathWithToken(t *testing.T) {
+	t.Parallel()
+	credID := uuid.New()
+	userID := uuid.New()
+	sessionID := uuid.New()
+	boundCol := uuid.New()
+
+	tok := gen.UploadToken{
+		CollectionID: pgtype.UUID{Bytes: boundCol, Valid: true},
+	}
+	ft := &fakeTokenQuerier{count: 0, tok: tok}
+	fs := &fakeStore{createID: sessionID}
+	h := NewUploadHandler(fs, &fakeMP{}, 1<<20, false, nil)
+	h.SetUploadCaps(16, 4, 100, ft)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/uploads", nil)
+	for k, v := range tusHeaders("5") {
+		req.Header.Set(k, v)
+	}
+	req = contextWithTokenIdentity(req, credID, userID)
+	rr := httptest.NewRecorder()
+	h.CreateTus(rr, req)
+
+	require.Equal(t, http.StatusCreated, rr.Code)
+	require.NotNil(t, fs.lastParams.UploadTokenID, "store must receive UploadTokenID")
+	require.Equal(t, credID, *fs.lastParams.UploadTokenID, "UploadTokenID must match the credential")
+	require.NotNil(t, fs.lastParams.CollectionID, "store must receive bound CollectionID")
+	require.Equal(t, boundCol, *fs.lastParams.CollectionID, "CollectionID must be the token-bound one")
 }

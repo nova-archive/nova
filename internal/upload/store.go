@@ -59,6 +59,7 @@ type CreateParams struct {
 	Product        string
 	CollectionID   *uuid.UUID
 	OwnerID        *uuid.UUID
+	UploadTokenID  *uuid.UUID // optional; when set, the session is linked to this upload token
 }
 
 // Session is the offset/metadata view returned to handlers.
@@ -108,6 +109,14 @@ func (s *Store) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 		return uuid.Nil, fmt.Errorf("upload: create session: %w", err)
 	}
 	sid := uuid.UUID(id.Bytes)
+	if p.UploadTokenID != nil {
+		if err := s.q.SetUploadSessionToken(ctx, gen.SetUploadSessionTokenParams{
+			ID:            id,
+			UploadTokenID: pgUUID(*p.UploadTokenID),
+		}); err != nil {
+			return uuid.Nil, fmt.Errorf("upload: set session token: %w", err)
+		}
+	}
 	if err := os.MkdirAll(s.sessionDir(sid), 0o700); err != nil {
 		return uuid.Nil, fmt.Errorf("upload: mkdir session: %w", err)
 	}

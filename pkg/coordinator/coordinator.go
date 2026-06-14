@@ -133,6 +133,11 @@ type Config struct {
 	// Sourced from opCfg.Uploads.CORS when operator.yaml is loaded; zero/disabled
 	// by default so existing deployments are unaffected.
 	CORS config.CORS
+
+	// UploadLimits caps concurrent tus sessions and active files per credential.
+	// Sourced from opCfg.Uploads.Limits when operator.yaml is loaded; zero values
+	// take the config package defaults (applied by applyUploadDefaults).
+	UploadLimits config.UploadLimits
 }
 
 // SignedURLConfig tunes the M7 signed-URL stack.
@@ -287,6 +292,12 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 			}
 			c.uploadStore = store
 			uh := handlers.NewUploadHandler(store, svc, sizeOrDefault(cfg.MaxUploadSizeBytes), cfg.RecordSourceIP, cfg.TrustedProxies)
+			uh.SetUploadCaps(
+				cfg.UploadLimits.MaxConcurrentGlobal,
+				cfg.UploadLimits.MaxConcurrentPerSession,
+				cfg.UploadLimits.MaxFilesPerSession,
+				gen.New(pool),
+			)
 			c.uploadHandler = uh
 			sc.Upload = uh
 		}
