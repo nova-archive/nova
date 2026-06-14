@@ -122,6 +122,7 @@ func (h *ConfigAdminHandler) apply(w http.ResponseWriter, r *http.Request, full 
 		}
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var patch map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body", rid)
@@ -172,11 +173,12 @@ func (h *ConfigAdminHandler) apply(w http.ResponseWriter, r *http.Request, full 
 	version := h.store.Swap(validated)
 	h.writeAudit(r, baseMap, newEffMap, version, restart)
 
-	liveMap, _ := config.ToMap(h.store.Load())
+	live := h.store.Load()
+	liveMap, _ := config.ToMap(live)
 	resp := map[string]any{
 		"version":          version,
 		"config":           liveMap,
-		"privacy_warnings": h.store.Load().PrivacyWarnings(),
+		"privacy_warnings": live.PrivacyWarnings(),
 		"fields":           h.fieldsMeta(liveMap),
 		"restart_required": restart,
 	}
@@ -218,6 +220,9 @@ func changedRestartFields(oldMap, newMap map[string]any) []string {
 
 // flattenLeaves recursively walks v (expected to be map[string]any or scalar)
 // and populates out with dotted-path → fmt.Sprintf("%v", value) entries.
+// Note: slice values are compared by their fmt-stringified form, so a pure
+// reorder of a list (e.g. webhooks) can produce a spurious restart_required
+// entry — this is advisory-only and safe to ignore if only ordering changed.
 func flattenLeaves(prefix string, v any, out map[string]string) {
 	if sub, ok := v.(map[string]any); ok {
 		for k, vv := range sub {
