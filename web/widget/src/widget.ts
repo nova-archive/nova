@@ -20,7 +20,10 @@ export function buildUppy(target: Element, cfg: NormalizedConfig): WidgetInstanc
   target.classList.add('nova-upload-widget')
   const uppy = new Uppy({
     autoProceed: true,
-    restrictions: cfg.maxFileSize ? { maxFileSize: cfg.maxFileSize } : undefined,
+    restrictions: {
+      maxNumberOfFiles: cfg.maxFilesPerSession,
+      ...(cfg.maxFileSize ? { maxFileSize: cfg.maxFileSize } : {}),
+    },
   })
     .use(DragDrop, { target: target as HTMLElement })
     .use(StatusBar, { target: target as HTMLElement })
@@ -28,6 +31,13 @@ export function buildUppy(target: Element, cfg: NormalizedConfig): WidgetInstanc
 
   uppy.on('file-added', (file) => {
     uppy.setFileMeta(file.id, fileMeta(cfg, { name: file.name ?? '', type: file.type ?? '' }))
+  })
+
+  uppy.on('restriction-failed', (_file, _error) => {
+    cfg.onError({
+      code: 'too_many_files',
+      message: `Up to ${cfg.maxFilesPerSession} files per batch`,
+    })
   })
 
   uppy.on('upload-progress', (_file, progress) => {

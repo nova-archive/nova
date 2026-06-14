@@ -56,6 +56,7 @@ export function buildTusOptions(cfg: NormalizedConfig) {
   return {
     endpoint: cfg.endpoint,
     chunkSize: cfg.chunkSize,
+    limit: cfg.concurrency,
     allowedMetaFields: ['filename', 'mime_type', 'product', 'collection_id'],
     async onBeforeRequest(req: TusRequest) {
       const token = await resolveToken(cfg)

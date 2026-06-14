@@ -81,6 +81,16 @@ describe('buildTusOptions', () => {
     expect(o.allowedMetaFields).toEqual(['filename', 'mime_type', 'product', 'collection_id'])
   })
 
+  it('sets limit to cfg.concurrency (default 4)', () => {
+    const o = buildTusOptions(normalizeOptions())
+    expect(o.limit).toBe(4)
+  })
+
+  it('sets limit to the configured concurrency value', () => {
+    const o = buildTusOptions(normalizeOptions({ concurrency: 2 }))
+    expect(o.limit).toBe(2)
+  })
+
   it('onBeforeRequest sets Authorization per request, omits it when token is null', async () => {
     const withTok = buildTusOptions(normalizeOptions({ token: 'jwt' }))
     const set = vi.fn()

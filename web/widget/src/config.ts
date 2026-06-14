@@ -6,6 +6,8 @@ export interface MountOptions {
   collectionId?: string
   maxFileSize?: number
   chunkSize?: number
+  concurrency?: number
+  maxFilesPerSession?: number
   getToken?: () => string | null | Promise<string | null>
   token?: string
   onComplete?: (r: UploadResult) => void
@@ -19,6 +21,8 @@ export interface NormalizedConfig {
   collectionId?: string
   maxFileSize?: number
   chunkSize: number
+  concurrency: number
+  maxFilesPerSession: number
   getToken: () => string | null | Promise<string | null>
   onComplete: (r: UploadResult) => void
   onError: (e: WidgetError) => void
@@ -28,6 +32,8 @@ export interface NormalizedConfig {
 const DEFAULT_ENDPOINT = '/api/v1/uploads'
 const DEFAULT_PRODUCT = 'raw'
 const DEFAULT_CHUNK_SIZE = 5 * 1024 * 1024
+const DEFAULT_CONCURRENCY = 4
+const DEFAULT_MAX_FILES = 100
 
 export function normalizeOptions(opts: MountOptions = {}): NormalizedConfig {
   const tok = opts.token
@@ -38,6 +44,8 @@ export function normalizeOptions(opts: MountOptions = {}): NormalizedConfig {
     collectionId: opts.collectionId || undefined,
     maxFileSize: opts.maxFileSize,
     chunkSize: opts.chunkSize ?? DEFAULT_CHUNK_SIZE,
+    concurrency: opts.concurrency ?? DEFAULT_CONCURRENCY,
+    maxFilesPerSession: opts.maxFilesPerSession ?? DEFAULT_MAX_FILES,
     getToken,
     onComplete: opts.onComplete ?? (() => {}),
     onError: opts.onError ?? (() => {}),
@@ -53,5 +61,7 @@ export function parseElementConfig(el: Element): MountOptions {
     endpoint: ds.endpoint || undefined,
     product: ds.product || undefined,
     collectionId: ds.collection || undefined,
+    concurrency: ds.concurrency ? Number(ds.concurrency) : undefined,
+    maxFilesPerSession: ds.maxFiles ? Number(ds.maxFiles) : undefined,
   }
 }

@@ -8,6 +8,8 @@ describe('normalizeOptions', () => {
     expect(c.product).toBe('raw')
     expect(c.collectionId).toBeUndefined()
     expect(c.chunkSize).toBe(5 * 1024 * 1024)
+    expect(c.concurrency).toBe(4)
+    expect(c.maxFilesPerSession).toBe(100)
   })
 
   it('overrides endpoint/product/collection/chunk', () => {
@@ -16,6 +18,12 @@ describe('normalizeOptions', () => {
     expect(c.product).toBe('image')
     expect(c.collectionId).toBe('abc')
     expect(c.chunkSize).toBe(100)
+  })
+
+  it('overrides concurrency and maxFilesPerSession when provided', () => {
+    const c = normalizeOptions({ concurrency: 2, maxFilesPerSession: 50 })
+    expect(c.concurrency).toBe(2)
+    expect(c.maxFilesPerSession).toBe(50)
   })
 
   it('token: t becomes getToken returning t', async () => {
@@ -46,6 +54,15 @@ describe('parseElementConfig', () => {
 
   it('omits unset attributes', () => {
     const el = document.createElement('div')
-    expect(parseElementConfig(el)).toStrictEqual({ endpoint: undefined, product: undefined, collectionId: undefined })
+    expect(parseElementConfig(el)).toStrictEqual({ endpoint: undefined, product: undefined, collectionId: undefined, concurrency: undefined, maxFilesPerSession: undefined })
+  })
+
+  it('reads data-concurrency and data-max-files as numbers', () => {
+    const el = document.createElement('div')
+    el.setAttribute('data-concurrency', '8')
+    el.setAttribute('data-max-files', '25')
+    const opts = parseElementConfig(el)
+    expect(opts.concurrency).toBe(8)
+    expect(opts.maxFilesPerSession).toBe(25)
   })
 })

@@ -14,6 +14,7 @@ export function mapError(status: number, body: { code?: string; message?: string
     413: 'payload_too_large',
     415: 'unsupported_media_type',
     422: 'moderation_rejected',
+    429: 'rate_limited',
     451: 'blocklisted',
     503: 'server_busy',
   }
