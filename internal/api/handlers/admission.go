@@ -2,64 +2,51 @@ package handlers
 
 import "sync"
 
-// admission bounds concurrent in-flight upload operations: a global ceiling and
-// a per-credential ceiling. A zero/negative limit disables that dimension.
+// limitsFn returns the current (global, perCredential) caps; <=0 ⇒ unbounded.
+type limitsFn func() (global, perCredential int)
+
+// admission bounds concurrent in-flight upload operations using live limits.
 type admission struct {
-	global chan struct{} // buffered to MaxConcurrentGlobal; nil ⇒ unbounded
-	max    int           // per-credential cap; <=0 ⇒ unbounded
-	mu     sync.Mutex
-	inUse  map[string]int
+	limits    limitsFn
+	mu        sync.Mutex
+	globalIn  int
+	perCredIn map[string]int
 }
 
-func newAdmission(global, perCredential int) *admission {
-	a := &admission{max: perCredential, inUse: make(map[string]int)}
-	if global > 0 {
-		a.global = make(chan struct{}, global)
-	}
-	return a
+func newAdmission(limits limitsFn) *admission {
+	return &admission{limits: limits, perCredIn: make(map[string]int)}
 }
 
 // TryAcquire reserves one global + one per-credential slot for cred. On success
-// it returns a release func (call once) and true. On failure it acquires
-// nothing and returns (nil, false).
+// returns a release func (call once) and true; on failure acquires nothing.
 func (a *admission) TryAcquire(cred string) (func(), bool) {
-	// 1. global slot (non-blocking)
-	if a.global != nil {
-		select {
-		case a.global <- struct{}{}:
-		default:
-			return nil, false
-		}
-	}
-	// 2. per-credential slot
-	if a.max > 0 {
-		a.mu.Lock()
-		if a.inUse[cred] >= a.max {
-			a.mu.Unlock()
-			if a.global != nil {
-				<-a.global // roll back the global slot we took
-			}
-			return nil, false
-		}
-		a.inUse[cred]++
+	global, perCred := a.limits()
+	a.mu.Lock()
+	if global > 0 && a.globalIn >= global {
 		a.mu.Unlock()
+		return nil, false
 	}
+	if perCred > 0 && a.perCredIn[cred] >= perCred {
+		a.mu.Unlock()
+		return nil, false // global not yet taken ⇒ nothing to roll back
+	}
+	a.globalIn++
+	if perCred > 0 || a.perCredIn[cred] > 0 {
+		a.perCredIn[cred]++
+	}
+	a.mu.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			if a.max > 0 {
-				a.mu.Lock()
-				if a.inUse[cred] > 0 {
-					a.inUse[cred]--
-					if a.inUse[cred] == 0 {
-						delete(a.inUse, cred) // don't leak keys
-					}
+			a.mu.Lock()
+			a.globalIn--
+			if a.perCredIn[cred] > 0 {
+				a.perCredIn[cred]--
+				if a.perCredIn[cred] == 0 {
+					delete(a.perCredIn, cred)
 				}
-				a.mu.Unlock()
 			}
-			if a.global != nil {
-				<-a.global
-			}
+			a.mu.Unlock()
 		})
 	}, true
 }

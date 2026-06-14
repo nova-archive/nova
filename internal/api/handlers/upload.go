@@ -17,6 +17,7 @@ import (
 	"github.com/nova-archive/nova/internal/api/httputil"
 	"github.com/nova-archive/nova/internal/api/middleware"
 	"github.com/nova-archive/nova/internal/auth"
+	"github.com/nova-archive/nova/internal/config/reload"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/upload"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
@@ -55,6 +56,9 @@ type UploadHandler struct {
 	adm                *admission
 	maxFilesPerSession int
 	tokens             UploadTokenQuerier
+
+	// cfgStore, when non-nil, provides live cap reads (set via SetConfigStore).
+	cfgStore *reload.Store
 }
 
 // NewUploadHandler builds the upload handler. recordIP=false (paranoid mode)
@@ -81,14 +85,43 @@ func (h *UploadHandler) SetImageHooks(accepts func(mime string) bool, presetURLs
 	h.imagePresetURLs = presetURLs
 }
 
-// SetUploadCaps installs the concurrency admission gate, the per-credential
-// active-session file ceiling, and the token querier used for scope + ceiling
-// enforcement. Until this is called (e.g. in tests) the handler applies no caps
-// or token-scope checks. tokens may be nil to disable token-aware checks.
+// SetUploadCaps installs the static admission gate + file ceiling (nil-store path).
+// Until this is called (e.g. in tests) the handler applies no caps or
+// token-scope checks. tokens may be nil to disable token-aware checks.
 func (h *UploadHandler) SetUploadCaps(maxConcurrentGlobal, maxConcurrentPerSession, maxFilesPerSession int, tokens UploadTokenQuerier) {
-	h.adm = newAdmission(maxConcurrentGlobal, maxConcurrentPerSession)
 	h.maxFilesPerSession = maxFilesPerSession
 	h.tokens = tokens
+	h.adm = newAdmission(func() (int, int) { return maxConcurrentGlobal, maxConcurrentPerSession })
+}
+
+// SetConfigStore upgrades the handler to read its caps live from the snapshot.
+// Call after SetUploadCaps when a store is present.
+func (h *UploadHandler) SetConfigStore(store *reload.Store) {
+	h.cfgStore = store
+	h.adm = newAdmission(func() (int, int) {
+		l := store.Load().Uploads.Limits
+		return l.MaxConcurrentGlobal, l.MaxConcurrentPerSession
+	})
+}
+
+// maxFilesCap returns the current per-credential active-session file ceiling.
+// When cfgStore is set, the value is read live from the snapshot; otherwise
+// the static value installed by SetUploadCaps is used (nil-store invariant).
+func (h *UploadHandler) maxFilesCap() int {
+	if h.cfgStore == nil {
+		return h.maxFilesPerSession
+	}
+	return h.cfgStore.Load().Uploads.Limits.MaxFilesPerSession
+}
+
+// maxUploadCap returns the current per-upload size ceiling. When cfgStore is
+// set, the value is read live from the snapshot; otherwise the static value
+// from NewUploadHandler is used (nil-store invariant).
+func (h *UploadHandler) maxUploadCap() int64 {
+	if h.cfgStore == nil {
+		return h.maxUploadSize
+	}
+	return h.cfgStore.Load().Uploads.MaxUploadSizeBytes
 }
 
 // CreateTus handles POST /api/v1/uploads (tus Creation extension).
@@ -114,7 +147,7 @@ func (h *UploadHandler) CreateTus(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "bad_request", "valid Upload-Length required", rid)
 		return
 	}
-	if length > h.maxUploadSize {
+	if length > h.maxUploadCap() {
 		httputil.WriteError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "upload exceeds max size", rid)
 		return
 	}
@@ -138,9 +171,9 @@ func (h *UploadHandler) CreateTus(w http.ResponseWriter, r *http.Request) {
 			pgTID := pgtype.UUID{Bytes: tid, Valid: true}
 
 			// Per-credential active-session file ceiling.
-			if h.maxFilesPerSession > 0 {
+			if h.maxFilesCap() > 0 {
 				n, err := h.tokens.CountActiveSessionsByToken(r.Context(), pgTID)
-				if err == nil && int(n) >= h.maxFilesPerSession {
+				if err == nil && int(n) >= h.maxFilesCap() {
 					writeTooMany(w, "too_many_files", "active upload limit reached for this credential, retry", rid)
 					return
 				}
@@ -313,7 +346,7 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 	// disk via the multipart spill-to-file path. The +1 MiB slack covers
 	// boundary headers and other form fields; ParseMultipartForm will surface
 	// the limit as *http.MaxBytesError, which we map to 413.
-	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadSize+(1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadCap()+(1<<20))
 
 	if err := r.ParseMultipartForm(8 << 20); err != nil { // 8 MiB in-memory; rest spills to disk
 		var mbErr *http.MaxBytesError
@@ -330,7 +363,7 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 		return
 	}
 	defer file.Close()
-	if header.Size > h.maxUploadSize {
+	if header.Size > h.maxUploadCap() {
 		httputil.WriteError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "upload exceeds max size", rid)
 		return
 	}
@@ -339,7 +372,7 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 	// io.ReadFull(declaredSize), so this is a no-op for the current call site;
 	// if a future caller reads-until-EOF, the LimitReader prevents a small-
 	// declared / large-streamed mismatch from blowing past the size cap.
-	boundedFile := io.LimitReader(file, h.maxUploadSize)
+	boundedFile := io.LimitReader(file, h.maxUploadCap())
 
 	product := forceProduct
 	if product == "" {

@@ -12,7 +12,7 @@ import (
 // succeeds; a 3rd (any cred) → global full → false. Release one → next succeeds.
 func TestAdmissionGlobal(t *testing.T) {
 	t.Parallel()
-	a := newAdmission(2, 0) // global=2, per-cred unbounded
+	a := newAdmission(func() (int, int) { return 2, 0 }) // global=2, per-cred unbounded
 
 	rel1, ok := a.TryAcquire("cred-a")
 	require.True(t, ok, "first acquire must succeed")
@@ -35,7 +35,7 @@ func TestAdmissionGlobal(t *testing.T) {
 // but does NOT consume a global slot (a different cred can still acquire).
 func TestAdmissionPerCredential(t *testing.T) {
 	t.Parallel()
-	a := newAdmission(10, 1) // global=10 (plenty), per-cred=1
+	a := newAdmission(func() (int, int) { return 10, 1 }) // global=10 (plenty), per-cred=1
 
 	relA, ok := a.TryAcquire("a")
 	require.True(t, ok, "first acquire for 'a' must succeed")
@@ -70,7 +70,7 @@ func TestAdmissionPerCredential(t *testing.T) {
 // the slot counts are correct.
 func TestAdmissionReleaseIdempotent(t *testing.T) {
 	t.Parallel()
-	a := newAdmission(1, 1)
+	a := newAdmission(func() (int, int) { return 1, 1 })
 
 	rel, ok := a.TryAcquire("x")
 	require.True(t, ok)
@@ -92,7 +92,7 @@ func TestAdmissionReleaseIdempotent(t *testing.T) {
 // acquires all succeed.
 func TestAdmissionUnbounded(t *testing.T) {
 	t.Parallel()
-	a := newAdmission(0, 0)
+	a := newAdmission(func() (int, int) { return 0, 0 })
 
 	var rels []func()
 	var mu sync.Mutex
@@ -112,4 +112,30 @@ func TestAdmissionUnbounded(t *testing.T) {
 	for _, r := range rels {
 		r()
 	}
+}
+
+func TestAdmissionHonorsLiveLoweredLimit(t *testing.T) {
+	limit := 2
+	adm := newAdmission(func() (int, int) { return limit, 0 }) // global=limit, per-cred unbounded
+	r1, ok := adm.TryAcquire("c")
+	require.True(t, ok)
+	_, ok = adm.TryAcquire("c")
+	require.True(t, ok)
+	_, ok = adm.TryAcquire("c")
+	require.False(t, ok) // at global=2
+	r1()
+	_, ok = adm.TryAcquire("c")
+	require.True(t, ok) // slot freed
+}
+
+func TestAdmissionPerCredAndGlobalRollback(t *testing.T) {
+	adm := newAdmission(func() (int, int) { return 10, 1 }) // global=10, per-cred=1
+	r1, ok := adm.TryAcquire("c")
+	require.True(t, ok)
+	_, ok = adm.TryAcquire("c")
+	require.False(t, ok) // per-cred cap; global must NOT be leaked
+	// a different credential still admits (global slot was not taken on the failed per-cred acquire)
+	_, ok = adm.TryAcquire("d")
+	require.True(t, ok)
+	r1()
 }
