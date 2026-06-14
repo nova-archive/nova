@@ -26,6 +26,13 @@
 #
 # ────────────────────────────────────────────────────────────────────
 
+# Pin the compose project name so volumes/networks are stable regardless of the
+# directory the repo sits in. Without this, the project name derives from the
+# compose file's parent dir ("docker"), so two clones (e.g. nova/ and nova-test/)
+# collide on the SAME named volumes — a stale postgres-data volume then rejects
+# the new password ("password authentication failed for user nova").
+name: nova
+
 services:
 
   postgres:
@@ -86,6 +93,12 @@ services:
       NOVA_OIDC_SIGNING_KEY_FILE: /run/secrets/oidc-signing-key
       NOVA_TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
       NOVA_LISTEN_ADDR: ":9000"
+      # Operator-config overrides (see docker/.env). The coordinator honors
+      # these (resolveOperatorConfig), but they were previously not passed into
+      # the container, so setting them in .env silently did nothing. Unset ⇒
+      # empty ⇒ no override (the wizard's operator.yaml answer stands).
+      NOVA_PUBLIC_UPLOADS: "${NOVA_PUBLIC_UPLOADS:-}"
+      NOVA_TOS_URL: "${NOVA_TOS_URL:-}"
     volumes:
       - nova-config:/etc/nova
       - nova-secrets:/run/secrets
