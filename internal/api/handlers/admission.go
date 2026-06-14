@@ -28,12 +28,10 @@ func (a *admission) TryAcquire(cred string) (func(), bool) {
 	}
 	if perCred > 0 && a.perCredIn[cred] >= perCred {
 		a.mu.Unlock()
-		return nil, false // global not yet taken ⇒ nothing to roll back
+		return nil, false // per-cred cap exceeded; we have not incremented the global counter, so there is nothing to undo
 	}
 	a.globalIn++
-	if perCred > 0 || a.perCredIn[cred] > 0 {
-		a.perCredIn[cred]++
-	}
+	a.perCredIn[cred]++
 	a.mu.Unlock()
 	var once sync.Once
 	return func() {

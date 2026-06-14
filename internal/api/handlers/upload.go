@@ -95,7 +95,9 @@ func (h *UploadHandler) SetUploadCaps(maxConcurrentGlobal, maxConcurrentPerSessi
 }
 
 // SetConfigStore upgrades the handler to read its caps live from the snapshot.
-// Call after SetUploadCaps when a store is present.
+// Call after SetUploadCaps when a store is present. It must be called at
+// startup wiring time, before the server begins serving requests — it swaps
+// h.adm without locking.
 func (h *UploadHandler) SetConfigStore(store *reload.Store) {
 	h.cfgStore = store
 	h.adm = newAdmission(func() (int, int) {

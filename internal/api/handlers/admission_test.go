@@ -139,3 +139,19 @@ func TestAdmissionPerCredAndGlobalRollback(t *testing.T) {
 	require.True(t, ok)
 	r1()
 }
+
+func TestAdmissionTightensWhenPerCredRaisedFromZero(t *testing.T) {
+	perCred := 0 // start unbounded
+	adm := newAdmission(func() (int, int) { return 100, perCred })
+	r1, ok := adm.TryAcquire("x")
+	require.True(t, ok) // admitted while unbounded
+	perCred = 1         // tighten the live per-cred limit to 1
+	// "x" already has 1 in flight, so a second concurrent "x" must be refused.
+	_, ok = adm.TryAcquire("x")
+	require.False(t, ok)
+	r1()
+	// after release, "x" is back to 0 in flight and admits again.
+	r2, ok := adm.TryAcquire("x")
+	require.True(t, ok)
+	r2()
+}
