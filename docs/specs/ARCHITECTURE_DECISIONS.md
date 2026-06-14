@@ -105,6 +105,7 @@ cannot opt out.
 | T1.22 | No telemetry, no phone-home, no auto-update channel in coordinator or donor binaries | `THREAT_MODEL.md` § G; `PRIVACY_AUDIT.md` |
 | T1.23 | Admin SPA bundle has no third-party CDN assets at runtime; CI lint enforces | `THREAT_MODEL.md` § D |
 | T1.24 | `audit_log` is append-only at the application layer; every privileged action is logged | `THREAT_MODEL.md` § B |
+| T1.31 | Admin-minted **upload tokens** are capped to the `uploader` role (never operator/moderator), are optionally scoped (collection / product / max file size) and one-click revocable; the `nova_ut_…` secret is shown once and stored only as a SHA-256 hash | `docs/superpowers/specs/2026-06-13-m0.3-offorigin-widget-design.md`; `internal/api/handlers/upload_tokens_admin.go`; `THREAT_MODEL.md` |
 
 ### Trust-model commitments
 
@@ -124,6 +125,11 @@ P2-M8, and added `T1.29` (failure-domain anti-affinity + bandwidth-decoupled
 placement) and `T1.30` (donor trust/probation), with the `FEDERATION_PROTOCOL.md`
 v3 and `HEALING_PROTOCOL.md` v3 spec bumps as the implementation gates. See
 `docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
+
+**P2-M0.3 (2026-06-14)** added `T1.31` (the scoped, revocable, uploader-capped
+upload-token credential) as part of the off-origin widget work, alongside the
+first-class CORS layer and upload admission limits recorded in Tier 2. See
+`docs/superpowers/specs/2026-06-13-m0.3-offorigin-widget-design.md`.
 
 `T1.27` and `T1.28` were **reframed** (not relaxed) by the second-pass
 resilience analysis in
@@ -215,6 +221,7 @@ per-dimension largest-share / top-k share / normalized entropy.
 | `auth.role_claim` | `groups` | external-OIDC claim read for role mapping | M6 design |
 | `auth.role_mapping` | operator-supplied | maps IdP group/scope strings → Nova roles; unmapped ⇒ `viewer` (safe default) | M6 design |
 | `uploads.public_uploads` | `false` | `true` allows anonymous uploads; refuse-to-start without `tos_url` (T1.20) | M6 design; `PRIVACY_AUDIT.md` |
+| upload tokens | n/a (minted on demand) | scoped, revocable `nova_ut_…` bearer credentials for off-origin widgets; minted via `POST /api/v1/admin/upload-tokens` or `novactl upload-token create`, always `uploader`-capped (T1.31) | M0.3 design |
 
 The coordinator is a resource server: it accepts bearer tokens from the local
 issuer and/or an operator-chosen external IdP (operator freedom; see Tier 3),
@@ -229,6 +236,25 @@ a misconfiguration can over- or under-grant, so `viewer` is the unmapped default
 | `coordinator.record_source_ip` | unset ⇒ record (the `paranoid` preset defaults it off) | tri-state `*bool`; an explicit value wins over the preset, decoupling source-IP recording from full paranoid (P2-M0.2) | `PRIVACY_AUDIT.md` § "paranoid: true mode" |
 | `tls.mode` | operator-prompted at first run | `http-01` / `dns-01` / `static` / `.onion` | `PRIVACY_AUDIT.md` § "TLS mode" |
 | `paranoid` | `false` | **preset, not force** (P2-M0.2): sets protective privacy defaults; explicit operator values win and relaxing one only *warns* — it never refuses to start. Legal floors (T1.20, `auth.anonymous`) stay hard. | `PRIVACY_AUDIT.md` § "paranoid: true mode" |
+
+### Cross-origin uploads and admission limits
+
+First-class CORS (default off; same-origin only) lets an operator authorize an
+upload widget hosted on their own site. When enabled, an allowlisted `Origin` is
+**echoed** with `Vary: Origin` (never `*`), preflight `OPTIONS` short-circuits to
+204 before the auth guard, and the tus method/header lists default to sane values
+(P2-M0.3). The admission limits bound a bulk-upload burst so the client queues
+rather than triggering a 503/429 storm; over-limit returns **429** with
+`Retry-After` (distinct from the storage-saturation **503** `server_busy`).
+
+| Key | Default | Notes | Where documented |
+|---|---|---|---|
+| `uploads.cors.enabled` | `false` | `true` activates the CORS layer on the upload routes; requires `allowed_origins` | M0.3 design |
+| `uploads.cors.allowed_origins` | empty | exact-match origin allowlist (echoed, never `*`) | M0.3 design |
+| `uploads.cors.allow_credentials` | `false` | Bearer auth, no cookies; keep `false` | M0.3 design |
+| `uploads.limits.max_concurrent_global` | 16 | global in-flight upload ceiling; over-limit ⇒ 429 `too_many_concurrent` | M0.3 design |
+| `uploads.limits.max_concurrent_per_session` | 4 | per-credential in-flight ceiling; mirrors the widget tus `limit` | M0.3 design |
+| `uploads.limits.max_files_per_session` | 100 | per-credential active in-progress session ceiling; over-limit ⇒ 429 `too_many_files` | M0.3 design |
 
 Tier 2 changes are normal operator decisions. They produce different
 deployments, not different protocol versions.

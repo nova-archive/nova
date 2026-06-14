@@ -349,17 +349,54 @@ bearer token in a `data-*` attribute):
     NovaUploadWidget.mount('#uploader', {
       product: 'image',
       getToken: async () => yourApp.getAccessToken(),   // called per request; survives token rotation
+      maxFilesPerSession: 100,   // client-side per-batch cap (mirror your server limit)
+      concurrency: 4,            // simultaneous uploads; the rest queue (no 503 storm)
       onComplete: (r) => console.log(r.cid, r.urls),
     });
 
+### Off-origin widget: scoped upload tokens + CORS (M0.3)
+
+To embed the widget on a **different origin** (your marketing site, a partner
+page), mint a long-lived, scoped **upload token** and serve it to your page from
+your own backend, then enable CORS for that origin.
+
+Mint a token (operator-only; runs against the loopback admin vhost after
+`novactl auth login`):
+
+    novactl upload-token create --label "marketing-site" \
+      --product image --collection <uuid> \
+      --max-file-size 26214400 --expires 720h   # 30 days; 'd' unit unsupported
+
+The command prints the `nova_ut_…` secret **once** — store it now; it cannot be
+retrieved later. List/revoke with `novactl upload-token list` / `revoke <id>`.
+The widget consumes it via the same `getToken` provider:
+
+    getToken: async () => 'nova_ut_…'   // served to the page by YOUR backend
+
+Enable CORS for the embedding origin in `operator.yaml`:
+
+    uploads:
+      cors:
+        enabled: true
+        allowed_origins: ["https://example.com"]   # exact match; echoed, never *
+        allow_credentials: false                    # Bearer auth, no cookies
+
 Notes:
+- **A browser-embedded token is extractable** (view-source / `curl`). CORS only
+  constrains *browser* origins — it is not an authentication boundary. Bound the
+  blast radius: scope the token tight (it is always `uploader`-capped, never
+  operator/moderator), set a collection/product/size, set an expiry, and revoke
+  it the moment it leaks.
+- `uploads.limits.*` (defaults: `max_concurrent_global` 16,
+  `max_concurrent_per_session` 4, `max_files_per_session` 100) are the server-side
+  backstop. Over-limit returns **429** with `Retry-After` (distinct from the
+  storage-saturation **503** `server_busy`); the widget's `concurrency`/`maxFilesPerSession`
+  options keep clients under those ceilings so bulk drops queue instead of erroring.
 - `getToken` returning `null` sends no `Authorization` header — uploads then require
   the public-uploads floor (`NOVA_PUBLIC_UPLOADS=true`, which itself requires
   `NOVA_TOS_URL`). The zero-JS `data-nova-upload-widget` path only works under that floor.
 - The bundle is hermetic (no third-party CDN); CI enforces it (`make hermetic-widget`).
-- Phase-1 embedding is same-origin. To embed on a different origin, add CORS for the
-  upload endpoints at your reverse proxy; first-class coordinator CORS is deferred. As
-  of M13 the widget bundle is served on the **public_host** of the two-vhost split.
+- As of M13 the widget bundle is served on the **public_host** of the two-vhost split.
 
 ## First-run setup (M13)
 

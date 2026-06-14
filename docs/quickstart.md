@@ -201,6 +201,29 @@ require **public uploads** to be enabled (the wizard toggle); otherwise
 mount the widget via JS with a `getToken` provider (see the
 [operator checklist](legal/OPERATOR_CHECKLIST.md#upload-widget-m12)).
 
+**Authenticated / off-origin embedding.** To accept authenticated
+uploads — or to embed the widget on a *different* origin (e.g. your own
+site) without enabling anonymous public uploads — mint a scoped,
+revocable upload token and hand it to the widget:
+
+```bash
+novactl auth login                       # operator, against the admin vhost
+novactl upload-token create --product image --label my-site
+# prints a nova_ut_… secret ONCE — store it; serve it to your page from your backend
+```
+
+```js
+NovaUploadWidget.mount('#uploader', {
+  product: 'image',
+  getToken: async () => 'nova_ut_…',   // your backend supplies this
+});
+```
+
+For a cross-origin host page, also set `uploads.cors.enabled: true` with
+your site in `allowed_origins`. Full flow, the security note about
+embedded tokens, and the `uploads.limits.*` backstops are in the
+[operator checklist](legal/OPERATOR_CHECKLIST.md#off-origin-widget-scoped-upload-tokens--cors-m03).
+
 ### Option B — curl
 
 One honest caveat first: **in Phase 1, uploads are private by

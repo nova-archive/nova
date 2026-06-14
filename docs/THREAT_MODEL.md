@@ -287,14 +287,29 @@ encryption envelope.
   build on any external origin in `web/widget/dist` — it scans both
   the HTML/CSS (via `hermetic-spa.sh`) and the inlined JS bundle for
   CSS asset-load patterns (`url(http…)`, `@import …http`), making the
-  "fails on any external origin" claim precise. Phase-1 widget
-  embedding is **same-origin** (the host page is served from the Nova
-  origin); cross-origin embedding requires operator-managed CORS at
-  the reverse proxy and is deferred. No first-class coordinator CORS
-  surface ships in Phase 1. As of M13 the widget bundle is served on
-  the **public_host** of the two-vhost split (it is the end-user
-  uploader, and its API target `/api/v1/uploads/*` is a public-origin
-  route) — never on the admin host.
+  "fails on any external origin" claim precise. As of M13 the widget
+  bundle is served on the **public_host** of the two-vhost split (it is
+  the end-user uploader, and its API target `/api/v1/uploads/*` is a
+  public-origin route) — never on the admin host.
+- **Off-origin widget: first-class CORS + scoped upload tokens
+  (P2-M0.3).** Cross-origin embedding is no longer deferred. The
+  coordinator ships a config-driven CORS layer on the upload routes
+  (`uploads.cors`, default off ⇒ same-origin only; when enabled it
+  **echoes** an allowlisted `Origin` with `Vary: Origin`, never `*`, and
+  answers the preflight `OPTIONS` with 204 before the auth guard). An
+  operator authenticates an off-origin widget with a **scoped, revocable
+  upload token** (`nova_ut_…`) minted via the operator-only admin API or
+  `novactl upload-token create`. A browser-embedded token is
+  **extractable** (view-source / `curl`) — CORS constrains *browser*
+  origins, not other clients — so its blast radius is bounded by
+  least-privilege scope: the token is always `uploader`-capped (never
+  operator/moderator, T1.31), optionally bound to a single collection /
+  product / max file size, carries an expiry, is one-click revocable, and
+  its secret is stored only as a SHA-256 hash. Per-credential active-session
+  and global concurrency ceilings (`uploads.limits.*`) bound abuse and bulk
+  bursts (429 `too_many_concurrent` / `too_many_files`, distinct from the
+  storage-saturation 503). Rolling per-credential abuse quotas are a
+  deliberate follow-on, not part of M0.3.
 - **No telemetry, no phone-home, no auto-update** in the
   coordinator or donor binaries. There is no mechanism for an
   attacker to push a malicious update through Nova's own update
