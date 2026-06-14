@@ -8,9 +8,10 @@ import (
 // Identity is the authenticated caller, hydrated by the bearer middleware from
 // a verified token. The zero value means "no identity" (anonymous).
 type Identity struct {
-	UserID string // token subject (uuid for local issuer)
-	Role   string // viewer|uploader|moderator|operator
-	Issuer string // token iss
+	UserID       string // token subject (uuid for local issuer)
+	Role         string // viewer|uploader|moderator|operator
+	Issuer       string // token iss
+	CredentialID string // upload-token id; empty for interactive logins
 }
 
 // Verifier validates a raw bearer token and returns the caller's Identity.
