@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/nova-archive/nova/internal/config"
+	"github.com/stretchr/testify/require"
 )
 
 func TestResolveOperatorConfig(t *testing.T) {
@@ -45,4 +46,20 @@ func TestResolveOperatorConfig(t *testing.T) {
 	if !rc.PublicUploads || rc.MaxUploadSizeBytes != config.DefaultMaxUploadSizeBytes {
 		t.Fatalf("nil cfg env-only path broken: %+v", rc)
 	}
+}
+
+func TestApplyEnvOverridesAssemblyConcurrency(t *testing.T) {
+	getenv := func(k string) string {
+		if k == "NOVA_MAX_CONCURRENT_ASSEMBLY" {
+			return "16"
+		}
+		return ""
+	}
+	c := &config.Config{}
+	applyEnvOverridesTo(c, getenv)
+	require.Equal(t, 16, c.Uploads.MaxConcurrentAssembly)
+
+	pins := envPinnedKeys(getenv)
+	_, ok := pins["uploads.max_concurrent_assembly"]
+	require.True(t, ok)
 }

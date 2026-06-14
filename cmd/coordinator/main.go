@@ -557,8 +557,9 @@ func loadOperatorConfigFile() (*config.Config, error) {
 
 // applyEnvOverridesTo re-applies NOVA_* overrides onto a config so env keeps
 // winning over yaml on every hot reload. Mirrors resolveOperatorConfig's env
-// reads. (The paranoid privacy-preset is resolved at boot and its dependent
-// fields are restart-effect, so it is intentionally not re-derived here.)
+// reads. NOVA_PARANOID is re-applied below, but the downstream privacy-preset
+// consequences (record_source_ip, retention, webhooks) are resolved at boot
+// and are restart-effect, so they are intentionally not recomputed here.
 func applyEnvOverridesTo(c *config.Config, getenv func(string) string) {
 	if v, ok := lookupBool(getenv, "NOVA_PUBLIC_UPLOADS"); ok {
 		c.Uploads.PublicUploads = v
@@ -580,6 +581,11 @@ func applyEnvOverridesTo(c *config.Config, getenv func(string) string) {
 			c.Uploads.MaxUploadSizeBytes = n
 		}
 	}
+	if v := getenv("NOVA_MAX_CONCURRENT_ASSEMBLY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.Uploads.MaxConcurrentAssembly = n
+		}
+	}
 }
 
 // envPinnedKeys lists the dotted config keys currently overridden by NOVA_* env,
@@ -597,5 +603,6 @@ func envPinnedKeys(getenv func(string) string) map[string]struct{} {
 	add("NOVA_AUTH_ISSUER_URL", "auth.issuer_url")
 	add("NOVA_AUTH_CLIENT_ID", "auth.client_id")
 	add("NOVA_MAX_UPLOAD_SIZE_BYTES", "uploads.max_upload_size_bytes")
+	add("NOVA_MAX_CONCURRENT_ASSEMBLY", "uploads.max_concurrent_assembly")
 	return pins
 }
