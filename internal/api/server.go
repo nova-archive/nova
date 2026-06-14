@@ -57,6 +57,7 @@ type ServerConfig struct {
 	DMCAIntake        *handlers.DMCAIntakeHandler        // nil ⇒ public /legal/dmca unmounted
 	BlobMeta          *handlers.BlobMetaHandler          // nil ⇒ /api/v1/blobs/{cid} GET+DELETE 404
 	UploadTokensAdmin *handlers.UploadTokensAdminHandler // nil ⇒ /api/v1/admin/upload-tokens 404
+	ConfigAdmin       *handlers.ConfigAdminHandler       // nil ⇒ /api/v1/admin/config 404
 	BlobsAdmin        *handlers.BlobsAdminHandler        // nil ⇒ /api/v1/admin/blobs 404
 	JobsAdmin         *handlers.JobsAdminHandler         // nil ⇒ /api/v1/admin/jobs 404
 	AdminSPA          *handlers.AdminSPAHandler          // nil ⇒ /admin/* static unmounted
@@ -227,6 +228,10 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 					r.With(bearer.RequireRole("operator")).Post("/upload-tokens", cfg.UploadTokensAdmin.Mint)
 					r.With(bearer.RequireRole("operator")).Get("/upload-tokens", cfg.UploadTokensAdmin.List)
 					r.With(bearer.RequireRole("operator")).Delete("/upload-tokens/{id}", cfg.UploadTokensAdmin.Revoke)
+				}
+				// Config read (P2-M0.4); operator-only.
+				if cfg.ConfigAdmin != nil {
+					r.With(bearer.RequireRole("operator")).Get("/config", cfg.ConfigAdmin.Get)
 				}
 				r.Handle("/*", http.HandlerFunc(adminNotFound))
 			})

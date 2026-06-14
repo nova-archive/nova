@@ -174,7 +174,7 @@ type Uploads struct {
 
 	// CORS configures cross-origin resource sharing for the upload endpoint.
 	// Disabled by default; enabling it applies spec tus defaults for methods/headers.
-	CORS CORS `yaml:"cors,omitempty"`
+	CORS CORS `yaml:"cors"`
 	// Limits caps concurrent and per-session upload activity.
 	Limits UploadLimits `yaml:"limits,omitempty"`
 }
