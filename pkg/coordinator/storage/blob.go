@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
@@ -22,8 +24,9 @@ type Service struct {
 	pool          *pgxpool.Pool
 	backend       ipfs.Backend
 	ks            *envelope.Keystore
-	maxUploadSize int64
-	assembly      chan struct{} // buffered semaphore bounding in-memory assembly
+	assemblyInUse atomic.Int64
+	assemblyLimit atomic.Int64 // <=0 ⇒ unbounded
+	maxUploadSize atomic.Int64 // <=0 ⇒ unbounded
 	hook          WriteHook
 }
 
@@ -65,16 +68,40 @@ func NewService(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore,
 	for _, fn := range opts {
 		fn(&o)
 	}
-	return &Service{
-		q:             gen.New(pool),
-		pool:          pool,
-		backend:       backend,
-		ks:            ks,
-		maxUploadSize: o.maxUploadSize,
-		assembly:      make(chan struct{}, o.assemblySize),
-		hook:          o.hook,
+	s := &Service{
+		q:       gen.New(pool),
+		pool:    pool,
+		backend: backend,
+		ks:      ks,
+		hook:    o.hook,
 	}
+	s.assemblyLimit.Store(int64(o.assemblySize))
+	s.maxUploadSize.Store(o.maxUploadSize)
+	return s
 }
+
+// tryAcquireAssembly reserves one assembly slot (non-blocking). release frees it.
+func (s *Service) tryAcquireAssembly() (release func(), ok bool) {
+	limit := s.assemblyLimit.Load()
+	if limit <= 0 { // unbounded
+		return func() {}, true
+	}
+	if s.assemblyInUse.Add(1) > limit {
+		s.assemblyInUse.Add(-1)
+		return nil, false
+	}
+	var once sync.Once
+	return func() { once.Do(func() { s.assemblyInUse.Add(-1) }) }, true
+}
+
+// SetWriteLimits updates the live upload-size ceiling and assembly concurrency.
+func (s *Service) SetWriteLimits(maxUploadSize int64, maxConcurrentAssembly int) {
+	s.maxUploadSize.Store(maxUploadSize)
+	s.assemblyLimit.Store(int64(maxConcurrentAssembly))
+}
+
+// MaxUploadSize returns the live ceiling (0 ⇒ unbounded).
+func (s *Service) MaxUploadSize() int64 { return s.maxUploadSize.Load() }
 
 // Resolve loads and authorizes a blob for anonymous read. It performs no
 // Kubo I/O and no decryption. Returns one of the package sentinels on a

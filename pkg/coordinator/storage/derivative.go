@@ -33,12 +33,11 @@ type DerivativeContext struct {
 func (s *Service) PutDerivative(ctx context.Context, plaintext []byte, dc DerivativeContext,
 	persist func(ctx context.Context, tx pgx.Tx, cid string) error) (*PutResult, error) {
 
-	select {
-	case s.assembly <- struct{}{}:
-		defer func() { <-s.assembly }()
-	default:
+	release, ok := s.tryAcquireAssembly()
+	if !ok {
 		return nil, ErrServerBusy
 	}
+	defer release()
 
 	pbk := make([]byte, envelope.KeySize)
 	if _, err := rand.Read(pbk); err != nil {

@@ -59,15 +59,14 @@ func topLevel(mime string) string {
 // buffered-channel semaphore bounds concurrent assemblies — and reads exactly
 // declaredSize bytes from r.
 func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc PutContext) (*PutResult, error) {
-	if declaredSize > s.maxUploadSize {
+	if max := s.maxUploadSize.Load(); max > 0 && declaredSize > max {
 		return nil, ErrUploadTooLarge
 	}
-	select {
-	case s.assembly <- struct{}{}:
-		defer func() { <-s.assembly }()
-	default:
+	release, ok := s.tryAcquireAssembly()
+	if !ok {
 		return nil, ErrServerBusy
 	}
+	defer release()
 
 	buf := make([]byte, declaredSize)
 	if _, err := io.ReadFull(r, buf); err != nil {
@@ -93,7 +92,7 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 			if ar.ResultMIME != "" {
 				mime = ar.ResultMIME
 			}
-			if int64(len(buf)) > s.maxUploadSize {
+			if max := s.maxUploadSize.Load(); max > 0 && int64(len(buf)) > max {
 				return nil, ErrUploadTooLarge
 			}
 		}
