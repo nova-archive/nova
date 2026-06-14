@@ -36,6 +36,11 @@ type Config struct {
 
 	// TosURL must be set when public uploads are enabled.
 	TosURL string `yaml:"tos_url,omitempty"`
+
+	// privacyWarnings holds consequence warnings produced by ApplyPrivacyPreset
+	// at load time (e.g. paranoid on but webhooks configured). Unexported so it
+	// is never (de)serialized; read via PrivacyWarnings().
+	privacyWarnings []string
 }
 
 type Operator struct {
@@ -126,6 +131,12 @@ type Moderation struct {
 
 type Coordinator struct {
 	PublicIpfsDht bool `yaml:"public_ipfs_dht"`
+
+	// RecordSourceIP controls whether blobs.source_ip is recorded. Tri-state
+	// pointer: nil = operator did not set it (effective default: record; the
+	// paranoid preset fills it false). An explicit value always wins over the
+	// preset — see ApplyPrivacyPreset and docs/PRIVACY_AUDIT.md.
+	RecordSourceIP *bool `yaml:"record_source_ip,omitempty"`
 }
 
 type WebhookDestination struct {

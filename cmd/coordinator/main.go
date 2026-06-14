@@ -177,7 +177,14 @@ func run() error {
 	maxUpload := rc.MaxUploadSizeBytes
 	maxAssembly := envInt("NOVA_MAX_CONCURRENT_ASSEMBLY", config.DefaultMaxConcurrentAssembly)
 	sessionTTL := time.Duration(envInt("NOVA_UPLOAD_SESSION_TTL_SECONDS", config.DefaultUploadSessionTTLSecs)) * time.Second
+	// Source-IP recording: an explicit operator.yaml record_source_ip wins;
+	// otherwise it follows the privacy preset (paranoid ⇒ off). The paranoid
+	// preset (config.ApplyPrivacyPreset) fills record_source_ip when unset, so a
+	// paranoid operator.yaml already arrives here non-nil. P2-M0.2.
 	recordIP := !rc.Paranoid
+	if opCfg != nil && opCfg.Coordinator.RecordSourceIP != nil {
+		recordIP = *opCfg.Coordinator.RecordSourceIP
+	}
 
 	trustedProxies, err := httputil.ParseTrustedProxies(os.Getenv("NOVA_TRUSTED_PROXIES"))
 	if err != nil {
@@ -311,9 +318,17 @@ func run() error {
 		"listen", listen,
 		"version", version,
 		"public_uploads", authCfg.PublicUploads,
-		"paranoid", !recordIP,
+		"paranoid", rc.Paranoid,
+		"record_source_ip", recordIP,
 		"trusted_proxies", len(trustedProxies),
 	)
+	// Surface privacy-preset consequence warnings (paranoid on but a protective
+	// default was explicitly relaxed). Empty in the default posture. P2-M0.2.
+	if opCfg != nil {
+		for _, w := range opCfg.PrivacyWarnings() {
+			slog.Warn("privacy posture", "detail", w)
+		}
+	}
 	return c.Run(ctx)
 }
 

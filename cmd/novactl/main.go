@@ -1188,7 +1188,7 @@ func promptAnswers() (setup.Answers, error) {
 			return a, err
 		}
 	}
-	if a.Paranoid, err = promptBool("Paranoid mode (suppress source-IP recording)"); err != nil {
+	if a.Paranoid, err = promptBool("Paranoid privacy preset (no source-IP recording, drop webhook egress, 1-day log retention, no ACME auto-renew)"); err != nil {
 		return a, err
 	}
 
