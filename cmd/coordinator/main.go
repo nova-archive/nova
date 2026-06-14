@@ -63,6 +63,7 @@ import (
 	"github.com/nova-archive/nova/internal/auth/password"
 	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/auth/token"
+	"github.com/nova-archive/nova/internal/auth/uploadtoken"
 	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/db/gen"
@@ -354,6 +355,11 @@ func buildAuthConfig(ctx context.Context, q *gen.Queries, rc resolvedConfig) (co
 	// Strict per-IP limiter on /api/v1/auth/login: ~5 attempts/minute, burst 5.
 	ac.LoginRate = coordinator.RateLimitConfig{RatePerSec: 5.0 / 60.0, Burst: 5}
 
+	// Scoped upload-token verifier (P2-M0.3). Chained alongside the primary
+	// verifier in both modes; ErrTokenNotForMe (non-nova_ut_ tokens) makes the
+	// chain order irrelevant for correctness.
+	utVer := uploadtoken.New(q)
+
 	if issuerURL := rc.AuthIssuerURL; issuerURL != "" {
 		// External-OIDC mode: verify-only. New is resilient to IdP downtime
 		// (background discovery retry) and only errors on invalid config.
@@ -377,7 +383,7 @@ func buildAuthConfig(ctx context.Context, q *gen.Queries, rc resolvedConfig) (co
 		if err != nil {
 			return ac, fmt.Errorf("external oidc: %w", err)
 		}
-		ac.Verifiers = []auth.Verifier{ver}
+		ac.Verifiers = []auth.Verifier{ver, utVer}
 		ac.Issuer = nil
 		ac.Descriptor = api.AuthConfigDescriptor{Mode: "external", IssuerURL: issuerURL, ClientID: clientID}
 		return ac, nil
@@ -414,7 +420,7 @@ func buildAuthConfig(ctx context.Context, q *gen.Queries, rc resolvedConfig) (co
 	if err != nil {
 		return ac, fmt.Errorf("local issuer: %w", err)
 	}
-	ac.Verifiers = []auth.Verifier{localIss.Verifier()}
+	ac.Verifiers = []auth.Verifier{localIss.Verifier(), utVer}
 	ac.Issuer = localIss
 	ac.Descriptor = api.AuthConfigDescriptor{Mode: "local"}
 	return ac, nil
