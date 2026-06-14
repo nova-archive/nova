@@ -12,6 +12,7 @@ import (
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/bearer"
 	"github.com/nova-archive/nova/internal/config"
+	"github.com/nova-archive/nova/internal/config/reload"
 	"github.com/nova-archive/nova/internal/ratelimit"
 )
 
@@ -64,6 +65,7 @@ type ServerConfig struct {
 	WidgetStatic      *handlers.WidgetStaticHandler      // nil ⇒ /widget/* static unmounted
 	Setup             *handlers.SetupHandler             // nil ⇒ /setup/* unmounted (normal mode)
 	CORSConfig        config.CORS                        // CORS for upload routes; disabled (zero) by default
+	ConfigStore       *reload.Store                      // non-nil ⇒ upload-route CORS reads live config (hot reload)
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -264,7 +266,13 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 				// parent bearer.Optional only hydrates identity (never rejects)
 				// so it is safe for it to wrap CORS.
 				r.Group(func(r chi.Router) {
-					r.Use(middleware.CORS(cfg.CORSConfig))
+					// Prefer the live-reloadable CORS when a config store is wired
+					// (operator.yaml present); otherwise the static snapshot. P2-M0.4.
+					if cfg.ConfigStore != nil {
+						r.Use(middleware.CORSReloadable(cfg.ConfigStore))
+					} else {
+						r.Use(middleware.CORS(cfg.CORSConfig))
+					}
 					if cfg.PublicUploads {
 						mountUploads(r)
 					} else {

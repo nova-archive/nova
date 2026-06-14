@@ -30,6 +30,7 @@ import (
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/config"
+	"github.com/nova-archive/nova/internal/config/reload"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
@@ -138,6 +139,12 @@ type Config struct {
 	// Sourced from opCfg.Uploads.Limits when operator.yaml is loaded; zero values
 	// take the config package defaults (applied by applyUploadDefaults).
 	UploadLimits config.UploadLimits
+
+	// ConfigStore, when non-nil, is the live config snapshot powering the M0.4
+	// hot-reload path (CORS, upload caps, storage limits) and the config admin API.
+	ConfigStore *reload.Store
+	// ConfigFilePath is the operator.yaml path the config admin API rewrites.
+	ConfigFilePath string
 }
 
 // SignedURLConfig tunes the M7 signed-URL stack.
@@ -273,6 +280,7 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		Limiter:        limiter,
 		TrustedProxies: cfg.TrustedProxies,
 		CORSConfig:     cfg.CORS,
+		ConfigStore:    cfg.ConfigStore,
 	}
 	// auditW is the M9 audit_log writer; built when a pool is present and shared
 	// by the moderation stack (atomic WriteTx) and the M7 admin backfill (Write).
@@ -298,6 +306,15 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 				cfg.UploadLimits.MaxFilesPerSession,
 				gen.New(pool),
 			)
+			// Live config (P2-M0.4): upgrade the static caps to the hot-reloadable
+			// snapshot and push max-upload-size / assembly-ceiling changes into the
+			// storage service on every swap. Guarded by the nil-store invariant.
+			if cfg.ConfigStore != nil {
+				uh.SetConfigStore(cfg.ConfigStore)
+				cfg.ConfigStore.Subscribe(func(_, n *config.Config) {
+					svc.SetWriteLimits(n.Uploads.MaxUploadSizeBytes, n.Uploads.MaxConcurrentAssembly)
+				})
+			}
 			c.uploadHandler = uh
 			sc.Upload = uh
 		}
@@ -406,6 +423,17 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		sc.BlobsAdmin = handlers.NewBlobsAdminHandler(q)
 		sc.UploadTokensAdmin = handlers.NewUploadTokensAdminHandler(q)
 		sc.JobsAdmin = handlers.NewJobsAdminHandler(jobs.NewAdminStore(pool))
+	}
+
+	// Config read/update admin API (P2-M0.4); operator-only. Built only when a
+	// live store exists (operator.yaml present); pure-env deployments leave
+	// /api/v1/admin/config unmounted. auditW (when present) records each write.
+	if cfg.ConfigStore != nil {
+		ca := handlers.NewConfigAdminHandler(cfg.ConfigStore, cfg.ConfigFilePath)
+		if auditW != nil {
+			ca.SetAuditWriter(auditW)
+		}
+		sc.ConfigAdmin = ca
 	}
 
 	// Admin SPA static serving (M11): gated by NOVA_ADMIN_DIST_DIR (nil ⇒ /admin/*

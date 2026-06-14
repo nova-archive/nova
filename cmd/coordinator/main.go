@@ -65,6 +65,7 @@ import (
 	"github.com/nova-archive/nova/internal/auth/token"
 	"github.com/nova-archive/nova/internal/auth/uploadtoken"
 	"github.com/nova-archive/nova/internal/config"
+	"github.com/nova-archive/nova/internal/config/reload"
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
@@ -251,6 +252,16 @@ func run() error {
 		_ = backend.Close(shutdownCtx)
 	}()
 
+	// Live config store (P2-M0.4): built only when an operator.yaml exists so the
+	// nil-store invariant holds in pure-env mode. reload.New applies the env
+	// overlay onto opCfg in-place (desirable — the running coordinator's other
+	// reads of opCfg/rc already incorporate env).
+	cfgPath := operatorConfigPath()
+	var cfgStore *reload.Store
+	if opCfg != nil && cfgPath != "" {
+		cfgStore = reload.New(opCfg, func(c *config.Config) { applyEnvOverridesTo(c, os.Getenv) }, envPinnedKeys(os.Getenv))
+	}
+
 	c, err := coordinator.New(pool, backend, ks, coordinator.Config{
 		ListenAddr:            listen,
 		Version:               version,
@@ -311,6 +322,8 @@ func run() error {
 				MaxFilesPerSession:      config.DefaultMaxFilesPerSession,
 			}
 		}(),
+		ConfigStore:    cfgStore,
+		ConfigFilePath: cfgPath,
 	})
 	if err != nil {
 		return fmt.Errorf("coordinator: %w", err)
@@ -517,16 +530,22 @@ func lookupBool(getenv func(string) string, key string) (val, ok bool) {
 	return v == "true", true
 }
 
-// loadOperatorConfigFile loads operator.yaml from NOVA_CONFIG_FILE (or
-// $NOVA_CONFIG_DIR/operator.yaml). Returns (nil, nil) when no path is
-// configured or the file is absent — the env-only path (full back-compat).
-func loadOperatorConfigFile() (*config.Config, error) {
+// operatorConfigPath returns the resolved operator.yaml path, or "" when none is configured.
+func operatorConfigPath() string {
 	path := os.Getenv("NOVA_CONFIG_FILE")
 	if path == "" {
 		if dir := os.Getenv("NOVA_CONFIG_DIR"); dir != "" {
 			path = filepath.Join(dir, "operator.yaml")
 		}
 	}
+	return path
+}
+
+// loadOperatorConfigFile loads operator.yaml from NOVA_CONFIG_FILE (or
+// $NOVA_CONFIG_DIR/operator.yaml). Returns (nil, nil) when no path is
+// configured or the file is absent — the env-only path (full back-compat).
+func loadOperatorConfigFile() (*config.Config, error) {
+	path := operatorConfigPath()
 	if path == "" {
 		return nil, nil
 	}
@@ -534,4 +553,49 @@ func loadOperatorConfigFile() (*config.Config, error) {
 		return nil, nil
 	}
 	return config.LoadFromFile(path)
+}
+
+// applyEnvOverridesTo re-applies NOVA_* overrides onto a config so env keeps
+// winning over yaml on every hot reload. Mirrors resolveOperatorConfig's env
+// reads. (The paranoid privacy-preset is resolved at boot and its dependent
+// fields are restart-effect, so it is intentionally not re-derived here.)
+func applyEnvOverridesTo(c *config.Config, getenv func(string) string) {
+	if v, ok := lookupBool(getenv, "NOVA_PUBLIC_UPLOADS"); ok {
+		c.Uploads.PublicUploads = v
+	}
+	if v := getenv("NOVA_TOS_URL"); v != "" {
+		c.TosURL = v
+	}
+	if v, ok := lookupBool(getenv, "NOVA_PARANOID"); ok {
+		c.Auth.Paranoid = v
+	}
+	if v := getenv("NOVA_AUTH_ISSUER_URL"); v != "" {
+		c.Auth.IssuerURL = v
+	}
+	if v := getenv("NOVA_AUTH_CLIENT_ID"); v != "" {
+		c.Auth.ClientID = v
+	}
+	if v := getenv("NOVA_MAX_UPLOAD_SIZE_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.Uploads.MaxUploadSizeBytes = n
+		}
+	}
+}
+
+// envPinnedKeys lists the dotted config keys currently overridden by NOVA_* env,
+// surfaced as source:"env" by the config admin API.
+func envPinnedKeys(getenv func(string) string) map[string]struct{} {
+	pins := map[string]struct{}{}
+	add := func(env, key string) {
+		if getenv(env) != "" {
+			pins[key] = struct{}{}
+		}
+	}
+	add("NOVA_PUBLIC_UPLOADS", "uploads.public_uploads")
+	add("NOVA_TOS_URL", "tos_url")
+	add("NOVA_PARANOID", "auth.paranoid")
+	add("NOVA_AUTH_ISSUER_URL", "auth.issuer_url")
+	add("NOVA_AUTH_CLIENT_ID", "auth.client_id")
+	add("NOVA_MAX_UPLOAD_SIZE_BYTES", "uploads.max_upload_size_bytes")
+	return pins
 }
