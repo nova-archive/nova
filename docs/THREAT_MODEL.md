@@ -299,6 +299,16 @@ encryption envelope.
   coordinator or donor binaries. There is no mechanism for an
   attacker to push a malicious update through Nova's own update
   channel because there is no update channel.
+- **`paranoid` is informed-consent, not fail-closed (P2-M0.2).** The
+  privacy preset (`docs/PRIVACY_AUDIT.md` § "paranoid: true mode") sets
+  protective defaults but lets an operator explicitly keep a side channel
+  (e.g. configured `webhooks`, `coordinator.record_source_ip: true`); that
+  choice is honoured with a startup warning rather than force-disabled.
+  **Implication:** under `paranoid`, an *explicitly configured* egress is
+  fail-open (active + warned), not silently suppressed — absent explicit
+  config the preset still yields no egress (the defaults are none). Legal
+  floors (T1.20 `tos_url`, `auth.anonymous` moderation) remain hard
+  refuse-to-start gates, excluded from this warn-not-force model.
 
 **Residual risk.** A compromised pinned dependency that is updated
 in a future release would still ship malicious code. Phase 5 ships

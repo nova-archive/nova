@@ -93,26 +93,50 @@ CT-log implication before completing.
 
 ## `paranoid: true` mode
 
-A single config switch in `operator.yaml` that disables every feature
-with theoretical phone-home behaviour. The matrix:
+`paranoid` is **default-off** and works as a *preset*, not a hard override
+(P2-M0.2). When enabled it sets protective **defaults** for the settings below;
+any value the operator set explicitly **wins**, and relaxing a protective
+default emits a consequence **warning** (coordinator startup log; surfaced
+inline in the admin Settings UI) rather than being silently overridden or
+refused. An operator can adopt the hardened posture and still make a
+deliberate, logged exception.
 
-| Feature | Default | `paranoid: true` |
+Two caveats: (1) defaulting off means none of these protections are active
+unless the operator opts in; (2) legal/safety floors are **not** part of this
+preset and still **refuse to start** when violated — see "Warn, don't force"
+below.
+
+| Setting | Default (paranoid off) | `paranoid: true` preset |
 |---|---|---|
-| ACME automation | Operator's chosen TLS mode | Off — operator must supply cert + key files |
-| Outbound webhooks | Honour `webhook_destinations` config | All disabled regardless of config |
-| Update checks | None (Nova has none) | Defense-in-depth: refuse to make any DNS lookup outside an operator-supplied allowlist |
-| Hostname allowlist | n/a | Pinning node's resolver answers only operator-allowlisted names |
-| Kubo hardening validator | Strict in private mode, relaxed in public-DHT mode | Strict regardless |
-| Public supporters page | Opt-in per donor, listed on `/supporters` | Disabled — no listing, no `/supporters` route |
+| Source-IP recording (`coordinator.record_source_ip`) | record (true) | off; **explicit `true` kept with a warning** |
+| Source-IP retention (`source_ip_retention_days`) | 30 days | 1 day; **higher explicit value kept with a warning** |
+| Outbound webhooks (`webhooks`) | honoured | none added; **explicit destinations kept with a warning** (egress stays active) |
+| Public IPFS DHT (`coordinator.public_ipfs_dht`) | private (false) | private; **enabling warned** |
+| ACME automation | operator's TLS mode | off — supply cert + key files (CT-log exposure) |
 | nginx access log retention | 30 days | ≤ 24 hours |
-| Source IP retention in `blobs.source_ip` | Operator-configured (default 30 days) | ≤ 24 hours |
-| OpenTelemetry export | Off by default; honoured if configured | Off regardless |
-| Prometheus metrics endpoint | Loopback-bound by default | Loopback-bound; disabled if operator tries to widen it |
+| OpenTelemetry export | off by default; honoured if configured | off |
+| Prometheus metrics endpoint | loopback-bound | loopback-bound; widening refused (defense-in-depth) |
+| Kubo hardening validator | strict (private) / relaxed (public-DHT) | strict |
+| Update checks / supporters page | none / opt-in | none / disabled |
 
-The mode is intended for operators who must demonstrate to their
-community that the deployment cannot phone home, and for
-deployments in adversarial environments. It does not weaken Nova's
-encryption or replication; it only constrains side channels.
+The first four rows are the operator-tunable privacy settings the preset
+governs with warn-not-force semantics. The remainder are enforced or
+informational defaults; metrics-exposure widening stays refused for now
+(defense-in-depth), to be folded into the tunable model in a later milestone.
+
+### Warn, don't force — and the hard floors
+
+The preset never *prevents the node from operating* because a privacy default
+was relaxed; it warns. The floors that **do** refuse to start are legal/abuse
+gates, not privacy preferences, and are unchanged:
+
+- `uploads.public_uploads: true` with no `tos_url` (T1.20).
+- `auth.anonymous: true` with no moderation flow.
+
+The mode is intended for operators who must demonstrate to their community that
+the deployment cannot phone home, and for deployments in adversarial
+environments. It does not weaken Nova's encryption or replication; it only
+constrains side channels.
 
 ## Specific telemetry concerns and their resolutions
 

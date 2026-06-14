@@ -226,8 +226,9 @@ a misconfiguration can over- or under-grant, so `viewer` is the unmapped default
 | Key | Default | Notes | Where documented |
 |---|---|---|---|
 | `coordinator.public_ipfs_dht` | `false` | opt-in for `nova-archive`-style public data | `KUBO_HARDENING.md` § "Public IPFS DHT mode" |
+| `coordinator.record_source_ip` | unset ⇒ record (the `paranoid` preset defaults it off) | tri-state `*bool`; an explicit value wins over the preset, decoupling source-IP recording from full paranoid (P2-M0.2) | `PRIVACY_AUDIT.md` § "paranoid: true mode" |
 | `tls.mode` | operator-prompted at first run | `http-01` / `dns-01` / `static` / `.onion` | `PRIVACY_AUDIT.md` § "TLS mode" |
-| `paranoid` | `false` | `true` strips OpenTelemetry, truncates logs, etc. | `PRIVACY_AUDIT.md` |
+| `paranoid` | `false` | **preset, not force** (P2-M0.2): sets protective privacy defaults; explicit operator values win and relaxing one only *warns* — it never refuses to start. Legal floors (T1.20, `auth.anonymous`) stay hard. | `PRIVACY_AUDIT.md` § "paranoid: true mode" |
 
 Tier 2 changes are normal operator decisions. They produce different
 deployments, not different protocol versions.
