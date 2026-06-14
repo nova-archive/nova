@@ -13,6 +13,9 @@
 //	novactl moderation list [--per-page <n>]
 //	novactl keys rotate-master --from v1 --to v2 [--no-confirm]
 //	novactl keys status
+//	novactl upload-token create [--label <s>] [--collection <uuid>] [--product <type>] [--max-file-size <bytes>] [--expires <dur>]
+//	novactl upload-token list
+//	novactl upload-token revoke <id> [--no-confirm]
 package main
 
 import (
@@ -1203,7 +1206,7 @@ func promptAnswers() (setup.Answers, error) {
 // --------------------------------------------------------------------------
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup> <subcommand>")
+	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup|upload-token> <subcommand>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth login [--url <base>] [--username <u>]")
@@ -1219,6 +1222,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  keys status")
 	fmt.Fprintln(os.Stderr, "  setup --config-file <path>   (first-run, non-interactive)")
 	fmt.Fprintln(os.Stderr, "  setup --interactive           (first-run, interactive prompts)")
+	fmt.Fprintln(os.Stderr, "  upload-token create [--label <s>] [--collection <uuid>] [--product <type>] [--max-file-size <bytes>] [--expires <dur>]")
+	fmt.Fprintln(os.Stderr, "  upload-token list")
+	fmt.Fprintln(os.Stderr, "  upload-token revoke <id> [--no-confirm]")
 }
 
 func main() {
@@ -1240,6 +1246,8 @@ func main() {
 		err = cmdKeys(os.Args[2:])
 	case "setup":
 		err = cmdSetup(args[1:])
+	case "upload-token":
+		err = cmdUploadToken(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()
