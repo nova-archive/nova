@@ -294,6 +294,12 @@ func run() error {
 		Widget: coordinator.WidgetConfig{
 			DistDir: os.Getenv("NOVA_WIDGET_DIST_DIR"),
 		},
+		CORS: func() config.CORS {
+			if opCfg != nil {
+				return opCfg.Uploads.CORS
+			}
+			return config.CORS{}
+		}(),
 	})
 	if err != nil {
 		return fmt.Errorf("coordinator: %w", err)

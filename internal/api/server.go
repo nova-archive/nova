@@ -11,6 +11,7 @@ import (
 	"github.com/nova-archive/nova/internal/api/middleware"
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/bearer"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/ratelimit"
 )
 
@@ -60,6 +61,7 @@ type ServerConfig struct {
 	AdminSPA        *handlers.AdminSPAHandler        // nil ⇒ /admin/* static unmounted
 	WidgetStatic    *handlers.WidgetStaticHandler    // nil ⇒ /widget/* static unmounted
 	Setup           *handlers.SetupHandler           // nil ⇒ /setup/* unmounted (normal mode)
+	CORSConfig      config.CORS                      // CORS for upload routes; disabled (zero) by default
 }
 
 // NewServer assembles the chi router with the M3 middleware stack and the
@@ -226,8 +228,13 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 			if cfg.Upload != nil {
 				mountUploads := func(r chi.Router) {
 					r.Route("/uploads", func(r chi.Router) {
+						// Explicit OPTIONS handlers so chi runs middleware for
+						// CORS preflights (chi only dispatches Use() middleware
+						// when a route is registered for the request method).
+						r.Options("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 						r.Post("/", cfg.Upload.CreateTus)
 						r.Route("/{id}", func(r chi.Router) {
+							r.Options("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 							r.Head("/", cfg.Upload.HeadTus)
 							r.Patch("/", cfg.Upload.PatchTus)
 							r.Delete("/", cfg.Upload.DeleteTus)
@@ -238,14 +245,21 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 					r.Post("/images", cfg.Upload.MultipartImage)
 				}
 
-				if cfg.PublicUploads {
-					r.Group(mountUploads)
-				} else {
-					r.Group(func(r chi.Router) {
-						r.Use(bearer.RequireRole("uploader", "moderator", "operator"))
+				// CORS middleware wraps BOTH branches so OPTIONS preflights
+				// are answered before the RequireRole auth guard runs. The
+				// parent bearer.Optional only hydrates identity (never rejects)
+				// so it is safe for it to wrap CORS.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.CORS(cfg.CORSConfig))
+					if cfg.PublicUploads {
 						mountUploads(r)
-					})
-				}
+					} else {
+						r.Group(func(r chi.Router) {
+							r.Use(bearer.RequireRole("uploader", "moderator", "operator"))
+							mountUploads(r)
+						})
+					}
+				})
 			}
 		})
 	})

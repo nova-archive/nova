@@ -29,6 +29,7 @@ import (
 	"github.com/nova-archive/nova/internal/auditlog"
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/signedurl"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
@@ -127,6 +128,11 @@ type Config struct {
 	// Widget configures coordinator-served upload-widget static assets (M12). An
 	// empty DistDir leaves /widget/* unmounted (the feature-gate posture).
 	Widget WidgetConfig
+
+	// CORS configures cross-origin resource sharing for the upload endpoint.
+	// Sourced from opCfg.Uploads.CORS when operator.yaml is loaded; zero/disabled
+	// by default so existing deployments are unaffected.
+	CORS config.CORS
 }
 
 // SignedURLConfig tunes the M7 signed-URL stack.
@@ -261,6 +267,7 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		Version:        cfg.Version,
 		Limiter:        limiter,
 		TrustedProxies: cfg.TrustedProxies,
+		CORSConfig:     cfg.CORS,
 	}
 	// auditW is the M9 audit_log writer; built when a pool is present and shared
 	// by the moderation stack (atomic WriteTx) and the M7 admin backfill (Write).
