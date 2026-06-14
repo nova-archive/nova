@@ -933,6 +933,22 @@ type UploadSession struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	ExpiresAt      time.Time
+	UploadTokenID  pgtype.UUID
+}
+
+type UploadToken struct {
+	ID           pgtype.UUID
+	TokenHash    string
+	Label        pgtype.Text
+	Role         UserRole
+	CollectionID pgtype.UUID
+	Product      NullBlobProduct
+	MaxFileSize  pgtype.Int8
+	ExpiresAt    pgtype.Timestamptz
+	CreatedBy    pgtype.UUID
+	CreatedAt    time.Time
+	LastUsedAt   pgtype.Timestamptz
+	RevokedAt    pgtype.Timestamptz
 }
 
 type User struct {

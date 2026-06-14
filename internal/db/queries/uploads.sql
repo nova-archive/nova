@@ -32,3 +32,6 @@ WHERE state = 'in_progress' AND expires_at < now();
 -- name: DeleteUploadSession :exec
 DELETE FROM upload_sessions
 WHERE id = $1 AND state = 'in_progress';
+
+-- name: SetUploadSessionToken :exec
+UPDATE upload_sessions SET upload_token_id = $2 WHERE id = $1;

@@ -159,3 +159,17 @@ func (q *Queries) ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID,
 	}
 	return items, nil
 }
+
+const setUploadSessionToken = `-- name: SetUploadSessionToken :exec
+UPDATE upload_sessions SET upload_token_id = $2 WHERE id = $1
+`
+
+type SetUploadSessionTokenParams struct {
+	ID            pgtype.UUID
+	UploadTokenID pgtype.UUID
+}
+
+func (q *Queries) SetUploadSessionToken(ctx context.Context, arg SetUploadSessionTokenParams) error {
+	_, err := q.db.Exec(ctx, setUploadSessionToken, arg.ID, arg.UploadTokenID)
+	return err
+}

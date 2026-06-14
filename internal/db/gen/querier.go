@@ -22,6 +22,7 @@ type Querier interface {
 	ClaimDEKsForRewrap(ctx context.Context, arg ClaimDEKsForRewrapParams) ([]ClaimDEKsForRewrapRow, error)
 	ClearModerationLegalHold(ctx context.Context, cid string) error
 	ClearScheduledTombstone(ctx context.Context, cid string) error
+	CountActiveSessionsByToken(ctx context.Context, uploadTokenID pgtype.UUID) (int64, error)
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
 	CountBlobs(ctx context.Context, arg CountBlobsParams) (int64, error)
@@ -32,6 +33,7 @@ type Querier interface {
 	CountModerationDecisions(ctx context.Context) (int64, error)
 	CountSigningKeysForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
 	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
+	CreateUploadToken(ctx context.Context, arg CreateUploadTokenParams) (UploadToken, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	DeleteBlocklist(ctx context.Context, cid string) error
 	// Splits the GC across the two partial indexes defined in migration 0006/0007
@@ -75,6 +77,7 @@ type Querier interface {
 	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
 	GetSigningKeyByKID(ctx context.Context, kid string) (GetSigningKeyByKIDRow, error)
 	GetUploadSession(ctx context.Context, id pgtype.UUID) (GetUploadSessionRow, error)
+	GetUploadTokenByID(ctx context.Context, id pgtype.UUID) (UploadToken, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
 	// Audit-log write + query queries (M9). See docs/specs/DATA_MODEL.sql.
@@ -128,6 +131,7 @@ type Querier interface {
 	// a retired-but-not-yet-shredded key still holds real wrapped bytes that would
 	// be orphaned if left under the retiring version.
 	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
+	ListUploadTokens(ctx context.Context) ([]ListUploadTokensRow, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
@@ -141,6 +145,7 @@ type Querier interface {
 	RetireVersion(ctx context.Context, versionLabel string) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id pgtype.UUID) error
 	RevokeRefreshTokenFamily(ctx context.Context, userID pgtype.UUID) error
+	RevokeUploadToken(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Atomic, version-guarded re-wrap: wrapped_key + master_key_version_id flip
 	// together; the old-version guard makes it idempotent and race-safe.
 	RewrapDEK(ctx context.Context, arg RewrapDEKParams) (int64, error)
@@ -158,9 +163,11 @@ type Querier interface {
 	SetBlobState(ctx context.Context, arg SetBlobStateParams) error
 	SetDEKLegalHoldForBlobTree(ctx context.Context, arg SetDEKLegalHoldForBlobTreeParams) error
 	SetDMCACaseActioned(ctx context.Context, id pgtype.UUID) error
+	SetUploadSessionToken(ctx context.Context, arg SetUploadSessionTokenParams) error
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	ShredDEKsForBlobTree(ctx context.Context, arg ShredDEKsForBlobTreeParams) error
 	ShredExpiredRetiredSigningKeys(ctx context.Context, wrappedKey []byte) error
+	TouchUploadTokenUsed(ctx context.Context, id pgtype.UUID) error
 	UpsertRepeatInfringer(ctx context.Context, userID pgtype.UUID) error
 }
 
