@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/nova-archive/nova/internal/api/httputil"
@@ -96,6 +99,172 @@ func (h *ConfigAdminHandler) Get(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// Update handles PATCH /api/v1/admin/config — partial-merge update.
+func (h *ConfigAdminHandler) Update(w http.ResponseWriter, r *http.Request) { h.apply(w, r, false) }
+
+// Replace handles PUT /api/v1/admin/config — full-replace update.
+func (h *ConfigAdminHandler) Replace(w http.ResponseWriter, r *http.Request) { h.apply(w, r, true) }
+
+// apply is the shared core for Update (PATCH) and Replace (PUT).
+// full=false ⇒ JSON Merge Patch semantics; full=true ⇒ full replace.
+func (h *ConfigAdminHandler) apply(w http.ResponseWriter, r *http.Request, full bool) {
+	rid := middleware.RequestIDFromContext(r.Context())
+
+	// Optimistic concurrency: If-Match absent ⇒ last-writer-wins; present + stale ⇒ 409.
+	if m := r.Header.Get("If-Match"); m != "" {
+		want, err := strconv.ParseUint(m, 10, 64)
+		if err != nil || want != h.store.Version() {
+			httputil.WriteError(w, http.StatusConflict, "config_conflict",
+				"config version changed; re-read and retry", rid)
+			return
+		}
+	}
+
+	var patch map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body", rid)
+		return
+	}
+
+	// Re-read on-disk so an out-of-band hand-edit is the merge base.
+	base, err := config.LoadFromFile(h.path)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", "read config", rid)
+		return
+	}
+	baseMap, err := config.ToMap(base)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", "render config", rid)
+		return
+	}
+
+	mergedMap := patch
+	if !full {
+		mergedMap = config.MergePatch(baseMap, patch)
+	}
+
+	// Validate + preset + defaults via the single load path.
+	validated, err := config.FromMap(mergedMap)
+	if err != nil {
+		httputil.WriteError(w, http.StatusUnprocessableEntity, "config_invalid", err.Error(), rid)
+		return
+	}
+
+	// Compute effective maps for diff BEFORE persisting (so we can compute
+	// restart_required even if WriteAtomic fails for some reason — but we
+	// only report it on success).
+	newEffMap, err := config.ToMap(validated)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", "render config", rid)
+		return
+	}
+
+	// Persist atomically BEFORE swapping the live snapshot.
+	// Nothing persists on validation failure (already returned 422 above).
+	if err := config.WriteAtomic(h.path, validated); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "internal", "persist config", rid)
+		return
+	}
+
+	restart := changedRestartFields(baseMap, newEffMap)
+	version := h.store.Swap(validated)
+	h.writeAudit(r, baseMap, newEffMap, version, restart)
+
+	liveMap, _ := config.ToMap(h.store.Load())
+	resp := map[string]any{
+		"version":          version,
+		"config":           liveMap,
+		"privacy_warnings": h.store.Load().PrivacyWarnings(),
+		"fields":           h.fieldsMeta(liveMap),
+		"restart_required": restart,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// changedRestartFields returns sorted dotted leaf paths that changed between
+// oldMap and newMap and whose effect is NOT effectLive (i.e. restart required).
+func changedRestartFields(oldMap, newMap map[string]any) []string {
+	oldLeaves := map[string]string{}
+	newLeaves := map[string]string{}
+	flattenLeaves("", oldMap, oldLeaves)
+	flattenLeaves("", newMap, newLeaves)
+
+	seen := map[string]bool{}
+	var restart []string
+	consider := func(path string) {
+		if seen[path] || effectFor(path) == effectLive {
+			return
+		}
+		seen[path] = true
+		restart = append(restart, path)
+	}
+	for path, nv := range newLeaves {
+		if oldLeaves[path] != nv {
+			consider(path)
+		}
+	}
+	for path := range oldLeaves {
+		if _, ok := newLeaves[path]; !ok {
+			consider(path)
+		}
+	}
+	sort.Strings(restart)
+	return restart
+}
+
+// flattenLeaves recursively walks v (expected to be map[string]any or scalar)
+// and populates out with dotted-path → fmt.Sprintf("%v", value) entries.
+func flattenLeaves(prefix string, v any, out map[string]string) {
+	if sub, ok := v.(map[string]any); ok {
+		for k, vv := range sub {
+			p := k
+			if prefix != "" {
+				p = prefix + "." + k
+			}
+			flattenLeaves(p, vv, out)
+		}
+		return
+	}
+	out[prefix] = fmt.Sprintf("%v", v)
+}
+
+// writeAudit emits a best-effort audit log entry for a successful config write.
+// It never fails the request — if h.audit is nil or the write errors, it's a no-op.
+func (h *ConfigAdminHandler) writeAudit(r *http.Request, oldMap, newMap map[string]any, version uint64, restart []string) {
+	if h.audit == nil {
+		return
+	}
+	// Build a minimal diff payload: changed leaf paths with old→new values.
+	oldLeaves := map[string]string{}
+	newLeaves := map[string]string{}
+	flattenLeaves("", oldMap, oldLeaves)
+	flattenLeaves("", newMap, newLeaves)
+	diff := map[string]any{}
+	for path, nv := range newLeaves {
+		if oldLeaves[path] != nv {
+			diff[path] = map[string]any{"from": oldLeaves[path], "to": nv}
+		}
+	}
+	for path := range oldLeaves {
+		if _, ok := newLeaves[path]; !ok {
+			diff[path] = map[string]any{"from": oldLeaves[path], "to": nil}
+		}
+	}
+	h.audit.Write(r.Context(), auditlog.Entry{
+		ActorID:    ownerFromContext(r.Context()),
+		Action:     "config.updated",
+		TargetType: "operator_yaml",
+		TargetID:   h.path,
+		Payload: map[string]any{
+			"version":          version,
+			"diff":             diff,
+			"restart_required": restart,
+		},
+	})
 }
 
 // fieldsMeta walks the leaf dotted paths of m and attaches effect + source.

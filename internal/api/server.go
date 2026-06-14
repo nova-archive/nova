@@ -229,9 +229,11 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 					r.With(bearer.RequireRole("operator")).Get("/upload-tokens", cfg.UploadTokensAdmin.List)
 					r.With(bearer.RequireRole("operator")).Delete("/upload-tokens/{id}", cfg.UploadTokensAdmin.Revoke)
 				}
-				// Config read (P2-M0.4); operator-only.
+				// Config read/update (P2-M0.4); operator-only.
 				if cfg.ConfigAdmin != nil {
 					r.With(bearer.RequireRole("operator")).Get("/config", cfg.ConfigAdmin.Get)
+					r.With(bearer.RequireRole("operator")).Patch("/config", cfg.ConfigAdmin.Update)
+					r.With(bearer.RequireRole("operator")).Put("/config", cfg.ConfigAdmin.Replace)
 				}
 				r.Handle("/*", http.HandlerFunc(adminNotFound))
 			})
