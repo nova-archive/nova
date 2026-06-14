@@ -11,13 +11,16 @@ interface NavEntry {
   roles?: Role[]
 }
 
+// Paths are relative to the router basename ("/admin"); react-router prepends
+// it when resolving NavLink hrefs. Hardcoding "/admin/…" here would
+// double-prefix to "/admin/admin/…" (matches no route → catch-all → Blobs).
 const NAV: NavEntry[] = [
-  { to: '/admin/blobs', label: 'Blobs', glyph: '◆' },
-  { to: '/admin/moderation', label: 'Moderation', glyph: '⚑' },
-  { to: '/admin/audits', label: 'Integrity', glyph: '◇' },
-  { to: '/admin/keys', label: 'Keys', glyph: '⚿', roles: ['operator'] },
-  { to: '/admin/jobs', label: 'Jobs', glyph: '↻' },
-  { to: '/admin/audit-log', label: 'Audit log', glyph: '☰' },
+  { to: '/blobs', label: 'Blobs', glyph: '◆' },
+  { to: '/moderation', label: 'Moderation', glyph: '⚑' },
+  { to: '/audits', label: 'Integrity', glyph: '◇' },
+  { to: '/keys', label: 'Keys', glyph: '⚿', roles: ['operator'] },
+  { to: '/jobs', label: 'Jobs', glyph: '↻' },
+  { to: '/audit-log', label: 'Audit log', glyph: '☰' },
 ]
 
 export function Shell() {
