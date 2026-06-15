@@ -58,3 +58,70 @@ func mustContain(t *testing.T, hay, needle string) {
 		t.Fatalf("missing %q in:\n%s", needle, hay)
 	}
 }
+
+func TestRenderOperatorYAML_PrivacyConstituents(t *testing.T) {
+	a := validAnswers()
+	rec := false
+	a.RecordSourceIP = &rec
+	a.SourceIPRetentionDays = 1
+	a.PublicIPFSDHT = false
+	a.Paranoid = true // fully hardened
+
+	out, err := RenderOperatorYAML(a)
+	if err != nil {
+		t.Fatalf("RenderOperatorYAML: %v", err)
+	}
+	cfg, err := config.LoadFromBytes(out)
+	if err != nil {
+		t.Fatalf("rendered operator.yaml does not load: %v\n%s", err, out)
+	}
+	if cfg.Coordinator.RecordSourceIP == nil || *cfg.Coordinator.RecordSourceIP {
+		t.Fatalf("record_source_ip: want explicit false, got %v", cfg.Coordinator.RecordSourceIP)
+	}
+	if cfg.SourceIPRetentionDays != 1 {
+		t.Fatalf("source_ip_retention_days: want 1, got %d", cfg.SourceIPRetentionDays)
+	}
+	if cfg.Coordinator.PublicIpfsDht {
+		t.Fatal("public_ipfs_dht: want false")
+	}
+	if w := cfg.PrivacyWarnings(); len(w) != 0 {
+		t.Fatalf("fully hardened must yield no privacy warnings, got %v", w)
+	}
+}
+
+func TestRenderOperatorYAML_RelaxedUnderParanoidWarns(t *testing.T) {
+	a := validAnswers()
+	rec := true // recording IPs while paranoid → warn (simulated drift)
+	a.RecordSourceIP = &rec
+	a.SourceIPRetentionDays = 30
+	a.PublicIPFSDHT = true
+	a.Paranoid = true
+
+	out, err := RenderOperatorYAML(a)
+	if err != nil {
+		t.Fatalf("RenderOperatorYAML: %v", err)
+	}
+	cfg, err := config.LoadFromBytes(out)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.PrivacyWarnings()) == 0 {
+		t.Fatal("relaxing protections under paranoid must warn")
+	}
+}
+
+func TestRenderOperatorYAML_OmittedConstituentsUnchanged(t *testing.T) {
+	// A payload that sets none of the new fields must render identically to a
+	// fresh validAnswers() render — the backward-compat invariant.
+	base, err := RenderOperatorYAML(validAnswers())
+	if err != nil {
+		t.Fatalf("base render: %v", err)
+	}
+	again, err := RenderOperatorYAML(validAnswers())
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if string(base) != string(again) {
+		t.Fatalf("omitted constituents changed the render:\n%s", again)
+	}
+}

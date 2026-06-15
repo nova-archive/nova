@@ -26,6 +26,15 @@ type Answers struct {
 	PublicUploads bool   `json:"public_uploads" yaml:"public_uploads"`
 	TosURL        string `json:"tos_url,omitempty" yaml:"tos_url,omitempty"`
 	Paranoid      bool   `json:"paranoid" yaml:"paranoid"`
+
+	// Privacy-preset constituents (M0.5). All optional: an omitted field keeps
+	// today's behavior — ApplyPrivacyPreset fills it from the paranoid preset.
+	// Real yaml tags (not `-`): a headless operator sets these in the answers
+	// file that `novactl setup` reads via yaml.Unmarshal (cmd/novactl/main.go:
+	// loadAnswersFile), matching every other Answers field.
+	RecordSourceIP        *bool `json:"record_source_ip,omitempty" yaml:"record_source_ip,omitempty"`
+	SourceIPRetentionDays int   `json:"source_ip_retention_days,omitempty" yaml:"source_ip_retention_days,omitempty"`
+	PublicIPFSDHT         bool  `json:"public_ipfs_dht,omitempty" yaml:"public_ipfs_dht,omitempty"`
 }
 
 const minPasswordLen = 12
@@ -61,6 +70,9 @@ func (a Answers) Validate() error {
 	}
 	if a.PublicUploads && a.TosURL == "" {
 		return fmt.Errorf("setup: public_uploads requires tos_url (T1.20)")
+	}
+	if a.SourceIPRetentionDays < 0 {
+		return fmt.Errorf("setup: source_ip_retention_days must be >= 0")
 	}
 	return nil
 }

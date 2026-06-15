@@ -50,12 +50,14 @@ func RenderOperatorYAML(a Answers) ([]byte, error) {
 			},
 		},
 		Coordinator: config.Coordinator{
-			PublicIpfsDht: false,
+			PublicIpfsDht:  a.PublicIPFSDHT,
+			RecordSourceIP: a.RecordSourceIP,
 		},
 		Uploads: config.Uploads{
 			PublicUploads: a.PublicUploads,
 		},
-		TosURL: a.TosURL,
+		SourceIPRetentionDays: a.SourceIPRetentionDays,
+		TosURL:                a.TosURL,
 	}
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
