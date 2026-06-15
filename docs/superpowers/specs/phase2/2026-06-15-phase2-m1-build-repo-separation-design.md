@@ -44,7 +44,12 @@ placement; supply-chain depth).
   should make the safe thing mechanically obvious rather than relying on the CI gate
   to catch a future re-pollution of a shared operator package. The resolver is
   genuinely generic (env → `_FILE` → mount), so it is *extracted* (one home), not
-  *duplicated*.
+  *duplicated*. **`ResolveSecret` returns secret *contents***, not paths — so it is
+  the wrong tool for `node.yaml`'s `*_path` fields. M1 extracts it for coordinator
+  reuse and to pre-position the shared leaf; the donor begins *using* it to read
+  cert/key/swarm **material** (honoring env/`_FILE`/mount precedence) from **M2**,
+  when material is actually loaded. In M1 `cmd/node` may not import it at all (the
+  allowlist permits it regardless).
 - **Supply chain: stand up the real CI pipeline now; volunteer docs at M7.** M1
   authors the blocking `donor-deps-boundary` job, a `donor-build` job, and a
   `donor-sbom-sign` job (syft SBOM + cosign **keyless/OIDC** signing + GitHub
@@ -99,14 +104,22 @@ The milestone exists to make this true and keep it true:
 > The `cmd/node` build graph contains **no operator-only code**.
 
 Mechanically enforced by `scripts/check_node_deps.sh`, run as a **blocking** CI job
-(`donor-deps-boundary`): it computes `go list -deps ./cmd/node` and fails if the
-graph contains any disallowed root. We use an **allowlist** of expected donor-safe
-roots (deny-by-default) rather than a denylist, so a newly added operator package is
-rejected by default instead of silently slipping through.
+(`donor-deps-boundary`). It lists the **non-stdlib** import paths of the donor graph
+and compares them against allowed prefixes (deny-by-default), so a newly added
+operator package is rejected by default instead of silently slipping through:
+
+```sh
+go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./cmd/node
+# drop empty lines (stdlib), then fail if any path lacks an allowed prefix
+```
+
+Filtering on `.Standard` keeps stdlib out of the comparison so the allowlist only
+governs first-party + third-party roots.
 
 - **Disallowed (operator-only):** `internal/masterkey`, `internal/moderation`,
   `internal/auth`, `internal/setup`, `internal/db`, **`internal/config`**,
-  `internal/api/handlers/admin*`, `nova-image`, `pkg/coordinator`.
+  **`internal/api`** (the whole tree — the donor reuses no operator API middleware;
+  its health endpoint is stdlib `net/http`), `nova-image`, `pkg/coordinator`.
 - **Allowed (donor-safe leaves):** `internal/secret`, `internal/node/*`,
   `internal/federation/wire`, plus stdlib and a minimal vetted third-party set
   (`gopkg.in/yaml.v3` for config; `crypto/ed25519` is stdlib). The M1 health
@@ -153,16 +166,31 @@ internal/
   normalized error codes including the machine-readable `snapshot_required` (D7); and
   the **Ed25519 repair-token claim** struct (`jti`, `assignment_id`, `generation`,
   `cid`, `source_node_id`, `dest_node_id`, `not_before`, `not_after`, `max_bytes`,
-  `protocol_version`) plus `Verify(pub, token)` (signature + time-window + structural
-  validity, stdlib `crypto/ed25519`). **Minting is coordinator-side and lands in
-  M4**; single-use replay enforcement is source-side state and is wired in M4 — M1
-  ships the verifiable type so both binaries agree on the wire shape now.
+  `protocol_version`) with a **canonical, testable token format** so verification
+  never depends on ad-hoc marshal ordering:
+
+  ```
+  token            = base64url(claims_json) "." base64url(ed25519_sig)
+  signature_input  = base64url(claims_json)          # the exact left segment, verbatim
+  claims_json      = json.Marshal(Claims{...})       # deterministic: fixed struct field order
+  ```
+
+  `Verify(pub, token)` splits on `.`, base64url-decodes the signature, verifies
+  Ed25519 **over the received claims segment bytes** (it does *not* re-marshal),
+  *then* decodes the claims and checks structural validity + the `not_before`/
+  `not_after` window against a passed-in clock. To stay ultra-minimal, M1 treats
+  `assignment_id`, the node IDs, and `cid` as **non-empty opaque strings** — no
+  `go-cid`/UUID parsing enters the donor graph (deeper structural parsing lands when
+  transfer/register code needs it). **`Verify` does NOT enforce replay** —
+  single-use `jti` enforcement is source-side state (the `state` store) and is wired
+  in **M4**; **minting is coordinator-side, also M4**. M1 ships only the verifiable
+  type so both binaries agree on the wire shape now.
 - **`internal/node/*`** — see Decisions. `bandwidth` is real; the rest are
   interfaces with stub implementations and compile-time conformance assertions.
 
 ## Runtime behavior in M1
 
-`nova-node` accepts `--config <path>` and `--validate`.
+`nova-node` accepts `--config <path>`, `--validate`, and `--healthcheck`.
 
 - `nova-node --validate --config node.yaml` loads + validates and exits: `0` on a
   valid config, non-zero with a clear diagnostic on a malformed/incomplete one. This
@@ -172,16 +200,23 @@ internal/
   endpoint to `health_listen_addr` (default loopback), starts the **no-op** agent
   loop, and blocks until a termination signal — mirroring `cmd/coordinator`'s
   signal-driven lifecycle. No outbound connections, no Nebula, no Kubo.
+- `nova-node --healthcheck --config node.yaml` performs a GET against the configured
+  `health_listen_addr` and exits `0`/non-zero. This is the **container healthcheck**
+  — the binary checks itself, so the image needs no `curl`/`wget` (keeping the
+  runtime layer to `nova-node` + CA certs).
 
 ## Donor config (`node.yaml`)
 
-`internal/node/config` defines and validates the donor configuration; secrets
-resolve through `internal/secret.ResolveSecret`. Fields:
+`internal/node/config` defines and validates the donor configuration. **All secret
+material is referenced by explicit `*_path` fields** — `node.yaml` carries
+*filesystem paths*, never inline secret bytes. (Reading the *contents* of those
+files happens at use time from M2; M1 only validates the references.) Fields:
 
 - `coordinator_url` — the coordinator federation endpoint (used from M2).
-- `federation_cert` / `federation_key`, `nebula_cert` / `nebula_key` — paths; the
-  two-cert model (Nebula authorizes the overlay, federation authorizes the HTTP API).
-- `swarm_key` — the private-IPFS swarm key path.
+- `federation_cert_path` / `federation_key_path`, `nebula_cert_path` /
+  `nebula_key_path` — the two-cert model (Nebula authorizes the overlay, federation
+  authorizes the HTTP API).
+- `swarm_key_path` — the private-IPFS swarm key file.
 - `storage_dir` — where the donor will hold replica ciphertext.
 - `bandwidth_budget_bytes_per_day` — the authoritative budget feeding the
   token-bucket.
@@ -190,10 +225,13 @@ resolve through `internal/secret.ResolveSecret`. Fields:
   coordinator (D8) — informational at the donor.
 - `health_listen_addr` — default loopback (see Runtime behavior).
 
-Validation **refuses to start** on: missing cert/key paths, missing swarm key,
-missing/empty `storage_dir`, non-positive `bandwidth_budget_bytes_per_day`, or
-malformed YAML. Table-driven tests cover the minimal-valid case and each
-missing-required field.
+Validation is deliberately **shallow** so a build-boundary milestone does not become
+a cert-provisioning milestone. It **refuses to start** when: a required field is
+absent; a `*_path` does not exist, is not readable, or is a directory; the budget is
+non-positive; `storage_dir` does not exist *and* cannot be created; or the YAML is
+malformed. It explicitly does **not** parse PEM/cert chains, require Nebula to be
+running, or open Kubo/IPFS. Table-driven tests cover the minimal-valid case and each
+failure mode.
 
 ## Artifact & deployment
 
@@ -201,10 +239,15 @@ missing-required field.
   (contents unchanged) so the two images build independently; update
   `make docker-build`, `scripts/smoke.sh`, and the compose `build:` context to the
   new path. Add `docker/node.Dockerfile`: multi-stage, **CGO-off pure-Go** (no
-  libvips), runtime layer containing only `nova-node` + CA certs + a minimal health
-  tool. Non-root; read-only rootfs; `cap_drop: [ALL]`; `no-new-privileges`; a single
+  libvips), runtime layer containing only `nova-node` + CA certs. The container
+  `HEALTHCHECK` invokes `nova-node --healthcheck` (no `curl`/`wget` in the image).
+  Non-root; read-only rootfs; `cap_drop: [ALL]`; `no-new-privileges`; a single
   writable data volume. The image contains **none** of: libvips, Node/web bundles,
   `migrate`, `novactl`, Postgres client, master-key code, or operator secret paths.
+  This "absence" is **verified, not asserted**: the `donor-build` job inspects the
+  built image (syft SBOM + an exported-rootfs file scan) and **fails** if any
+  forbidden artifact appears (`*libvips*`/`*.so` beyond the Go binary's needs, a
+  `node`/web bundle, `novactl`, `migrate`, master-key paths).
 - **`deploy/donor/`.** `compose.yaml` brings up a Nebula sidecar (host/shared-netns
   process — `nova-node` needs no `NET_ADMIN`) plus `nova-node`, with **no published
   ports** and the M14 hardening floors (healthcheck, read-only rootfs + tmpfs,
@@ -217,16 +260,27 @@ missing-required field.
 Three CI jobs in `.github/workflows/ci.yml`:
 
 - `donor-deps-boundary` — runs `scripts/check_node_deps.sh`; **blocking**.
-- `donor-build` — builds the donor image from `docker/node.Dockerfile`.
-- `donor-sbom-sign` — generates a per-image SBOM with **syft**, signs the image with
-  **cosign keyless/OIDC**, and attaches a GitHub provenance attestation.
+- `donor-build` — builds the donor image from `docker/node.Dockerfile`; generates
+  the syft SBOM; runs the forbidden-inventory scan. Runs on **all** events (push +
+  PR), no registry access.
+- `donor-sbom-sign` — pushes the image **by digest** to the registry and signs that
+  digest. Concrete policy:
+  - **Registry/ref:** `ghcr.io/nova-archive/nova-node`, tagged `sha-${GITHUB_SHA}`;
+    the image is pushed by digest and `cosign sign --yes
+    ghcr.io/nova-archive/nova-node@sha256:<digest>` signs that digest; the SBOM +
+    provenance attestation attach to the same digest.
+  - **Condition (trusted ref only):** `if: github.event_name == 'push' &&
+    github.ref == 'refs/heads/main'`. **Pull requests build + SBOM but never push or
+    sign** (untrusted refs must not mint signatures).
+  - **Permissions:** `contents: read`, `id-token: write`, `packages: write`,
+    `attestations: write`.
 
 What is verifiable in the local (no-push) workflow: the boundary script, the image
-build, and `make node-sbom` (syft). Keyless signing is authored and is exercised the
-first time CI runs on a pushed branch. The single release-trust path is keyless/OIDC;
-M1 adds **no** local key-pair signing. A high-level release-trust note goes in the
-donor docs stub; the full volunteer-facing digest-pin + `cosign verify` walkthrough
-is **P2-M7**.
+build, the forbidden-inventory scan, and `make node-sbom` (syft). Keyless signing +
+registry push are authored and exercised the first time CI runs on `main`. The
+single release-trust path is keyless/OIDC; M1 adds **no** local key-pair signing. A
+high-level release-trust note goes in the donor docs stub; the full volunteer-facing
+digest-pin + `cosign verify` walkthrough is **P2-M7**.
 
 ## Forward-compatibility (post-1.0 HA, named not built)
 
@@ -241,16 +295,19 @@ the wire shape so those land additively later.
 
 - **Unit.** `internal/secret` resolver table (moved, must stay green);
   `internal/federation/wire` token `Verify` table (valid / expired / not-yet-valid /
-  wrong-key / tampered-claim / replayed-`jti` shape) and capability negotiation
-  (overlap → select; disjoint → fail-closed); `internal/node/config` validation
-  table; `internal/node/bandwidth` token-bucket arithmetic (refill, take,
-  refuse-over-budget); `cmd/node` `--validate` exit codes (good/bad config), mirroring
-  `cmd/coordinator/main_test.go` and `cmd/novactl/main_test.go`.
+  wrong-key / tampered-claim / missing-`jti` / malformed-token — **no replay test;
+  that is M4**) and capability negotiation (overlap → select; disjoint →
+  fail-closed); `internal/node/config` validation table; `internal/node/bandwidth`
+  token-bucket arithmetic (refill, take, refuse-over-budget); `cmd/node`
+  `--validate` exit codes (good/bad config), mirroring `cmd/coordinator/main_test.go`
+  and `cmd/novactl/main_test.go`.
 - **Boundary.** `donor-deps-boundary` green on the branch; demonstrated red against a
   reverted injected operator-only import.
-- **Build/CI.** `donor-build` produces an image; `donor-sbom-sign` emits an SBOM +
-  signature on push; `go build ./... && go vet ./...` stay green; the coordinator
-  `scripts/smoke.sh` is unaffected by the Dockerfile rename.
+- **Build/CI.** `donor-build` produces an image and its forbidden-inventory scan
+  passes (and is demonstrated to fail if a forbidden artifact is injected);
+  `donor-sbom-sign` emits an SBOM + keyless signature on push to `main`; `go build
+  ./... && go vet ./...` stay green; the coordinator `scripts/smoke.sh` is unaffected
+  by the Dockerfile rename.
 
 ## Exit criteria
 
