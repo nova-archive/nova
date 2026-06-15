@@ -135,6 +135,19 @@ values to `operator.yaml` and produces **no** `ApplyPrivacyPreset` startup
 warnings; warnings remain the signal for hand-edited drift from a protective
 default.
 
+### Admin Settings screen surface (P2-M0.6)
+
+The admin console's operator-only **Settings** screen now surfaces the same three
+constituents at *runtime* with the same consequence copy (see
+`docs/superpowers/specs/2026-06-15-m0.6-settings-screen-design.md`), driving the
+M0.4 config API. Because runtime nodes — unlike first run — can have outbound
+webhooks configured, the screen derives `auth.paranoid` as the AND of the three
+hardened children **and** an empty `webhooks` list, and renders the parent
+indeterminate when webhooks exist; so a save can never trip an `ApplyPrivacyPreset`
+warning. Saving resolves drift from the editable constituents; a
+webhook-induced warning persists until `webhooks` is cleared via `novactl config`
+or a hand-edit.
+
 ### Warn, don't force — and the hard floors
 
 The preset never *prevents the node from operating* because a privacy default

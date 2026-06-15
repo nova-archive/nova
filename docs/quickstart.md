@@ -291,6 +291,14 @@ Sign in with the admin email and password you gave the wizard. From
 there you can browse and delete blobs, inspect audit results, and run
 key rotation.
 
+The **Settings** screen (operator-only) tunes a *running* node against
+the same config backend as `novactl config`: live upload limits and CORS
+apply immediately; privacy posture (source-IP recording, retention,
+public-DHT) and public-uploads/ToS are restart-class and the screen says
+so per field. It also shows the full effective config read-only with
+live/restart/env badges. The long tail (auth, TLS, moderation) stays on
+`novactl config set/apply` — see below.
+
 The admin vhost is bound to `127.0.0.1` on the host by default — it is
 not reachable from the network, on purpose. To use it remotely, prefer
 an SSH tunnel:
