@@ -136,6 +136,38 @@ func getJSON(client *http.Client, url, bearerToken string) (*http.Response, erro
 	return client.Do(req)
 }
 
+func patchJSON(client *http.Client, url string, body any, bearerToken string) (*http.Response, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
+	return client.Do(req)
+}
+
+func putJSON(client *http.Client, url string, body any, bearerToken string) (*http.Response, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
+	return client.Do(req)
+}
+
 // apiError is the JSON error envelope the coordinator returns.
 type apiError struct {
 	Code    string `json:"code"`
@@ -1206,7 +1238,7 @@ func promptAnswers() (setup.Answers, error) {
 // --------------------------------------------------------------------------
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup|upload-token> <subcommand>")
+	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup|upload-token|config> <subcommand>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth login [--url <base>] [--username <u>]")
@@ -1225,6 +1257,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  upload-token create [--label <s>] [--collection <uuid>] [--product <type>] [--max-file-size <bytes>] [--expires <dur>]")
 	fmt.Fprintln(os.Stderr, "  upload-token list")
 	fmt.Fprintln(os.Stderr, "  upload-token revoke <id> [--no-confirm]")
+	fmt.Fprintln(os.Stderr, "  config get [--effects]")
+	fmt.Fprintln(os.Stderr, "  config set <dotted.key> <value> [--json]")
+	fmt.Fprintln(os.Stderr, "  config apply --config-file <path>")
 }
 
 func main() {
@@ -1248,6 +1283,8 @@ func main() {
 		err = cmdSetup(args[1:])
 	case "upload-token":
 		err = cmdUploadToken(args[1:])
+	case "config":
+		err = cmdConfig(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()
