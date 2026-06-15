@@ -17,14 +17,14 @@ describe('createApi config methods', () => {
 
   it('patchConfig sends an If-Match header when a version is given', async () => {
     const fetcher = vi.fn(
-      async () =>
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response(JSON.stringify({ version: 4, config: {}, privacy_warnings: [], fields: {} }), {
           status: 200,
         }),
     )
     const api = createApi(fetcher as unknown as typeof fetch)
     await api.patchConfig({ tos_url: 'https://x' }, 3)
-    const [, init] = fetcher.mock.calls[0]
+    const init = fetcher.mock.calls[0][1]!
     expect(init.method).toBe('PATCH')
     expect((init.headers as Record<string, string>)['If-Match']).toBe('3')
     expect(JSON.parse(init.body as string)).toEqual({ tos_url: 'https://x' })
