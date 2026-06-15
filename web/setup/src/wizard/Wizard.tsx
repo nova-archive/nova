@@ -3,6 +3,8 @@ import { ApiError, createSetupApi, type MasterKey, type SetupApi } from '../api/
 import { buildBackupContent } from '../backup'
 import { initialForm, toAnswers, type FormState, type TLSMode } from './types'
 import s from './wizard.module.css'
+import { InfoTerm } from './InfoTerm'
+import { ParanoidSection, type ParanoidState } from './ParanoidSection'
 
 // The linear stepper. Each step is a self-contained render; navigation is gated
 // by per-step `canNext`. The master-key step's readback gate (typed fingerprint
@@ -12,11 +14,10 @@ const STEPS = [
   'token',
   'welcome',
   'master-key',
-  'keys',
   'admin',
   'tls',
-  'tos',
-  'paranoid',
+  'public-uploads',
+  'privacy',
   'review',
   'commit',
   'orientation',
@@ -27,8 +28,8 @@ const MIN_PASSWORD = 12
 
 const TLS_NOTES: Record<TLSMode, string> = {
   'dev-self-signed': 'Local-only self-signed certificate. Browsers will warn; fine for testing.',
-  'http-01': 'Let’s Encrypt over HTTP-01 — your hostname is published to public Certificate Transparency logs.',
-  'dns-01': 'Let’s Encrypt over DNS-01 — requires manual operator steps after setup.',
+  'http-01': "Let’s Encrypt over HTTP-01 — your hostname is published to public Certificate Transparency logs.",
+  'dns-01': "Let’s Encrypt over DNS-01 — requires manual operator steps after setup.",
   static: 'Bring your own certificate and key files.',
   onion: 'Tor onion service — requires manual operator steps after setup.',
 }
@@ -120,7 +121,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         if (form.tls_mode === 'static')
           return form.cert_path.trim().length > 0 && form.key_path.trim().length > 0
         return true
-      case 'tos':
+      case 'public-uploads':
         return form.public_uploads ? form.tos_url.trim().length > 0 : true
       default:
         return true
@@ -216,7 +217,8 @@ export function Wizard({ api: injected }: WizardProps = {}) {
             <h1 className={s.h}>Bootstrap token</h1>
             <div className={s.step}>Step 1 · Bootstrap token</div>
             <p className={s.lead}>
-              Setup is locked to whoever holds this node’s bootstrap token. Paste it below to
+              Setup is locked to whoever holds this node&apos;s{' '}
+              <InfoTerm id="bootstrap-token">bootstrap token</InfoTerm>. Paste it below to
               authorize this wizard — every setup request carries it.
             </p>
 
@@ -246,9 +248,9 @@ export function Wizard({ api: injected }: WizardProps = {}) {
             <h1 className={s.h}>Welcome to Nova</h1>
             <div className={s.step}>Step 2 · Welcome</div>
             <p className={s.lead}>
-              This wizard configures your Nova node’s first run: it generates your master key,
+              This wizard configures your Nova node&apos;s first run: it generates your master key,
               creates the operator account, and writes <span className={s.mono}>operator.yaml</span>.
-              You’ll only do this once.
+              You&apos;ll only do this once.
             </p>
             <p className={s.hint}>
               Nova is released under its project license. By continuing you agree to operate this
@@ -297,8 +299,9 @@ export function Wizard({ api: injected }: WizardProps = {}) {
             <h1 className={s.h}>Your master key</h1>
             <div className={s.step}>Step 3 · Master key</div>
             <p className={s.lead}>
-              This key encrypts your node’s secrets and <strong>cannot be recovered</strong>. Save
-              the backup file somewhere safe, then type the fingerprint below to confirm you have it.
+              This <InfoTerm id="master-key">master key</InfoTerm> encrypts your node&apos;s secrets
+              and <strong>cannot be recovered</strong>. Save the backup file somewhere safe, then
+              type the <InfoTerm id="fingerprint">fingerprint</InfoTerm> below to confirm you have it.
             </p>
 
             {keyErr && <div className={s.banner} role="alert">{keyErr}</div>}
@@ -338,23 +341,12 @@ export function Wizard({ api: injected }: WizardProps = {}) {
                     {fingerprintMatches ? 'Fingerprint matches.' : 'Next stays disabled until this matches.'}
                   </span>
                 </label>
+                <p className={s.hint}>
+                  Your swarm identity and content-signing keys are generated and sealed
+                  automatically when you commit — nothing to enter.
+                </p>
               </>
             )}
-          </>
-        )
-
-      case 'keys':
-        return (
-          <>
-            <h1 className={s.h}>Node keys</h1>
-            <div className={s.step}>Step 4 · Keys</div>
-            <p className={s.lead}>
-              Your swarm identity and content-signing keys are generated automatically and sealed
-              with your master key when you commit. There’s nothing to enter here.
-            </p>
-            <p className={s.hint}>
-              These keys live only on this node. Losing your master key means losing access to them.
-            </p>
           </>
         )
 
@@ -362,7 +354,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Operator account</h1>
-            <div className={s.step}>Step 5 · Admin user</div>
+            <div className={s.step}>Step 4 · Admin user</div>
             <p className={s.lead}>The first operator can sign in to the admin console at /admin.</p>
 
             <label className={s.field}>
@@ -400,8 +392,11 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>TLS &amp; certificates</h1>
-            <div className={s.step}>Step 6 · TLS mode</div>
-            <p className={s.lead}>How should Nova obtain its HTTPS certificate?</p>
+            <div className={s.step}>Step 5 · TLS mode</div>
+            <p className={s.lead}>
+              How should Nova obtain its{' '}
+              <InfoTerm id="tls-mode">HTTPS certificate</InfoTerm>?
+            </p>
 
             <label className={s.field}>
               <span className={s.lbl}>TLS mode</span>
@@ -446,14 +441,15 @@ export function Wizard({ api: injected }: WizardProps = {}) {
           </>
         )
 
-      case 'tos':
+      case 'public-uploads':
         return (
           <>
             <h1 className={s.h}>Public uploads</h1>
-            <div className={s.step}>Step 7 · Terms of service</div>
+            <div className={s.step}>Step 6 · Public uploads</div>
             <p className={s.lead}>
-              Allow anyone to upload through your node’s public widget? If enabled, you must publish
-              a terms-of-service URL (T1.20).
+              Allow anyone to upload through your node&apos;s{' '}
+              <InfoTerm id="public-uploads">public widget</InfoTerm>? If enabled, you must publish a{' '}
+              <InfoTerm id="tos">terms-of-service URL</InfoTerm> (T1.20).
             </p>
 
             <label className={s.toggle}>
@@ -480,26 +476,24 @@ export function Wizard({ api: injected }: WizardProps = {}) {
           </>
         )
 
-      case 'paranoid':
+      case 'privacy':
         return (
           <>
-            <h1 className={s.h}>Paranoid mode</h1>
-            <div className={s.step}>Step 8 · Paranoid</div>
+            <h1 className={s.h}>Privacy &amp; hardening</h1>
+            <div className={s.step}>Step 7 · Privacy &amp; hardening</div>
             <p className={s.lead}>
-              Hardened defaults for hostile environments.
+              Nova ships with privacy-protective defaults. Hardening tightens what metadata this
+              node keeps and exposes — at some cost to diagnostics and discoverability.
             </p>
-            <label className={s.toggle}>
-              <input
-                type="checkbox"
-                checked={form.paranoid}
-                onChange={(e) => set('paranoid', e.target.checked)}
-              />
-              <span className={s.lbl}>Enable paranoid mode</span>
-            </label>
-            <span className={s.hint}>
-              Tightens metadata exposure and rate limits at the cost of some convenience and
-              throughput. You can revisit this in operator.yaml later.
-            </span>
+            <ParanoidSection
+              value={{
+                hardenNoIPRecording: form.hardenNoIPRecording,
+                hardenShortRetention: form.hardenShortRetention,
+                hardenPrivateDHT: form.hardenPrivateDHT,
+              }}
+              onChange={(next: ParanoidState) => setForm((f) => ({ ...f, ...next }))}
+            />
+            <span className={s.hint}>You can change any of this later in Admin → Settings.</span>
           </>
         )
 
@@ -507,7 +501,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Review</h1>
-            <div className={s.step}>Step 9 · Review</div>
+            <div className={s.step}>Step 8 · Review</div>
             <p className={s.lead}>Confirm your choices. Secrets (password, master key) are not shown.</p>
 
             {submitErr && <div className={s.banner} role="alert">{submitErr}</div>}
@@ -523,7 +517,22 @@ export function Wizard({ api: injected }: WizardProps = {}) {
               <Row k="Auth mode" v={form.auth_mode} />
               <Row k="Public uploads" v={form.public_uploads ? 'on' : 'off'} />
               {form.public_uploads && <Row k="ToS URL" v={form.tos_url || '—'} />}
-              <Row k="Paranoid" v={form.paranoid ? 'on' : 'off'} />
+              <Row k="Record uploader IPs" v={form.hardenNoIPRecording ? 'no' : 'yes'} />
+              <Row
+                k="IP-log retention"
+                v={form.hardenNoIPRecording ? 'n/a' : form.hardenShortRetention ? '1 day' : '30 days'}
+              />
+              <Row k="Public IPFS DHT" v={form.hardenPrivateDHT ? 'private' : 'public'} />
+              <Row
+                k="Hardening"
+                v={
+                  form.hardenNoIPRecording && form.hardenShortRetention && form.hardenPrivateDHT
+                    ? 'full (paranoid)'
+                    : form.hardenNoIPRecording || form.hardenShortRetention || form.hardenPrivateDHT
+                      ? 'partial'
+                      : 'off'
+                }
+              />
             </div>
           </>
         )
@@ -532,13 +541,13 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>Commit</h1>
-            <div className={s.step}>Step 10 · Commit</div>
+            <div className={s.step}>Step 9 · Commit</div>
             <p className={s.lead}>
               Committing writes <span className={s.mono}>operator.yaml</span>, creates your operator
               account, and seals the generated keys with your master key. This finalizes setup.
             </p>
             {submitErr && <div className={s.banner} role="alert">{submitErr}</div>}
-            <p className={s.hint}>Make sure you’ve backed up your master key — it cannot be recovered.</p>
+            <p className={s.hint}>Make sure you&apos;ve backed up your master key — it cannot be recovered.</p>
           </>
         )
 
@@ -546,7 +555,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
         return (
           <>
             <h1 className={s.h}>You’re live</h1>
-            <div className={s.step}>Step 11 · Orientation</div>
+            <div className={s.step}>Step 10 · Orientation</div>
             <p className={s.lead}>
               Setup is complete. Sign in to the operator console at{' '}
               <a className={s.mono} href="/admin">/admin</a>.
@@ -561,7 +570,7 @@ export function Wizard({ api: injected }: WizardProps = {}) {
               onto the widget or click it to choose one — uploads go straight to this node.
             </p>
             <p className={s.warn}>
-              Reminder: store your master-key backup offline. If you lose it, your node’s sealed
+              Reminder: store your master-key backup offline. If you lose it, your node&apos;s sealed
               secrets are unrecoverable.
             </p>
           </>

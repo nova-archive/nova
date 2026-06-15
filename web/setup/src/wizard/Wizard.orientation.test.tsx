@@ -46,34 +46,31 @@ describe('wizard drives to orientation', () => {
     })
     await clickNext()
 
-    // 4 · Keys (informational)
-    await clickNext()
-
-    // 5 · Admin user
+    // 4 · Admin user
     fireEvent.change(screen.getByLabelText('Admin email'), { target: { value: 'op@example.org' } })
     fireEvent.change(screen.getByLabelText('Admin password'), {
       target: { value: 'a-very-strong-password' },
     })
     await clickNext()
 
-    // 6 · TLS (default dev-self-signed is valid)
+    // 5 · TLS (default dev-self-signed is valid)
     await clickNext()
 
-    // 7 · ToS / public uploads (off → no tos_url required)
+    // 6 · Public uploads (off → no tos_url required)
     await clickNext()
 
-    // 8 · Paranoid
+    // 7 · Privacy & hardening
     await clickNext()
 
-    // 9 · Review → submitAnswers
+    // 8 · Review → submitAnswers
     await screen.findByText('Review')
     await clickNext()
 
-    // 10 · Commit → commit
+    // 9 · Commit → commit
     await screen.findByText('Commit')
     await clickNext()
 
-    // 11 · Orientation
+    // 10 · Orientation
     await screen.findByText('You’re live')
     const snippet = screen.getByTestId('widget-snippet')
     expect(snippet).toHaveTextContent('nova-upload-widget.js')
