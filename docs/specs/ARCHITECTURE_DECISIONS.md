@@ -105,7 +105,7 @@ cannot opt out.
 | T1.22 | No telemetry, no phone-home, no auto-update channel in coordinator or donor binaries | `THREAT_MODEL.md` § G; `PRIVACY_AUDIT.md` |
 | T1.23 | Admin SPA bundle has no third-party CDN assets at runtime; CI lint enforces | `THREAT_MODEL.md` § D |
 | T1.24 | `audit_log` is append-only at the application layer; every privileged action is logged | `THREAT_MODEL.md` § B |
-| T1.31 | Admin-minted **upload tokens** are capped to the `uploader` role (never operator/moderator), are optionally scoped (collection / product / max file size) and one-click revocable; the `nova_ut_…` secret is shown once and stored only as a SHA-256 hash | `docs/superpowers/specs/2026-06-13-m0.3-offorigin-widget-design.md`; `internal/api/handlers/upload_tokens_admin.go`; `THREAT_MODEL.md` |
+| T1.31 | Admin-minted **upload tokens** are capped to the `uploader` role (never operator/moderator), are optionally scoped (collection / product / max file size) and one-click revocable; the `nova_ut_…` secret is shown once and stored only as a SHA-256 hash | `docs/superpowers/specs/phase2/2026-06-13-m0.3-offorigin-widget-design.md`; `internal/api/handlers/upload_tokens_admin.go`; `THREAT_MODEL.md` |
 
 ### Trust-model commitments
 
@@ -129,13 +129,13 @@ v3 and `HEALING_PROTOCOL.md` v3 spec bumps as the implementation gates. See
 **P2-M0.3 (2026-06-14)** added `T1.31` (the scoped, revocable, uploader-capped
 upload-token credential) as part of the off-origin widget work, alongside the
 first-class CORS layer and upload admission limits recorded in Tier 2. See
-`docs/superpowers/specs/2026-06-13-m0.3-offorigin-widget-design.md`.
+`docs/superpowers/specs/phase2/2026-06-13-m0.3-offorigin-widget-design.md`.
 
 **P2-M0.4 (2026-06-14)** added the runtime config backend to Tier 2: the
 operator-only `GET`/`PATCH`/`PUT /api/v1/admin/config` API, atomic
 `operator.yaml` writer (temp+rename), and per-field effect classification
 (`live` / `restart` / `env-only-inert`). No Tier 1 invariants changed. See
-`docs/superpowers/specs/2026-06-14-m0.4-config-backend-design.md`.
+`docs/superpowers/specs/phase2/2026-06-14-m0.4-config-backend-design.md`.
 
 `T1.27` and `T1.28` were **reframed** (not relaxed) by the second-pass
 resilience analysis in
@@ -289,7 +289,7 @@ Per-field effect classification (surfaced in `fields` metadata and the
 
 CLI: `novactl config get [--effects]`, `novactl config set <dotted.path> <value> [--json]`,
 `novactl config apply --config-file <p>`. Flags must precede positional args
-(Go's flag parser). See `docs/superpowers/specs/2026-06-14-m0.4-config-backend-design.md`.
+(Go's flag parser). See `docs/superpowers/specs/phase2/2026-06-14-m0.4-config-backend-design.md`.
 
 Tier 2 changes are normal operator decisions. They produce different
 deployments, not different protocol versions.
