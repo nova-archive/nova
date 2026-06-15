@@ -19,6 +19,7 @@ const NAV: NavEntry[] = [
   { to: '/moderation', label: 'Moderation', glyph: '⚑' },
   { to: '/audits', label: 'Integrity', glyph: '◇' },
   { to: '/keys', label: 'Keys', glyph: '⚿', roles: ['operator'] },
+  { to: '/settings', label: 'Settings', glyph: '⚙', roles: ['operator'] },
   { to: '/jobs', label: 'Jobs', glyph: '↻' },
   { to: '/audit-log', label: 'Audit log', glyph: '☰' },
 ]

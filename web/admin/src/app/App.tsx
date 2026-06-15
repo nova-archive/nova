@@ -13,6 +13,7 @@ import { BlobDetailScreen } from '../screens/BlobDetail'
 import { ModerationScreen } from '../screens/Moderation'
 import { AuditsScreen } from '../screens/Audits'
 import { KeysScreen } from '../screens/Keys'
+import { SettingsScreen } from '../screens/Settings'
 import { JobsScreen } from '../screens/Jobs'
 import { AuditLogScreen } from '../screens/AuditLog'
 
@@ -44,6 +45,7 @@ export function App() {
                 <Route path="moderation" element={<ModerationScreen />} />
                 <Route path="audits" element={<AuditsScreen />} />
                 <Route path="keys" element={<KeysScreen />} />
+                <Route path="settings" element={<SettingsScreen />} />
                 <Route path="jobs" element={<JobsScreen />} />
                 <Route path="audit-log" element={<AuditLogScreen />} />
               </Route>

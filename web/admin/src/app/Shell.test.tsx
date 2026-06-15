@@ -29,6 +29,7 @@ describe('Shell navigation', () => {
       Moderation: '/admin/moderation',
       Integrity: '/admin/audits',
       Keys: '/admin/keys',
+      Settings: '/admin/settings',
       Jobs: '/admin/jobs',
       'Audit log': '/admin/audit-log',
     }
