@@ -3,6 +3,7 @@ import type {
   AuditLogEntry,
   BlobMeta,
   BlocklistEntry,
+  ConfigResponse,
   DmcaCase,
   IntegrityAudit,
   Job,
@@ -104,6 +105,17 @@ export function createApi(fetcher: typeof fetch) {
       send('POST', '/api/v1/admin/keys/rotate-master', b),
     rotateSigning: (b: { grace_seconds?: number }) =>
       send('POST', '/api/v1/admin/keys/rotate-signing', b),
+
+    getConfig: () => get<ConfigResponse>('/api/v1/admin/config'),
+    patchConfig: (patch: unknown, ifMatch?: number) =>
+      fetcher('/api/v1/admin/config', {
+        method: 'PATCH',
+        headers: {
+          'content-type': 'application/json',
+          ...(ifMatch !== undefined ? { 'If-Match': String(ifMatch) } : {}),
+        },
+        body: JSON.stringify(patch),
+      }).then((r) => parse<ConfigResponse>(r)),
   }
 }
 

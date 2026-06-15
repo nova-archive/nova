@@ -145,3 +145,43 @@ export interface RotationStatus {
   } | null
   versions: VersionSummary[]
 }
+
+// --- M0.6 runtime config (operator.yaml surface via the M0.4 admin API) -------
+
+export type FieldEffect = 'live' | 'restart' | 'env-only-inert'
+
+export interface FieldMeta {
+  effect: FieldEffect
+  source: 'yaml' | 'env'
+  shadowed_by_env?: boolean
+}
+
+// OperatorConfig types only the curated leaves the Settings screen edits; the long
+// tail stays index-typed for the read-only effective-config viewer.
+export interface OperatorConfig {
+  coordinator?: { record_source_ip?: boolean | null; public_ipfs_dht?: boolean }
+  auth?: { paranoid?: boolean }
+  source_ip_retention_days?: number
+  tos_url?: string
+  webhooks?: unknown[]
+  uploads?: {
+    max_upload_size_bytes?: number
+    max_concurrent_assembly?: number
+    public_uploads?: boolean
+    cors?: { enabled?: boolean; allowed_origins?: string[] }
+    limits?: {
+      max_concurrent_global?: number
+      max_concurrent_per_session?: number
+      max_files_per_session?: number
+    }
+  }
+  [section: string]: unknown
+}
+
+export interface ConfigResponse {
+  version: number
+  config: OperatorConfig
+  privacy_warnings: string[]
+  fields: Record<string, FieldMeta>
+  restart_required?: string[]
+}
