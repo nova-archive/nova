@@ -177,7 +177,7 @@ func run() error {
 		return fmt.Errorf("create upload tmp dir: %w", err)
 	}
 	maxUpload := rc.MaxUploadSizeBytes
-	maxAssembly := envInt("NOVA_MAX_CONCURRENT_ASSEMBLY", config.DefaultMaxConcurrentAssembly)
+	maxAssembly := rc.MaxConcurrentAssembly
 	sessionTTL := time.Duration(envInt("NOVA_UPLOAD_SESSION_TTL_SECONDS", config.DefaultUploadSessionTTLSecs)) * time.Second
 	// Source-IP recording: an explicit operator.yaml record_source_ip wins;
 	// otherwise it follows the privacy preset (paranoid ⇒ off). The paranoid
@@ -475,18 +475,22 @@ func envInt(key string, def int) int {
 // and env vars may override. Deep tuning knobs (signed-url, rotation, sweeps)
 // stay env-only and are not part of this struct.
 type resolvedConfig struct {
-	PublicUploads      bool
-	TosURL             string
-	Paranoid           bool
-	AuthIssuerURL      string // external OIDC issuer ("" = built-in local issuer)
-	AuthClientID       string
-	MaxUploadSizeBytes int64
+	PublicUploads         bool
+	TosURL                string
+	Paranoid              bool
+	AuthIssuerURL         string // external OIDC issuer ("" = built-in local issuer)
+	AuthClientID          string
+	MaxUploadSizeBytes    int64
+	MaxConcurrentAssembly int
 }
 
 // resolveOperatorConfig merges operator.yaml (cfg, may be nil) with env overrides.
 // getenv is injected for testability (pass os.Getenv in production).
 func resolveOperatorConfig(cfg *config.Config, getenv func(string) string) resolvedConfig {
-	rc := resolvedConfig{MaxUploadSizeBytes: config.DefaultMaxUploadSizeBytes}
+	rc := resolvedConfig{
+		MaxUploadSizeBytes:    config.DefaultMaxUploadSizeBytes,
+		MaxConcurrentAssembly: config.DefaultMaxConcurrentAssembly,
+	}
 	if cfg != nil {
 		rc.PublicUploads = cfg.Uploads.PublicUploads
 		rc.TosURL = cfg.TosURL
@@ -495,6 +499,9 @@ func resolveOperatorConfig(cfg *config.Config, getenv func(string) string) resol
 		rc.AuthClientID = cfg.Auth.ClientID
 		if cfg.Uploads.MaxUploadSizeBytes > 0 {
 			rc.MaxUploadSizeBytes = cfg.Uploads.MaxUploadSizeBytes
+		}
+		if cfg.Uploads.MaxConcurrentAssembly > 0 {
+			rc.MaxConcurrentAssembly = cfg.Uploads.MaxConcurrentAssembly
 		}
 	}
 	// env overrides (only when the var is SET — use a presence check for bools)
@@ -516,6 +523,11 @@ func resolveOperatorConfig(cfg *config.Config, getenv func(string) string) resol
 	if v := getenv("NOVA_MAX_UPLOAD_SIZE_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			rc.MaxUploadSizeBytes = n
+		}
+	}
+	if v := getenv("NOVA_MAX_CONCURRENT_ASSEMBLY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			rc.MaxConcurrentAssembly = n
 		}
 	}
 	return rc

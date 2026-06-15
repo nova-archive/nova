@@ -48,6 +48,27 @@ func TestResolveOperatorConfig(t *testing.T) {
 	}
 }
 
+func TestResolveOperatorConfigAssemblyConcurrency(t *testing.T) {
+	// yaml value honored when no env override
+	cfg := &config.Config{}
+	cfg.Uploads.MaxConcurrentAssembly = 16
+	rc := resolveOperatorConfig(cfg, func(string) string { return "" })
+	require.Equal(t, 16, rc.MaxConcurrentAssembly)
+
+	// env overrides yaml
+	rc = resolveOperatorConfig(cfg, func(k string) string {
+		if k == "NOVA_MAX_CONCURRENT_ASSEMBLY" {
+			return "4"
+		}
+		return ""
+	})
+	require.Equal(t, 4, rc.MaxConcurrentAssembly)
+
+	// default when neither set
+	rc = resolveOperatorConfig(nil, func(string) string { return "" })
+	require.Equal(t, config.DefaultMaxConcurrentAssembly, rc.MaxConcurrentAssembly)
+}
+
 func TestApplyEnvOverridesAssemblyConcurrency(t *testing.T) {
 	getenv := func(k string) string {
 		if k == "NOVA_MAX_CONCURRENT_ASSEMBLY" {
