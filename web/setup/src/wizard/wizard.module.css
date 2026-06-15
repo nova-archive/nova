@@ -249,3 +249,35 @@
   font-size: 12px;
   text-align: center;
 }
+
+.infoTerm { white-space: nowrap; }
+.infoLabel {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--slate-2);
+  text-underline-offset: 2px;
+}
+.infoDetails { display: inline; }
+.infoSummary {
+  display: inline;
+  cursor: help;
+  margin-left: 4px;
+  color: var(--slate);
+  list-style: none;
+}
+.infoSummary::-webkit-details-marker { display: none; }
+.infoSummary:focus-visible {
+  outline: 2px solid var(--slate);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.infoBody {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  white-space: normal;
+  color: var(--ink-2);
+  background: var(--card-deep);
+  border: var(--rule-w) solid var(--rule);
+  border-radius: var(--r);
+}
