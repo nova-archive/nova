@@ -148,6 +148,17 @@ Streaming-AEAD envelope (v2 wire format) so encrypted blobs support
 HTTP Range requests, CDN partial-object caching, and modern web
 media playback expectations.
 
+### Phase 2 — P2-M0.x remediation track (operator-UX / privacy / pitfall fixes before additive Phase 2 work)
+
+| Slot | Deliverable |
+|---|---|
+| **M0.1** ✅ | Correctness fixes (admin SPA nav double-prefix, compose `name:` pin, plumb `NOVA_PUBLIC_UPLOADS`/`NOVA_TOS_URL`). Implemented (tag `p2-m0.1-correctness-fixes`). |
+| **M0.2** ✅ | `paranoid` reframed as a default-off warn-not-force preset over individually addressable constituents (`record_source_ip`, `source_ip_retention_days`, `public_ipfs_dht`, `webhooks`); startup warning replaces forced override when a protective default is relaxed. Implemented (tag `p2-m0.2-privacy-posture`). Design: `docs/superpowers/specs/2026-06-13-privacy-posture-model-design.md`. |
+| **M0.3** ✅ | CORS + upload-credential hardening: scoped revocable upload tokens (`nova_ut_…`), per-session concurrency/file-count limits, CORS allowlist on upload routes. Implemented (tag `p2-m0.3-offorigin-widget`). Design: `docs/superpowers/specs/2026-06-13-m0.3-offorigin-widget-design.md`. |
+| **M0.4** ✅ | Runtime config backend: `operator.yaml` read/update admin API (`GET`/`PATCH`/`PUT /api/v1/admin/config`), live hot-reload for `live`-class fields, `novactl config get/set/apply`. Implemented (tag `p2-m0.4-config-backend`). Design: `docs/superpowers/specs/2026-06-14-m0.4-config-backend-design.md`. Plan: `docs/superpowers/plans/2026-06-14-m0.4-config-backend.md`. |
+| **M0.5** ✅ | Setup-wizard redesign: consequence copy + learn-this/abstract-away jargon info-buttons + tri-state paranoid delineation + additive `Answers` constituents. Implemented (tag `p2-m0.5-wizard-redesign`). Design: `docs/superpowers/specs/2026-06-14-m0.5-setup-wizard-redesign-design.md`. Plan: `docs/superpowers/plans/2026-06-14-m0.5-setup-wizard-redesign.md`. |
+| **M0.6** | Admin Settings modal — runtime config UI in the admin SPA. |
+
 v2 additions:
 - HTTPS+mTLS auth inside Nebula with separate federation client
   certs (Nebula cert authorizes overlay; federation cert authorizes

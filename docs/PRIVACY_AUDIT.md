@@ -124,6 +124,17 @@ governs with warn-not-force semantics. The remainder are enforced or
 informational defaults; metrics-exposure widening stays refused for now
 (defense-in-depth), to be folded into the tunable model in a later milestone.
 
+### First-run wizard surface (P2-M0.5)
+
+The first-run setup wizard now exposes the three operator-tunable constituents
+individually — source-IP recording, retention period, and public-DHT exposure —
+with inline consequence copy at the moment the operator makes the decision (see
+`docs/superpowers/specs/2026-06-14-m0.5-setup-wizard-redesign-design.md`). A
+fully-hardened wizard run (all three checked) writes the explicit constituent
+values to `operator.yaml` and produces **no** `ApplyPrivacyPreset` startup
+warnings; warnings remain the signal for hand-edited drift from a protective
+default.
+
 ### Warn, don't force — and the hard floors
 
 The preset never *prevents the node from operating* because a privacy default

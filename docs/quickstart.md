@@ -99,13 +99,11 @@ stored content — are gone for good, federation-wide. Click
 then type the key's fingerprint into the confirm field. The readback
 exists precisely so you cannot click past this step without proving
 you captured the key; Next stays disabled until the typed fingerprint
-matches.
+matches. Your IPFS swarm identity and content-signing keys are
+generated and sealed automatically alongside the master key — nothing
+to enter for those.
 
 ![The master-key step with the fingerprint readback](images/quickstart/02-master-key.png)
-
-**Node keys.** Informational: your IPFS swarm identity and
-content-signing keys are generated automatically and sealed with the
-master key at commit. Nothing to enter.
 
 **Operator account.** Email and password (12 characters minimum) for
 the first operator — this is the account you will use to sign in to
@@ -116,7 +114,8 @@ Each mode shows its privacy cost inline — notably, `http-01` publishes
 your hostname to public Certificate Transparency logs. See
 [Choosing a TLS mode](#choosing-a-tls-mode) below; `dev-self-signed`
 is fine for kicking the tires. `static` additionally asks for your
-certificate and key paths.
+certificate and key paths. Load-bearing terms (fingerprint, Certificate
+Transparency) carry an ⓘ button with a plain-English explanation.
 
 ![The TLS-mode step](images/quickstart/03-tls-mode.png)
 
@@ -125,9 +124,15 @@ node's public widget. If you enable it, a terms-of-service URL is
 required (a template lives at
 [`legal/TOS_TEMPLATE.md`](legal/TOS_TEMPLATE.md)).
 
-**Paranoid mode.** Hardened defaults for hostile environments —
-tighter metadata exposure and rate limits at the cost of some
-convenience. You can revisit this in `operator.yaml` later.
+**Privacy & hardening.** A tri-state "Harden privacy (paranoid)"
+parent toggle over three individually exposed settings: whether to
+record uploader IPs (`record_source_ip`), how long to keep IP logs
+(1 day vs. 30), and whether to keep pinned CIDs off the public IPFS
+DHT (`public_ipfs_dht`). Each constituent shows its consequence inline;
+two additional rows (no outbound webhooks; metrics loopback-only) are
+informational. Fully checking all three commits `paranoid: true` in
+`operator.yaml`. ⓘ disclosures explain source-IP recording and the
+public IPFS DHT in plain language at the point of decision.
 
 **Review.** Confirm your answers (secrets are not shown) and submit.
 
