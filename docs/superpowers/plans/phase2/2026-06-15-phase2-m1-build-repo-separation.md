@@ -191,7 +191,8 @@ Expected: all green (the coordinator suite is the regression guard that behavior
 
 ```bash
 git add internal/secret/ cmd/coordinator/main.go internal/envelope/keystore.go
-git commit -s -m "refactor(secret): extract ResolveSecret into stdlib leaf internal/secret (P2-M1)"
+git commit -s -m "refactor(secret): extract ResolveSecret into stdlib leaf internal/secret (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -375,11 +376,20 @@ func sampleClaims(now time.Time) wire.Claims {
 	}
 }
 
+// signTestToken builds a valid token via the exported format primitives. There
+// is intentionally NO wire.SignToken (minting with a private key is
+// coordinator-only, M4); tests sign locally with a throwaway key.
+func signTestToken(t *testing.T, priv ed25519.PrivateKey, c wire.Claims) string {
+	t.Helper()
+	si, err := wire.SigningInput(c)
+	require.NoError(t, err)
+	return wire.AssembleToken(si, ed25519.Sign(priv, []byte(si)))
+}
+
 func TestTokenRoundTrip(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	now := time.Unix(1_700_000_000, 0)
-	tok, err := wire.SignToken(priv, sampleClaims(now))
-	require.NoError(t, err)
+	tok := signTestToken(t, priv, sampleClaims(now))
 	require.Contains(t, tok, ".")
 	got, err := wire.Verify(pub, tok, now)
 	require.NoError(t, err)
@@ -390,7 +400,7 @@ func TestTokenRoundTrip(t *testing.T) {
 func TestTokenExpired(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	now := time.Unix(1_700_000_000, 0)
-	tok, _ := wire.SignToken(priv, sampleClaims(now))
+	tok := signTestToken(t, priv, sampleClaims(now))
 	_, err := wire.Verify(pub, tok, now.Add(2*time.Minute))
 	require.ErrorIs(t, err, wire.ErrExpired)
 }
@@ -398,7 +408,7 @@ func TestTokenExpired(t *testing.T) {
 func TestTokenNotYetValid(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	now := time.Unix(1_700_000_000, 0)
-	tok, _ := wire.SignToken(priv, sampleClaims(now))
+	tok := signTestToken(t, priv, sampleClaims(now))
 	_, err := wire.Verify(pub, tok, now.Add(-2*time.Minute))
 	require.ErrorIs(t, err, wire.ErrNotYetValid)
 }
@@ -407,7 +417,7 @@ func TestTokenWrongKey(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	otherPub, _, _ := ed25519.GenerateKey(nil)
 	now := time.Unix(1_700_000_000, 0)
-	tok, _ := wire.SignToken(priv, sampleClaims(now))
+	tok := signTestToken(t, priv, sampleClaims(now))
 	_, err := wire.Verify(otherPub, tok, now)
 	require.ErrorIs(t, err, wire.ErrBadSignature)
 }
@@ -415,7 +425,7 @@ func TestTokenWrongKey(t *testing.T) {
 func TestTokenTamperedClaim(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	now := time.Unix(1_700_000_000, 0)
-	tok, _ := wire.SignToken(priv, sampleClaims(now))
+	tok := signTestToken(t, priv, sampleClaims(now))
 	parts := strings.SplitN(tok, ".", 2)
 	// Flip a byte in the claims segment; the signature no longer matches.
 	tampered := parts[0][:len(parts[0])-1] + "Z" + "." + parts[1]
@@ -428,9 +438,34 @@ func TestTokenMissingJTI(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c := sampleClaims(now)
 	c.JTI = ""
-	tok, _ := wire.SignToken(priv, c)
+	tok := signTestToken(t, priv, c)
 	_, err := wire.Verify(pub, tok, now)
 	require.ErrorIs(t, err, wire.ErrMalformedClaims)
+}
+
+func TestTokenRejectsWrongProtocol(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	now := time.Unix(1_700_000_000, 0)
+	c := sampleClaims(now)
+	c.ProtocolVersion = "fed/v99"
+	tok := signTestToken(t, priv, c)
+	_, err := wire.Verify(pub, tok, now)
+	require.ErrorIs(t, err, wire.ErrMalformedClaims)
+}
+
+func TestTokenRejectsNonPositiveGenerationAndBytes(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	now := time.Unix(1_700_000_000, 0)
+	for _, mut := range []func(c *wire.Claims){
+		func(c *wire.Claims) { c.Generation = 0 },
+		func(c *wire.Claims) { c.MaxBytes = 0 },
+		func(c *wire.Claims) { c.NotBefore, c.NotAfter = c.NotAfter, c.NotBefore },
+	} {
+		c := sampleClaims(now)
+		mut(&c)
+		_, err := wire.Verify(pub, signTestToken(t, priv, c), now)
+		require.ErrorIs(t, err, wire.ErrMalformedClaims)
+	}
 }
 
 func TestTokenMalformedToken(t *testing.T) {
@@ -443,7 +478,7 @@ func TestTokenMalformedToken(t *testing.T) {
 - [ ] **Step 7: Run it to verify it fails**
 
 Run: `go test ./internal/federation/wire/ -run TestToken -v`
-Expected: FAIL — `undefined: wire.Claims` / `wire.SignToken` / `wire.Verify`.
+Expected: FAIL — `undefined: wire.Claims` / `wire.SigningInput` / `wire.AssembleToken` / `wire.Verify`.
 
 - [ ] **Step 8: Write `internal/federation/wire/token.go`** (canonical `base64url(claims_json) "." base64url(sig)`; verify over the received claims segment, never re-marshal)
 
@@ -488,17 +523,24 @@ type Claims struct {
 
 var b64 = base64.RawURLEncoding
 
-// SignToken produces token = base64url(claims_json) "." base64url(sig), where
-// the signature is over the base64url(claims_json) segment bytes. claims_json
-// is deterministic because it marshals a fixed-field-order struct.
-func SignToken(priv ed25519.PrivateKey, c Claims) (string, error) {
+// SigningInput returns the canonical signing input for a token:
+// base64url(claims_json). claims_json is deterministic because Claims marshals
+// in fixed struct-field order. The coordinator signs []byte(SigningInput) with
+// its Ed25519 PRIVATE key in the coordinator-only internal/federation/tokens
+// package (M4). This shared package holds NO private-key / minting API — donors
+// only ever Verify.
+func SigningInput(c Claims) (string, error) {
 	cj, err := json.Marshal(c)
 	if err != nil {
 		return "", err
 	}
-	seg := b64.EncodeToString(cj)
-	sig := ed25519.Sign(priv, []byte(seg))
-	return seg + "." + b64.EncodeToString(sig), nil
+	return b64.EncodeToString(cj), nil
+}
+
+// AssembleToken joins a signing input and its raw signature into the wire token
+// "signingInput.base64url(sig)". It performs no signing (no private key).
+func AssembleToken(signingInput string, sig []byte) string {
+	return signingInput + "." + b64.EncodeToString(sig)
 }
 
 // Verify checks the Ed25519 signature over the RECEIVED claims segment (it does
@@ -527,6 +569,9 @@ func Verify(pub ed25519.PublicKey, token string, now time.Time) (Claims, error) 
 	if c.JTI == "" || c.AssignmentID == "" || c.CID == "" || c.SourceNodeID == "" || c.DestNodeID == "" {
 		return Claims{}, ErrMalformedClaims
 	}
+	if c.ProtocolVersion != ProtocolV1 || c.Generation <= 0 || c.MaxBytes <= 0 || c.NotBefore >= c.NotAfter {
+		return Claims{}, ErrMalformedClaims
+	}
 	ts := now.Unix()
 	if ts < c.NotBefore {
 		return Claims{}, ErrNotYetValid
@@ -541,13 +586,14 @@ func Verify(pub ed25519.PublicKey, token string, now time.Time) (Claims, error) 
 - [ ] **Step 9: Run the full wire suite**
 
 Run: `go test ./internal/federation/wire/ -v`
-Expected: all PASS (capability ×2, token ×7).
+Expected: all PASS (capability ×2, token ×9).
 
 - [ ] **Step 10: Commit**
 
 ```bash
 git add internal/federation/wire/
-git commit -s -m "feat(wire): fed/v1 message types + capability negotiation + canonical Ed25519 token Verify (P2-M1)"
+git commit -s -m "feat(wire): fed/v1 message types + capability negotiation + canonical Ed25519 token Verify (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -603,6 +649,20 @@ func TestBucketRefillCapsAtCapacity(t *testing.T) {
 	require.True(t, b.Take(1000, veryLater))
 	require.False(t, b.Take(1, veryLater)) // capacity, not 2×
 }
+
+func TestBucketRejectsNonPositiveTake(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	b := bandwidth.NewDailyBucket(1000, now)
+	require.False(t, b.Take(0, now))
+	require.False(t, b.Take(-100, now)) // must NOT credit tokens
+	require.True(t, b.Take(1000, now))  // budget intact after the bad takes
+}
+
+func TestBucketWithNonPositiveBudgetRefusesAll(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	require.False(t, bandwidth.NewDailyBucket(0, now).Take(1, now))
+	require.False(t, bandwidth.NewDailyBucket(-5, now).Take(1, now))
+}
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -637,6 +697,9 @@ type Bucket struct {
 // starting full at now.
 func NewDailyBucket(bytesPerDay int64, now time.Time) *Bucket {
 	cap := float64(bytesPerDay)
+	if cap < 0 { // defensive: a non-positive budget refuses all work
+		cap = 0
+	}
 	return &Bucket{
 		capacity:     cap,
 		tokens:       cap,
@@ -645,10 +708,14 @@ func NewDailyBucket(bytesPerDay int64, now time.Time) *Bucket {
 	}
 }
 
-// Take attempts to consume n bytes as of now. It refills based on elapsed time
-// (capped at capacity), then succeeds and deducts iff enough tokens remain. A
-// request larger than capacity can never succeed.
+// Take attempts to consume n bytes as of now. A non-positive n is rejected
+// (never credits tokens). It refills based on elapsed time (capped at
+// capacity), then succeeds and deducts iff enough tokens remain. A request
+// larger than capacity can never succeed.
 func (b *Bucket) Take(n int64, now time.Time) bool {
+	if n <= 0 {
+		return false
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
@@ -675,7 +742,8 @@ Expected: all PASS.
 
 ```bash
 git add internal/node/bandwidth/
-git commit -s -m "feat(node): authoritative daily bandwidth token-bucket (D11) (P2-M1)"
+git commit -s -m "feat(node): authoritative daily bandwidth token-bucket (D11) (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -775,6 +843,20 @@ func TestValidateCreatesMissingStorageDir(t *testing.T) {
 	require.NoError(t, statErr)
 	require.True(t, info.IsDir())
 }
+
+func TestValidateRejectsBadCoordinatorURL(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml = "coordinator_url: \"not a url\"\n" + yaml[len("coordinator_url: https://coord.example\n"):]
+	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.ErrorContains(t, err, "coordinator_url")
+}
+
+func TestValidateRejectsBadHealthAddr(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml += "health_listen_addr: not-a-host-port\n"
+	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.ErrorContains(t, err, "health_listen_addr")
+}
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -795,7 +877,10 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -855,6 +940,9 @@ func (c *Config) validate() error {
 	if c.CoordinatorURL == "" {
 		return fmt.Errorf("node config: coordinator_url is required")
 	}
+	if u, err := url.ParseRequestURI(c.CoordinatorURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return fmt.Errorf("node config: coordinator_url %q is not a valid http(s) URL", c.CoordinatorURL)
+	}
 	files := map[string]string{
 		"federation_cert_path": c.FederationCertPath,
 		"federation_key_path":  c.FederationKeyPath,
@@ -870,12 +958,30 @@ func (c *Config) validate() error {
 	if c.BandwidthBudgetBytesPerDay <= 0 {
 		return fmt.Errorf("node config: bandwidth_budget_bytes_per_day must be positive")
 	}
+	if _, _, err := net.SplitHostPort(c.HealthListenAddr); err != nil {
+		return fmt.Errorf("node config: health_listen_addr %q is not host:port: %w", c.HealthListenAddr, err)
+	}
 	if c.StorageDir == "" {
 		return fmt.Errorf("node config: storage_dir is required")
 	}
 	if err := os.MkdirAll(c.StorageDir, 0o700); err != nil {
 		return fmt.Errorf("node config: storage_dir %q not usable: %w", c.StorageDir, err)
 	}
+	if err := checkWritableDir(c.StorageDir); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkWritableDir confirms storage_dir is actually writable by the current
+// uid — important because the donor container runs distroless-nonroot against a
+// mounted volume. It writes and removes a probe file.
+func checkWritableDir(dir string) error {
+	probe := filepath.Join(dir, ".nova-write-probe")
+	if err := os.WriteFile(probe, []byte("x"), 0o600); err != nil {
+		return fmt.Errorf("node config: storage_dir %q not writable: %w", dir, err)
+	}
+	_ = os.Remove(probe)
 	return nil
 }
 
@@ -910,7 +1016,8 @@ Expected: all PASS.
 
 ```bash
 git add internal/node/config/
-git commit -s -m "feat(node): donor node.yaml schema + shallow path-based validation (P2-M1)"
+git commit -s -m "feat(node): donor node.yaml schema + shallow path-based validation (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -949,9 +1056,24 @@ type MemStore struct {
 
 func NewMemStore() *MemStore { return &MemStore{jtis: map[string]time.Time{}} }
 
-func (m *MemStore) Cursor() (int64, error)      { return m.cursor, nil }
-func (m *MemStore) SetCursor(seq int64) error   { m.cursor = seq; return nil }
-func (m *MemStore) SeenJTI(jti string) (bool, error) { _, ok := m.jtis[jti]; return ok, nil }
+func (m *MemStore) Cursor() (int64, error)    { return m.cursor, nil }
+func (m *MemStore) SetCursor(seq int64) error { m.cursor = seq; return nil }
+
+// SeenJTI reports whether jti was recorded and has NOT expired. Expired entries
+// are pruned lazily so the replay cache cannot report a stale hit or grow
+// unbounded — the semantics M4's source-side single-use enforcement relies on.
+func (m *MemStore) SeenJTI(jti string) (bool, error) {
+	exp, ok := m.jtis[jti]
+	if !ok {
+		return false, nil
+	}
+	if !time.Now().Before(exp) {
+		delete(m.jtis, jti)
+		return false, nil
+	}
+	return true, nil
+}
+
 func (m *MemStore) RecordJTI(jti string, exp time.Time) error {
 	m.jtis[jti] = exp
 	return nil
@@ -989,6 +1111,14 @@ func TestMemStoreJTI(t *testing.T) {
 	require.NoError(t, s.RecordJTI("x", time.Now().Add(time.Hour)))
 	seen, _ = s.SeenJTI("x")
 	require.True(t, seen)
+}
+
+func TestMemStoreJTIExpiry(t *testing.T) {
+	s := state.NewMemStore()
+	require.NoError(t, s.RecordJTI("old", time.Now().Add(-time.Second)))
+	seen, err := s.SeenJTI("old")
+	require.NoError(t, err)
+	require.False(t, seen, "expired jti must not count as seen")
 }
 ```
 
@@ -1136,7 +1266,8 @@ Expected: state + agent tests PASS; transfer/audit compile.
 
 ```bash
 git add internal/node/state/ internal/node/agent/ internal/node/transfer/ internal/node/audit/
-git commit -s -m "feat(node): state/agent/transfer/audit skeletons (no-op transport, M2/M4/M6 seams) (P2-M1)"
+git commit -s -m "feat(node): state/agent/transfer/audit skeletons (no-op transport, M2/M4/M6 seams) (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1162,8 +1293,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1229,20 +1362,42 @@ func serve(cfg *nodeconfig.Config, stdout io.Writer) error {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"status":"ok","mode":"node-skeleton"}`)
 	})
-	srv := &http.Server{Addr: cfg.HealthListenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+
+	// Bind synchronously so a bad/occupied address fails fast instead of being
+	// swallowed in a goroutine while the process blocks forever.
+	ln, err := net.Listen("tcp", cfg.HealthListenAddr)
+	if err != nil {
+		return fmt.Errorf("health listen %s: %w", cfg.HealthListenAddr, err)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	go func() { _ = srv.ListenAndServe() }()
+	srvErr := make(chan error, 1)
+	go func() {
+		if e := srv.Serve(ln); e != nil && !errors.Is(e, http.ErrServerClosed) {
+			srvErr <- e
+		}
+	}()
 	fmt.Fprintf(stdout, "nova-node: health on %s (no federation in M1)\n", cfg.HealthListenAddr)
 
+	// The M1 agent is a no-op that returns on ctx cancel; start it for lifecycle
+	// symmetry with M2+, but block on a signal OR a server failure.
 	ag := agent.New(cfg, state.NewMemStore())
-	_ = ag.Run(ctx) // returns on signal
+	go func() { _ = ag.Run(ctx) }()
 
+	var runErr error
+	select {
+	case <-ctx.Done(): // SIGINT/SIGTERM
+	case runErr = <-srvErr: // health server failed after bind
+	}
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutCtx)
+	if sErr := srv.Shutdown(shutCtx); sErr != nil && runErr == nil {
+		runErr = sErr
+	}
+	return runErr
 }
 ```
 
@@ -1268,6 +1423,7 @@ package main
 
 import (
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1275,7 +1431,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func writeValidConfig(t *testing.T) string {
+func writeValidConfig(t *testing.T, healthAddr string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, n := range []string{"fed.crt", "fed.key", "neb.crt", "neb.key", "swarm.key"} {
@@ -1291,13 +1447,16 @@ func writeValidConfig(t *testing.T) string {
 		"swarm_key_path: " + filepath.Join(dir, "swarm.key") + "\n" +
 		"storage_dir: " + storage + "\n" +
 		"bandwidth_budget_bytes_per_day: 53687091200\n"
+	if healthAddr != "" {
+		cfg += "health_listen_addr: " + healthAddr + "\n"
+	}
 	path := filepath.Join(dir, "node.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(cfg), 0o600))
 	return path
 }
 
 func TestValidateAcceptsValidConfig(t *testing.T) {
-	path := writeValidConfig(t)
+	path := writeValidConfig(t, "")
 	err := run([]string{"--validate", "--config", path}, io.Discard, io.Discard)
 	require.NoError(t, err)
 }
@@ -1308,10 +1467,21 @@ func TestValidateRejectsMissingConfigFlag(t *testing.T) {
 }
 
 func TestValidateRejectsMissingCertFile(t *testing.T) {
-	path := writeValidConfig(t)
+	path := writeValidConfig(t, "")
 	require.NoError(t, os.Remove(filepath.Join(filepath.Dir(path), "fed.crt")))
 	err := run([]string{"--validate", "--config", path}, io.Discard, io.Discard)
 	require.ErrorContains(t, err, "federation_cert_path")
+}
+
+func TestServeFailsFastOnBindError(t *testing.T) {
+	// Occupy a port, then point the donor's health addr at it. Bare run() →
+	// serve() must return the bind error (not block) because net.Listen fails.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	path := writeValidConfig(t, ln.Addr().String())
+	err = run([]string{"--config", path}, io.Discard, io.Discard)
+	require.ErrorContains(t, err, "health listen")
 }
 ```
 
@@ -1331,7 +1501,8 @@ Expected: `OK` (pure-Go static build).
 
 ```bash
 git add cmd/node/
-git commit -s -m "feat(node): nova-node entrypoint — --config/--validate/--healthcheck + loopback health (P2-M1)"
+git commit -s -m "feat(node): nova-node entrypoint — --config/--validate/--healthcheck + loopback health (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1342,22 +1513,26 @@ git commit -s -m "feat(node): nova-node entrypoint — --config/--validate/--hea
 - Create: `scripts/check_node_deps.sh`
 - Modify: `Makefile`
 
-- [ ] **Step 1: Write `scripts/check_node_deps.sh`** (deny-by-default over first-party packages; third-party is allowed, stdlib filtered out)
+- [ ] **Step 1: Write `scripts/check_node_deps.sh`** (deny-by-default over **all** non-stdlib deps — first-party *and* third-party; stdlib filtered out). The allowlist is intentionally tiny; the donor's only third-party runtime dep is `gopkg.in/yaml.v3`. Run it once after Task 4 — if it surfaces an unexpected transitive (e.g. something yaml.v3 pulls), that is the gate doing its job: add only genuinely-needed entries, deliberately.
 
 ```bash
 #!/usr/bin/env bash
-# Fails if the cmd/node build graph imports any operator-only first-party
-# package. Deny-by-default: a nova-archive package must match an allowed prefix
-# or it is a violation. Third-party deps are allowed; stdlib is filtered out via
-# `go list`'s .Standard flag. This is the load-bearing P2-M1 boundary gate.
+# Fails if the cmd/node build graph imports anything outside the donor-safe
+# allowlist. DENY-BY-DEFAULT over ALL non-stdlib deps (first-party AND
+# third-party): a heavy/risky transitive dep is a violation just like an
+# operator-only package. Stdlib is filtered out via go list's .Standard flag.
+# Test deps (testify, etc.) do NOT appear in `go list -deps ./cmd/node`, so they
+# need no allowlisting. This is the load-bearing P2-M1 boundary gate.
 set -euo pipefail
 
 MOD="github.com/nova-archive/nova"
+# Donor-safe runtime roots. Adding an entry is a deliberate, reviewed act.
 ALLOWED=(
   "$MOD/cmd/node"
   "$MOD/internal/secret"
   "$MOD/internal/node"
   "$MOD/internal/federation/wire"
+  "gopkg.in/yaml.v3"   # donor config parsing — the only third-party runtime dep
 )
 
 deps="$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./cmd/node)"
@@ -1365,10 +1540,6 @@ deps="$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./cmd/node
 violations=()
 while IFS= read -r p; do
   [ -z "$p" ] && continue
-  case "$p" in
-    "$MOD"/*) ;;        # our code: must be allowlisted
-    *) continue ;;      # third-party: allowed
-  esac
   ok=0
   for a in "${ALLOWED[@]}"; do
     case "$p" in "$a"|"$a"/*) ok=1; break ;; esac
@@ -1377,7 +1548,7 @@ while IFS= read -r p; do
 done <<< "$deps"
 
 if [ "${#violations[@]}" -ne 0 ]; then
-  echo "FAIL: cmd/node imports operator-only package(s):" >&2
+  echo "FAIL: cmd/node imports non-allowlisted package(s):" >&2
   printf '  %s\n' "${violations[@]}" >&2
   exit 1
 fi
@@ -1414,7 +1585,8 @@ node-deps-check:
 
 ```bash
 git add scripts/check_node_deps.sh Makefile
-git commit -s -m "feat(ci): deny-by-default cmd/node dependency-boundary gate (P2-M1)"
+git commit -s -m "feat(ci): deny-by-default cmd/node dependency-boundary gate (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1531,7 +1703,8 @@ Expected: both references updated; smoke (which drives `docker/docker-compose.ym
 
 ```bash
 git add docker/ Makefile scripts/check_node_image.sh
-git commit -s -m "build(node): split coordinator/node Dockerfiles + minimal distroless donor image + inventory scan (P2-M1)"
+git commit -s -m "build(node): split coordinator/node Dockerfiles + minimal distroless donor image + inventory scan (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1590,18 +1763,16 @@ name: nova-donor
 services:
   nebula:
     # Nebula runs as a SIDECAR so nova-node needs no NET_ADMIN. Pin a digest in
-    # production (see docs/quickstart/donor.md). Config/cert wiring lands in M2.
+    # production (see docs/quickstart/donor.md). Config/cert wiring + a real
+    # readiness check land in M2 — no healthcheck here yet (the image's probe
+    # command and config are not established until then; gating nova-node on a
+    # failing probe would wedge it).
     image: nebulaoss/nebula:latest
     cap_add: ["NET_ADMIN"]
     devices: ["/dev/net/tun:/dev/net/tun"]
     volumes:
       - ./nebula:/etc/nebula:ro
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "/nebula", "-test", "-config", "/etc/nebula/config.yml"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
 
   nova-node:
     build:
@@ -1610,9 +1781,10 @@ services:
     image: nova-node:dev
     # Share the Nebula network namespace so the donor binds the overlay address.
     network_mode: "service:nebula"
+    # Start-order only (no health gate yet — see the nebula service note). M2
+    # adds a real Nebula readiness condition.
     depends_on:
-      nebula:
-        condition: service_healthy
+      - nebula
     read_only: true
     tmpfs:
       - /tmp
@@ -1644,7 +1816,8 @@ Expected: non-zero exit naming the first missing `*_path` (the floor works; the 
 
 ```bash
 git add deploy/donor/
-git commit -s -m "build(node): deploy/donor compose (Nebula sidecar, no ports, hardened) + annotated node.yaml.example (P2-M1)"
+git commit -s -m "build(node): deploy/donor compose (Nebula sidecar, no ports, hardened) + annotated node.yaml.example (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1726,6 +1899,16 @@ git commit -s -m "build(node): deploy/donor compose (Nebula sidecar, no ports, h
           subject-name: ghcr.io/nova-archive/nova-node
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+      # The SBOM must describe the EXACT signed digest, not the local :dev image
+      # donor-build scanned. Generate + cosign-attest it against the digest so
+      # "signed image + SBOM for that digest" is actually true.
+      - uses: anchore/sbom-action/download-syft@v0
+      - name: SBOM for the pushed digest + attest
+        run: |
+          DIGEST_REF=ghcr.io/nova-archive/nova-node@${{ steps.push.outputs.digest }}
+          syft "$DIGEST_REF" -o spdx-json=nova-node.sbom.spdx.json
+          cosign attest --yes --type spdxjson \
+            --predicate nova-node.sbom.spdx.json "$DIGEST_REF"
 ```
 
 - [ ] **Step 2: Write `docs/quickstart/donor.md`** (release-trust note stub; full walkthrough is P2-M7)
@@ -1769,7 +1952,8 @@ Expected: `ci.yml OK`.
 
 ```bash
 git add .github/workflows/ci.yml docs/quickstart/donor.md
-git commit -s -m "ci(node): donor-deps-boundary + donor-build(SBOM+inventory) + keyless donor-sbom-sign; donor docs stub (P2-M1)"
+git commit -s -m "ci(node): donor-deps-boundary + donor-build(SBOM+inventory) + keyless donor-sbom-sign; donor docs stub (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1786,10 +1970,16 @@ go build ./... && go vet ./...
 make test-unit
 make node-deps-check
 make node-validate
-python3 scripts/check_doc_links.py docs   # expect 0 broken (the M1 plan now exists)
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml')); print('ci.yml OK')"
+python3 scripts/check_doc_links.py docs    # expect 0 broken (the M1 plan now exists)
 make migrations-frozen                     # still green: M1 added no migration
+# Docker/syft-dependent (run locally if available; otherwise CI covers them):
+make node-image-inventory                  # donor image builds + forbidden-inventory clean
+make node-sbom                             # local SBOM (skip if syft not installed)
+make docker-build                          # coordinator image still builds via the renamed Dockerfile
+make lint                                  # if golangci-lint is installed locally (else CI-only)
 ```
-Expected: all green; link checker reports 0 broken links.
+Expected: Go build/vet/test green; `node-deps-check` and `node-validate` pass; `ci.yml OK`; link checker reports 0 broken; `migrations-frozen` green; the donor image builds with a clean inventory and the coordinator image still builds (Docker-dependent steps may be CI-only on hosts without Docker/syft).
 
 - [ ] **Step 2: Update the `docs/ROADMAP.md` Phase-2 table** — change the `P2-M1` row's status to ✅ with the tag, design, and plan links (mirror the M0.x rows' format), summarizing: `cmd/node` + `internal/node/*` + `internal/federation/wire` + `internal/secret` extraction; deny-by-default boundary gate; split Dockerfiles + distroless donor image + inventory scan; `deploy/donor/`; CI SBOM + keyless signing; no schema/migration; no live federation.
 
@@ -1797,7 +1987,8 @@ Expected: all green; link checker reports 0 broken links.
 
 ```bash
 git add docs/ROADMAP.md
-git commit -s -m "docs(m1): mark P2-M1 build/repo-separation complete (P2-M1)"
+git commit -s -m "docs(m1): mark P2-M1 build/repo-separation complete (P2-M1)" \
+  -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
 
 - [ ] **Step 4: Finish the branch per the milestone workflow** — invoke `superpowers:finishing-a-development-branch`: local fast-forward merge into `main` + annotated tag `p2-m1-build-repo-separation`; **no remote push**.
@@ -1816,6 +2007,28 @@ git commit -s -m "docs(m1): mark P2-M1 build/repo-separation complete (P2-M1)"
 - **Self-healthcheck, no curl (review #7):** Task 6 (`--healthcheck`), Task 8 (image HEALTHCHECK invokes the binary; distroless static). ✓
 - **Verified image inventory (review #8):** Task 8 (`scripts/check_node_image.sh`) + Task 10 (CI step; demonstrated-fail noted in design). ✓
 - **No migration:** asserted in Task 11 (`migrations-frozen` stays green). ✓
+
+### Execution-review hardening (2026-06-15)
+
+- **No minting API in the donor-imported `wire`** — `SignToken` removed; only
+  format primitives (`SigningInput`/`AssembleToken`) + `Verify` are exported.
+  Signing-with-private-key (minting) is coordinator-only `internal/federation/tokens`
+  (M4); tests sign locally with a throwaway key. (Task 2)
+- **Boundary gate is deny-by-default for third-party too** — not just first-party;
+  the only allowed third-party runtime dep is `gopkg.in/yaml.v3`. (Task 7)
+- **`serve()` fails fast on bind errors** via synchronous `net.Listen` + select on
+  signal/server-error, with a regression test. (Task 6)
+- **SBOM is generated + cosign-attested against the exact pushed digest**, so
+  "signed image + SBOM for that digest" holds. (Task 10)
+- **`Verify` is stricter** — protocol == `fed/v1`, `Generation > 0`, `MaxBytes > 0`,
+  `NotBefore < NotAfter`; **`bandwidth.Take` rejects `n <= 0`**; **`MemStore` honors
+  jti expiry**; **config validates** coordinator_url shape, `health_listen_addr`
+  host:port, and storage-dir writability. (Tasks 2/3/4/5)
+- **Nebula compose gate weakened to start-order only** (no phantom healthcheck that
+  would wedge `nova-node`); real readiness is M2. (Task 9)
+- **Every commit command carries the `Co-Authored-By` trailer**; the final sweep
+  also runs image-inventory, SBOM, coordinator build, lint, and workflow-YAML parse.
+  (Tasks 1–11)
 
 ---
 
