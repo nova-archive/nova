@@ -131,6 +131,12 @@ upload-token credential) as part of the off-origin widget work, alongside the
 first-class CORS layer and upload admission limits recorded in Tier 2. See
 `docs/superpowers/specs/2026-06-13-m0.3-offorigin-widget-design.md`.
 
+**P2-M0.4 (2026-06-14)** added the runtime config backend to Tier 2: the
+operator-only `GET`/`PATCH`/`PUT /api/v1/admin/config` API, atomic
+`operator.yaml` writer (temp+rename), and per-field effect classification
+(`live` / `restart` / `env-only-inert`). No Tier 1 invariants changed. See
+`docs/superpowers/specs/2026-06-14-m0.4-config-backend-design.md`.
+
 `T1.27` and `T1.28` were **reframed** (not relaxed) by the second-pass
 resilience analysis in
 `docs/superpowers/specs/phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
@@ -255,6 +261,35 @@ rather than triggering a 503/429 storm; over-limit returns **429** with
 | `uploads.limits.max_concurrent_global` | 16 | global in-flight upload ceiling; over-limit ⇒ 429 `too_many_concurrent` | M0.3 design |
 | `uploads.limits.max_concurrent_per_session` | 4 | per-credential in-flight ceiling; mirrors the widget tus `limit` | M0.3 design |
 | `uploads.limits.max_files_per_session` | 100 | per-credential active in-progress session ceiling; over-limit ⇒ 429 `too_many_files` | M0.3 design |
+
+### Runtime configuration backend (M0.4)
+
+An operator-only config API reads and updates `operator.yaml` at runtime.
+Writes use an atomic temp+rename to keep `operator.yaml` as the single
+authoritative source; the live in-process snapshot is swapped immediately
+after persist. `NOVA_*` env overrides continue to win and appear as
+`source: "env"` in the per-field metadata. Every write is audit-logged.
+
+Endpoints live on the admin vhost (`operator` role required):
+
+| Endpoint | Description | Where documented |
+|---|---|---|
+| `GET /api/v1/admin/config` | Read effective config + per-field `{effect, source, shadowed_by_env?}` metadata; `Cache-Control: no-store` | M0.4 design |
+| `PATCH /api/v1/admin/config` | Partial merge; returns new state + `restart_required`; `If-Match` → `409 config_conflict`; `422 config_invalid` on validation failure (nothing persists) | M0.4 design |
+| `PUT /api/v1/admin/config` | Full replace; same guarantees as PATCH | M0.4 design |
+
+Per-field effect classification (surfaced in `fields` metadata and the
+`restart_required` response list):
+
+| Class | Behaviour | Fields |
+|---|---|---|
+| `live` | Applies immediately, no restart | `uploads.cors.*`, `uploads.limits.*`, `uploads.max_upload_size_bytes`, `uploads.max_concurrent_assembly` |
+| `restart` | Persisted + validated now; takes effect on coordinator restart | `uploads.session_ttl_seconds`/`tmp_dir`/`public_uploads`, `coordinator.*`, `auth.*`, `tls.*`, `operator.*`, `tos_url`, `moderation.*`, `source_ip_retention_days`, `webhooks` |
+| `env-only-inert` | Persisted + validated; no runtime consumer reads this yaml section yet — active knob is the corresponding `NOVA_*` env var | `orchestrator.*`, `federation.*`, `integrity_audit.*`, `signed_urls.*`, `master_key_rotation.*` |
+
+CLI: `novactl config get [--effects]`, `novactl config set <dotted.path> <value> [--json]`,
+`novactl config apply --config-file <p>`. Flags must precede positional args
+(Go's flag parser). See `docs/superpowers/specs/2026-06-14-m0.4-config-backend-design.md`.
 
 Tier 2 changes are normal operator decisions. They produce different
 deployments, not different protocol versions.

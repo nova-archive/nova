@@ -398,6 +398,81 @@ Notes:
 - The bundle is hermetic (no third-party CDN); CI enforces it (`make hermetic-widget`).
 - As of M13 the widget bundle is served on the **public_host** of the two-vhost split.
 
+## Runtime configuration (M0.4)
+
+The coordinator exposes an operator-only HTTP API for reading and updating
+`operator.yaml` at runtime, accessible via `novactl config` or directly
+against the admin vhost.
+
+### Endpoints (operator-only, admin vhost)
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/api/v1/admin/config` | Returns the current effective config (`version`, `config`, `privacy_warnings`, and a `fields` map with per-field metadata). `Cache-Control: no-store`. |
+| `PATCH` | `/api/v1/admin/config` | Partial merge — supply only the fields you want to change. |
+| `PUT` | `/api/v1/admin/config` | Full replace — body becomes the complete new config. |
+
+All write endpoints return the new effective state and a `restart_required`
+list. Validation runs before any write: a `422 config_invalid` means nothing
+was persisted. Pass `If-Match: <version>` to guard against concurrent edits —
+a stale version returns `409 config_conflict`.
+
+### CLI
+
+```sh
+novactl config get              # print current effective config
+novactl config get --effects    # also print per-field source and effect class
+novactl config set <path> <value>
+novactl config apply --config-file <path>
+```
+
+Flag order matters with Go's flag parser: **flags must come before positional
+arguments**. For example:
+
+```sh
+# correct
+novactl config set --json uploads.cors.allowed_origins '["https://example.com"]'
+
+# wrong — --json after the path is silently ignored
+novactl config set uploads.cors.allowed_origins '["https://example.com"]' --json
+```
+
+### Effect classes
+
+The `fields` metadata (visible with `--effects`) and the `restart_required`
+response field tell you which class each changed field falls into.
+
+| Class | Meaning |
+|---|---|
+| `live` | Applies immediately in process; no restart needed. Covers `uploads.cors.*`, `uploads.limits.*`, `uploads.max_upload_size_bytes`, `uploads.max_concurrent_assembly`. |
+| `restart` | Persisted and validated now; takes effect on the next coordinator restart. Covers `uploads.session_ttl_seconds`, `uploads.tmp_dir`, `uploads.public_uploads`, `coordinator.*`, `auth.*`, `tls.*`, `operator.*`, `tos_url`, `moderation.*`, `source_ip_retention_days`, `webhooks`. |
+| `env-only-inert` | Persisted and validated, but no runtime consumer reads this yaml section yet — the live knob is the corresponding `NOVA_*` env var. Covers `orchestrator.*`, `federation.*`, `integrity_audit.*`, `signed_urls.*`, `master_key_rotation.*`. |
+
+Examples:
+
+```sh
+# live — takes effect immediately, no restart
+novactl config set uploads.limits.max_concurrent_global 8
+
+# restart — persisted now, coordinator must be restarted to apply
+novactl config set auth.issuer_url https://idp.example/
+```
+
+The second command succeeds (persists and validates) and adds
+`auth.issuer_url` to the `restart_required` list in the response.
+
+### `operator.yaml` as the single source of truth
+
+`PATCH` and `PUT` rewrite `operator.yaml` atomically (temp + rename).
+`NOVA_*` environment overrides continue to win at runtime and are reflected
+as `source: "env"` in the `fields` metadata. A `PATCH` to an env-shadowed
+field is persisted to `operator.yaml` but has no runtime effect until the
+env override is removed — the response will show `shadowed_by_env: true` for
+that field.
+
+Every successful write is audit-logged (action `config.updated`, actor =
+operator, old→new diff).
+
 ## First-run setup (M13)
 
 A fresh deployment boots in **setup mode** until the wizard writes a

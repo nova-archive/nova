@@ -384,6 +384,23 @@ prod profile, upload, read-back, transform, delete.
   - **Re-arming the wizard** — deleting `.bootstrap-complete` from the
     config volume puts the node back in setup mode; that is the
     documented redo path, and a thing to be careful of.
+- **Inspect and tune settings at runtime** — once the node is up you do
+  not need to edit `operator.yaml` by hand. Use `novactl config`:
+
+  ```sh
+  novactl auth login                            # operator, against the admin vhost
+  novactl config get --effects                  # print effective config + per-field source/effect
+  novactl config set uploads.limits.max_concurrent_global 8   # live — no restart needed
+  novactl config set auth.issuer_url https://idp.example/     # restart-required — flagged in response
+  ```
+
+  Fields marked `live` take effect immediately in process. Fields marked
+  `restart` are persisted and validated now but need a coordinator restart to
+  apply — the response lists them in `restart_required`. See
+  [`legal/OPERATOR_CHECKLIST.md`](legal/OPERATOR_CHECKLIST.md#runtime-configuration-m04)
+  for the full API reference, effect-class table, env-override behaviour,
+  and optimistic-concurrency (`If-Match`) details.
+
 - **See where the project is going** — [`ROADMAP.md`](ROADMAP.md)
   covers the rest of Phase 1 and the Phase 2 federation work
   (collection APIs, donor storage nodes, streaming envelope).
