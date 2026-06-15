@@ -24,7 +24,12 @@ export interface FormState {
   client_id: string
   public_uploads: boolean
   tos_url: string
-  paranoid: boolean
+  // Privacy hardening — protective state (true = hardened). `paranoid` is
+  // derived from these in toAnswers(), not stored. Note hardenPrivateDHT
+  // defaults true: the DHT's safe default is already private.
+  hardenNoIPRecording: boolean
+  hardenShortRetention: boolean
+  hardenPrivateDHT: boolean
 }
 
 export const initialForm: FormState = {
@@ -42,7 +47,9 @@ export const initialForm: FormState = {
   client_id: '',
   public_uploads: false,
   tos_url: '',
-  paranoid: false,
+  hardenNoIPRecording: false,
+  hardenShortRetention: false,
+  hardenPrivateDHT: true,
 }
 
 // toAnswers builds the wire payload, dropping empty optional fields so the
@@ -56,7 +63,12 @@ export function toAnswers(f: FormState): Record<string, unknown> {
     tls_mode: f.tls_mode,
     auth_mode: f.auth_mode,
     public_uploads: f.public_uploads,
-    paranoid: f.paranoid,
+    // Privacy constituents — explicit so operator.yaml is WYSIWYG. Note the
+    // polarity: the toggles store the *protective* state.
+    record_source_ip: !f.hardenNoIPRecording,
+    source_ip_retention_days: f.hardenShortRetention ? 1 : 30,
+    public_ipfs_dht: !f.hardenPrivateDHT,
+    paranoid: f.hardenNoIPRecording && f.hardenShortRetention && f.hardenPrivateDHT,
   }
   const dn = f.display_name.trim()
   if (dn) a.display_name = dn
