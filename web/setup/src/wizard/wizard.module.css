@@ -281,3 +281,16 @@
   border: var(--rule-w) solid var(--rule);
   border-radius: var(--r);
 }
+
+.paranoid { margin-top: 14px; }
+.partial { color: var(--ink-mute); font-weight: 400; }
+.children {
+  margin: 10px 0 0 14px;
+  padding-left: 14px;
+  border-left: var(--rule-w) solid var(--rule);
+}
+.childToggle { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.consequence { margin: 4px 0 0 26px; font-size: 0.82rem; color: var(--ink-mute); }
+.consequenceWarn { margin: 4px 0 0 26px; font-size: 0.82rem; color: var(--warn); }
+.infoRow { margin-top: 8px; font-size: 0.85rem; color: var(--ink-mute); }
+.muted { color: var(--ink-faint); }
