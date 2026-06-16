@@ -31,11 +31,20 @@ type ErrorResponse struct {
 }
 
 // RegisterRequest is sent by a donor; identity is derived from the verified
-// mTLS cert, NOT these fields (D-cap). The JSON carries only negotiation inputs.
+// mTLS cert, NOT these fields (D-cap). The fingerprints are echoed for
+// cross-check against the verified peer cert; the rest are self-declared
+// registration attributes plus the negotiation inputs.
 type RegisterRequest struct {
-	SupportedProtocols []string `json:"supported_protocols"`
-	Capabilities       []string `json:"capabilities"`
-	ClientVersion      string   `json:"client_version,omitempty"`
+	SupportedProtocols         []string       `json:"supported_protocols"`
+	Capabilities               []string       `json:"capabilities"`
+	ClientVersion              string         `json:"client_version,omitempty"`
+	NebulaCertFingerprint      string         `json:"nebula_cert_fingerprint,omitempty"`
+	FederationCertFingerprint  string         `json:"federation_cert_fingerprint,omitempty"`
+	DisplayName                string         `json:"display_name,omitempty"`
+	GeoDeclared                string         `json:"geo_declared,omitempty"`
+	CapacityBytes              int64          `json:"capacity_bytes,omitempty"`
+	BandwidthBudgetBytesPerDay int64          `json:"bandwidth_budget_bytes_per_day,omitempty"`
+	PolicyFilters              map[string]any `json:"policy_filters,omitempty"`
 }
 
 // RegisterResponse confirms the selected protocol + required capabilities.
@@ -51,8 +60,19 @@ type HeartbeatRequest struct {
 	FreeBytes   int64 `json:"free_bytes"`
 	StoredBytes int64 `json:"stored_bytes"`
 }
+
+// ConfigUpdates carries operator-tunable federation timers back to a donor on
+// each heartbeat so it can be retuned without redeploy.
+type ConfigUpdates struct {
+	HeartbeatIntervalSeconds int `json:"heartbeat_interval_seconds,omitempty"`
+	PinsPollIntervalSeconds  int `json:"pins_poll_interval_seconds,omitempty"`
+	MaxPinConcurrency        int `json:"max_pin_concurrency,omitempty"`
+}
+
 type HeartbeatResponse struct {
-	RepairTokenPublicKey string `json:"repair_token_public_key,omitempty"` // base64; delivered via config (D1)
+	ConfigUpdates        *ConfigUpdates `json:"config_updates"`
+	CurrentEpoch         int64          `json:"current_epoch"`
+	RepairTokenPublicKey string         `json:"repair_token_public_key,omitempty"` // empty until M4 (D1)
 }
 type ChangesRequest struct {
 	SinceSeq int64 `json:"since_seq"`
