@@ -13,12 +13,13 @@ import (
 func writeValidConfig(t *testing.T, healthAddr string) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, n := range []string{"fed.crt", "fed.key", "neb.crt", "neb.key", "swarm.key"} {
+	for _, n := range []string{"fed.ca", "fed.crt", "fed.key", "neb.crt", "neb.key", "swarm.key"} {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600))
 	}
 	storage := filepath.Join(dir, "data")
 	require.NoError(t, os.MkdirAll(storage, 0o700))
 	cfg := "coordinator_url: https://coord.example\n" +
+		"federation_ca_path: " + filepath.Join(dir, "fed.ca") + "\n" +
 		"federation_cert_path: " + filepath.Join(dir, "fed.crt") + "\n" +
 		"federation_key_path: " + filepath.Join(dir, "fed.key") + "\n" +
 		"nebula_cert_path: " + filepath.Join(dir, "neb.crt") + "\n" +

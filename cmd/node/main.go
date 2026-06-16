@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/node/agent"
 	nodeconfig "github.com/nova-archive/nova/internal/node/config"
 	"github.com/nova-archive/nova/internal/node/state"
@@ -115,12 +117,32 @@ func serve(cfg *nodeconfig.Config, stdout io.Writer) error {
 			srvErr <- e
 		}
 	}()
-	fmt.Fprintf(stdout, "nova-node: health on %s (no federation in M1)\n", cfg.HealthListenAddr)
+	fmt.Fprintf(stdout, "nova-node: health on %s\n", cfg.HealthListenAddr)
 
-	// The M1 agent is a no-op that returns on ctx cancel; start it for lifecycle
-	// symmetry with M2+, but block on a signal OR a server failure.
-	ag := agent.New(cfg, state.NewMemStore())
-	go func() { _ = ag.Run(ctx) }()
+	caPEM, err := os.ReadFile(cfg.FederationCAPath)
+	if err != nil {
+		return fmt.Errorf("read federation ca: %w", err)
+	}
+	certPEM, err := os.ReadFile(cfg.FederationCertPath)
+	if err != nil {
+		return fmt.Errorf("read federation cert: %w", err)
+	}
+	keyPEM, err := os.ReadFile(cfg.FederationKeyPath)
+	if err != nil {
+		return fmt.Errorf("read federation key: %w", err)
+	}
+	tlsCfg, err := transport.ClientTLSConfig(caPEM, certPEM, keyPEM)
+	if err != nil {
+		return fmt.Errorf("federation client tls: %w", err)
+	}
+	client := agent.NewHTTPClient(cfg.CoordinatorURL, tlsCfg)
+	regStore := state.NewFileRegistrationStore(cfg.StorageDir)
+	ag := agent.New(cfg, regStore, client, time.Duration(cfg.HeartbeatIntervalSeconds())*time.Second)
+	go func() {
+		if e := ag.Run(ctx); e != nil && ctx.Err() == nil {
+			slog.Error("nova-node agent stopped", "err", e)
+		}
+	}()
 
 	var runErr error
 	select {

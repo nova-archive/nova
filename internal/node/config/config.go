@@ -32,6 +32,7 @@ type FailureDomain struct {
 // Config is the donor node.yaml schema.
 type Config struct {
 	CoordinatorURL             string        `yaml:"coordinator_url"`
+	FederationCAPath           string        `yaml:"federation_ca_path"`
 	FederationCertPath         string        `yaml:"federation_cert_path"`
 	FederationKeyPath          string        `yaml:"federation_key_path"`
 	NebulaCertPath             string        `yaml:"nebula_cert_path"`
@@ -75,6 +76,7 @@ func (c *Config) validate() error {
 		return fmt.Errorf("node config: coordinator_url %q is not a valid http(s) URL", c.CoordinatorURL)
 	}
 	files := map[string]string{
+		"federation_ca_path":   c.FederationCAPath,
 		"federation_cert_path": c.FederationCertPath,
 		"federation_key_path":  c.FederationKeyPath,
 		"nebula_cert_path":     c.NebulaCertPath,
@@ -115,6 +117,10 @@ func checkWritableDir(dir string) error {
 	_ = os.Remove(probe)
 	return nil
 }
+
+// HeartbeatIntervalSeconds is the donor's initial heartbeat cadence before the
+// coordinator overrides it via config_updates. M2 default 300.
+func (c *Config) HeartbeatIntervalSeconds() int { return 300 }
 
 // checkReadableFile verifies a *_path is set, exists, is a regular file (not a
 // directory), and is readable. It does NOT parse the contents.
