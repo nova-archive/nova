@@ -14,6 +14,7 @@ ALLOWED=(
   "$MOD/internal/secret"
   "$MOD/internal/node"
   "$MOD/internal/federation/wire"
+  "$MOD/internal/federation/transport"
   "gopkg.in/yaml.v3"   # donor config parsing — the only third-party runtime dep
 )
 

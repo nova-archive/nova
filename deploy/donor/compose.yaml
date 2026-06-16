@@ -36,6 +36,9 @@ services:
     cap_drop: ["ALL"]
     volumes:
       - ./node.yaml:/etc/nova/node.yaml:ro
+      # Federation CA cert + node cert (non-secret) mounted read-only.
+      # Private key lives in ./secrets (see federation_key_path in node.yaml).
+      - ./federation:/etc/nova/federation:ro
       - ./secrets:/run/secrets:ro
       - node-data:/var/lib/nova-node/data
     restart: unless-stopped
