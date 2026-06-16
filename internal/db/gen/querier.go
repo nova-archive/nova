@@ -73,6 +73,7 @@ type Querier interface {
 	GetDerivativeCID(ctx context.Context, arg GetDerivativeCIDParams) (string, error)
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
 	GetMasterVersionByLabel(ctx context.Context, versionLabel string) (MasterKeyVersion, error)
+	GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)
 	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
 	GetSigningKeyByKID(ctx context.Context, kid string) (GetSigningKeyByKIDRow, error)
@@ -120,6 +121,7 @@ type Querier interface {
 	// with decided_by=NULL; coalesce so the listing never crashes after an
 	// auto-tombstone. '' renders as a null actor in the handler.
 	ListModerationDecisions(ctx context.Context, arg ListModerationDecisionsParams) ([]ListModerationDecisionsRow, error)
+	ListNodes(ctx context.Context) ([]ListNodesRow, error)
 	// The lifecycle sweep's claim (M11): soft-deletes older than the grace cutoff,
 	// excluding legal-held trees. Mirrors ListOverdueTombstones' legal-hold filter
 	// (holds are set tree-wide, so the blob's own DEK reflects the hold); the
@@ -137,12 +139,14 @@ type Querier interface {
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
 	// distinguishes 404 vs 409 via GetBlobMeta).
 	MarkSoftDeleted(ctx context.Context, cid string) (int64, error)
+	RegisterNode(ctx context.Context, arg RegisterNodeParams) (Node, error)
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
 	// parent visibility and hold no membership of their own. One query, no N+1.
 	ResolveEffectiveVisibility(ctx context.Context, cid string) ([]string, error)
 	RetirePriorActiveSigningKey(ctx context.Context, arg RetirePriorActiveSigningKeyParams) error
 	RetireVersion(ctx context.Context, versionLabel string) (int64, error)
+	RevokeNode(ctx context.Context, id pgtype.UUID) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id pgtype.UUID) error
 	RevokeRefreshTokenFamily(ctx context.Context, userID pgtype.UUID) error
 	RevokeUploadToken(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -150,6 +154,7 @@ type Querier interface {
 	// together; the old-version guard makes it idempotent and race-safe.
 	RewrapDEK(ctx context.Context, arg RewrapDEKParams) (int64, error)
 	RewrapSigningKey(ctx context.Context, arg RewrapSigningKeyParams) (int64, error)
+	RotateNodeCert(ctx context.Context, arg RotateNodeCertParams) (int64, error)
 	SampleActiveBlobs(ctx context.Context, limit int32) ([]string, error)
 	SampleDerivatives(ctx context.Context, limit int32) ([]SampleDerivativesRow, error)
 	// Integrity-audit queries (M8). See docs/specs/INTEGRITY_AUDIT.md and
@@ -168,6 +173,7 @@ type Querier interface {
 	ShredDEKsForBlobTree(ctx context.Context, arg ShredDEKsForBlobTreeParams) error
 	ShredExpiredRetiredSigningKeys(ctx context.Context, wrappedKey []byte) error
 	TouchUploadTokenUsed(ctx context.Context, id pgtype.UUID) error
+	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) (Node, error)
 	UpsertRepeatInfringer(ctx context.Context, userID pgtype.UUID) error
 }
 

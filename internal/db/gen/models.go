@@ -860,6 +860,16 @@ type Node struct {
 	JoinedAt                   time.Time
 	LastSeenAt                 pgtype.Timestamptz
 	LastStatusChangeAt         time.Time
+	TrustState                 string
+	SelectedProtocol           pgtype.Text
+	AdvertisedCapabilities     []string
+	RequiredCapabilities       []string
+	ClientVersion              pgtype.Text
+	CertRevokedAt              pgtype.Timestamptz
+	CertRotationStartedAt      pgtype.Timestamptz
+	CertRotatedAt              pgtype.Timestamptz
+	LastFreeBytes              pgtype.Int8
+	LastStoredBytes            pgtype.Int8
 }
 
 type PinAssignment struct {
