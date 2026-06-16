@@ -400,9 +400,11 @@ func run() error {
 	return c.Run(ctx)
 }
 
-// runBoth runs each function concurrently under a derived context; the first
-// non-nil error cancels the rest and is returned. A clean (nil) return from one
-// runner does NOT cancel the others — only an error does.
+// runBoth runs each function concurrently under a derived context. The exit of
+// ANY runner — error OR clean return — tears down the rest: a long-running
+// server returning at all is an exit event, and we must never leave the
+// federation listener serving after the public coordinator has stopped (or vice
+// versa). The first non-nil error is returned (nil if every runner exited clean).
 func runBoth(ctx context.Context, runs ...func(context.Context) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -415,8 +417,8 @@ func runBoth(ctx context.Context, runs ...func(context.Context) error) error {
 	for range runs {
 		if e := <-errc; e != nil && first == nil {
 			first = e
-			cancel()
 		}
+		cancel() // any exit cancels the peers so the process shuts down as a unit
 	}
 	return first
 }
