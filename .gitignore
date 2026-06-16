@@ -4,6 +4,7 @@
 /build/
 /coordinator
 /novactl
+/node
 /setup-wizard
 coverage.out
 coverage.html
