@@ -100,7 +100,7 @@ coordinator federation server + listener (`internal/federation/coordinator`) wit
 `trust_state='probationary'` at register; the donor register→heartbeat agent loop
 (`internal/node/agent`) over the mTLS client; atomic JSON registration state
 (`internal/node/state`); the `nodes`-scoped migration `0011` + `queries/federation.sql`;
-`novactl node ca-init/issue/revoke/rotate-cert/nebula-template`; the operator
+`novactl node ca-init/issue/revoke/rotate-cert/list/nebula-template`; the operator
 `federation` config block; operator + donor Nebula-sidecar compose wiring (minimal).
 
 **Out of scope (later milestones).** `pin_changes` log + snapshot/epoch recovery +
@@ -250,31 +250,55 @@ registered node stays `active`.
 
 ## Cert lifecycle (`novactl node`)
 
+`ca-init` / `issue` / `nebula-template` are **local file operations only** (no DB,
+no API). `revoke` / `rotate-cert` / `list` mutate/read the registry **directly via
+`DATABASE_URL`** — the same pattern `novactl setup` already uses, because **no
+node admin API exists in M2** (operational mutations elsewhere use the admin API,
+but standing up an authenticated `/api/v1/admin/nodes` surface + a node dashboard
+is not load-bearing for M2 and is a natural later addition). Enforcement does not
+depend on the API: the federation server reads `nodes.status` / the stored
+fingerprint **live** on every request, so a direct write takes effect at once.
+
 | Command | Behavior |
 |---|---|
-| `node ca-init` | Generate the federation X.509 CA (`federation-ca.crt` / `federation-ca.key` / `federation-ca.manifest.json`) **and** the coordinator's federation **server** cert (`coordinator-federation.crt` / `.key`). Explicit names — never a generic `ca.crt` (the donor bundle has two trust roots). |
-| `node issue --name <d>` | Donor federation client cert + key + `node-manifest.json`; mints + embeds `node_id` UUID in the URI SAN; prints fingerprint. No DB write. |
-| `node revoke <id>` | `nodes.status='revoked'` + `cert_revoked_at`; the mTLS verifier **fails closed** on the node's fingerprint at the next handshake (DB-backed check — **no** CRL/OCSP). Emits `federation.node_revoked`. (The poison-pill `pin_assignments` purge + re-replication is M4/M5; none exist in M2.) |
-| `node rotate-cert <id>` | Issue a replacement cert with the **same** `node_id` URI SAN; on activation, update `nodes.federation_cert_fingerprint` to the new DER fingerprint (`cert_rotation_started_at` / `cert_rotated_at`); the old cert fails after activation. |
-| `node nebula-template --name <d> --nebula-ip <ip>` | Emit Nebula `config.yml` + operator README + donor `node.yaml` + a compose fragment, with explicit `nebula-ca.crt`/`nebula.crt`/`nebula.key` vs `federation-ca.crt`/`federation.crt`/`federation.key`, lighthouse/bind placeholders, and the exact `nebula-cert` commands to run externally. **No shell-out, no Nebula import.** |
+| `node ca-init` | Generate the federation X.509 CA (`federation-ca.crt` / `federation-ca.key` / `federation-ca.manifest.json`) **and** the coordinator's federation **server** cert (`coordinator-federation.crt` / `.key`). Explicit names — never a generic `ca.crt` (the donor bundle has two trust roots). Local files only. |
+| `node issue --name <d>` | Donor federation client cert + key + `node-manifest.json`; mints + embeds `node_id` UUID in the URI SAN (`nova://node/<uuid>`); prints the DER fingerprint. Local files only, **no DB write**. |
+| `node revoke <id>` | DB-direct `UPDATE nodes SET status='revoked', cert_revoked_at=now() WHERE id=$1`. The federation handler then **fails closed** for that node (see Revocation enforcement). The `federation.node_revoked` **webhook is deferred to M5** — `internal/webhook` is an empty placeholder today (no dispatcher exists), and M5 owns the federation webhook wiring. The poison-pill `pin_assignments` purge + re-replication is M4/M5 (none exist in M2). |
+| `node rotate-cert <id>` | Issue a replacement cert with the **same** `node_id` URI SAN + a new key, compute its new DER fingerprint, then DB-direct `UPDATE nodes SET federation_cert_fingerprint=<new>, cert_rotation_started_at=now(), cert_rotated_at=now() WHERE id=$1`. Immediate cutover (see Cert rotation). |
+| `node list` | DB-direct `SELECT` of the registry (id, display_name, status, trust_state, selected_protocol, last_seen_at) for operator visibility. |
+| `node nebula-template --name <d> --nebula-ip <ip>` | Emit Nebula `config.yml` + operator README + donor `node.yaml` + a compose fragment, with explicit `nebula-ca.crt`/`nebula.crt`/`nebula.key` vs `federation-ca.crt`/`federation.crt`/`federation.key`, lighthouse/bind placeholders, and the exact `nebula-cert` commands to run externally. **No shell-out, no Nebula import.** Local files only. |
 
-### Revocation enforcement
+### Revocation & identity enforcement (handler-level authorization)
 
-Revocation is a **coordinator-side check**, not PKI machinery: the federation
-handler resolves the verified fingerprint → `nodes` row and rejects when
-`status='revoked'`. This is sufficient because the coordinator controls the only
-federation listener a donor cert authenticates against. Nebula-cert revocation
-(overlay membership) stays operator-driven via the lighthouse, documented in the
-template README.
+Revocation is a **handler-level authorization check**, not TLS-handshake PKI
+(no CRL/OCSP — a revoked cert is still CA-valid). After a successful mTLS
+handshake the handler:
+
+1. Extracts the verified leaf → `node_id` (URI SAN) + DER `fingerprint`.
+2. `SELECT … FROM nodes WHERE id = node_id`.
+   - **Not found** → on `/register`, first-contact insert; on `/heartbeat`,
+     `403` (`registration_required`).
+   - **`status='revoked'`** → `403` (`node_revoked`).
+   - **stored `federation_cert_fingerprint` ≠ presented `fingerprint`** → `403`
+     (`fingerprint_mismatch`) — an old / un-activated cert (the rotation cutover).
+   - else → proceed (register idempotent `200`; heartbeat updates `last_seen_at`).
+
+Lookup is keyed on **`node_id` (the stable URI-SAN UUID)**, with the stored
+fingerprint as the authoritative *current* cert — so rotation (same `node_id`,
+new fingerprint) and an old cert (same `node_id`, stale fingerprint) are
+distinguishable. Nebula-cert revocation (overlay membership) stays operator-driven
+via the lighthouse, documented in the template README.
 
 ### Cert rotation — M2 is downtime cutover
 
-With a single `nodes.federation_cert_fingerprint`, rotation is an **immediate
-cutover**: issue → deliver → activate (fingerprint swap) → old cert fails.
-Zero-downtime overlap would need `pending_`/`previous_federation_cert_fingerprint`
-+ `cert_rotation_expires_at` (or a `node_certificates` table); M2 does **not**
-build that. The rotation test asserts the cutover semantics and that `node_id` is
-unchanged across it (rotation must never look like a second node registering).
+`novactl node rotate-cert` issues the new cert **and immediately swaps the stored
+fingerprint** in the DB (operator-driven activation). Until the operator delivers
+the new bundle and restarts the donor, the donor's old cert hits
+`fingerprint_mismatch` `403` — the accepted **downtime cutover**. Zero-downtime
+overlap would need `pending_`/`previous_federation_cert_fingerprint` +
+`cert_rotation_expires_at` (or a `node_certificates` table); M2 does **not** build
+that. The rotation test asserts old-fails / new-works / `node_id`-unchanged
+(rotation must never look like a second node registering).
 
 ## Donor side
 
