@@ -154,3 +154,7 @@ setup-spa: setup-install setup-lint setup-test setup-build hermetic-setup
 
 # web builds + checks all web workspaces (npm ci installs all workspaces).
 web: admin widget setup-spa
+
+.PHONY: node-deps-check
+node-deps-check:
+	./scripts/check_node_deps.sh
