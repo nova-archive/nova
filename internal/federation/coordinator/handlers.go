@@ -126,7 +126,55 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleHeartbeat is implemented in a later task; stub so the mux compiles.
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "not_implemented", "heartbeat lands in a later task")
+	id, err := s.authenticate(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthenticated", err.Error())
+		return
+	}
+	nodeUUID, err := uuid.Parse(id.NodeID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_node_id", "")
+		return
+	}
+	ctx := r.Context()
+	node, err := s.q.GetNodeByID(ctx, pgUUIDFrom(nodeUUID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusForbidden, "registration_required", "node must register first")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "lookup failed")
+		return
+	}
+	if node.Status == gen.NodeStatusRevoked {
+		writeError(w, http.StatusForbidden, "node_revoked", "")
+		return
+	}
+	if node.FederationCertFingerprint != id.Fingerprint {
+		writeError(w, http.StatusForbidden, "fingerprint_mismatch", "presented cert is not the active cert")
+		return
+	}
+
+	var req wire.HeartbeatRequest
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req) // tolerant: empty body ok
+
+	if _, err := s.q.UpdateNodeHeartbeat(ctx, gen.UpdateNodeHeartbeatParams{
+		ID:              pgUUIDFrom(nodeUUID),
+		LastFreeBytes:   pgInt8(req.FreeBytes),
+		LastStoredBytes: pgInt8(req.StoredBytes),
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "heartbeat failed")
+		return
+	}
+
+	timers := s.cfg.Timers
+	writeJSON(w, http.StatusOK, wire.HeartbeatResponse{
+		ConfigUpdates:        &timers,
+		CurrentEpoch:         0,  // M3 gives this meaning
+		RepairTokenPublicKey: "", // M4 populates
+	})
 }
+
+// pgInt8 wraps a byte count into a (non-null) bigint.
+func pgInt8(v int64) pgtype.Int8 { return pgtype.Int8{Int64: v, Valid: true} }
