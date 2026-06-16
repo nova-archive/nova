@@ -70,6 +70,7 @@ import (
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
+	"github.com/nova-archive/nova/internal/secret"
 	"github.com/nova-archive/nova/internal/setup"
 	novaimage "github.com/nova-archive/nova/nova-image"
 	"github.com/nova-archive/nova/nova-image/imageproduct"
@@ -413,7 +414,7 @@ func buildAuthConfig(ctx context.Context, q *gen.Queries, rc resolvedConfig) (co
 	}
 
 	// Local-issuer mode: load the Ed25519 signing key (refuse to start if absent).
-	seed, signerSrc, err := config.ResolveSecret("NOVA_OIDC_SIGNING_KEY", "NOVA_OIDC_SIGNING_KEY_FILE", "/run/secrets/oidc-signing-key")
+	seed, signerSrc, err := secret.ResolveSecret("NOVA_OIDC_SIGNING_KEY", "NOVA_OIDC_SIGNING_KEY_FILE", "/run/secrets/oidc-signing-key")
 	if err != nil || strings.TrimSpace(seed) == "" {
 		return ac, errors.New("NOVA_OIDC_SIGNING_KEY is required in local auth mode " +
 			"(or set NOVA_AUTH_ISSUER_URL for external OIDC); refusing to start")

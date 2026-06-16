@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nova-archive/nova/internal/config"
+	"github.com/nova-archive/nova/internal/secret"
 )
 
 // defaultSecretsDir is the base directory for the file-mount fallback of the
@@ -98,7 +98,7 @@ func NewKeystoreFromEnv(pool *pgxpool.Pool) (*Keystore, error) {
 	masters := make(map[string][]byte, len(labels))
 	for label := range labels {
 		up := strings.ToUpper(label)
-		val, source, err := config.ResolveSecret(
+		val, source, err := secret.ResolveSecret(
 			prefix+up,
 			prefix+up+"_FILE",
 			filepath.Join(defaultSecretsDir, "master-key-"+label),
