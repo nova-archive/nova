@@ -45,6 +45,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -69,6 +70,8 @@ import (
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
+	fedcoord "github.com/nova-archive/nova/internal/federation/coordinator"
+	"github.com/nova-archive/nova/internal/federation/wire"
 	"github.com/nova-archive/nova/internal/ipfs"
 	"github.com/nova-archive/nova/internal/secret"
 	"github.com/nova-archive/nova/internal/setup"
@@ -360,7 +363,73 @@ func run() error {
 			slog.Warn("privacy posture", "detail", w)
 		}
 	}
+
+	// Federation control channel (P2-M2). Enabled when operator.yaml sets
+	// federation.listen_addr. Bound BEFORE serving so a dead federation listener
+	// fails startup rather than leaving the public coordinator silently up.
+	if opCfg != nil && opCfg.Federation.Enabled() {
+		fed := opCfg.Federation
+		dev := isLoopback(fed.ListenAddr)
+		if err := fed.Validate(dev); err != nil {
+			return fmt.Errorf("federation config: %w", err)
+		}
+		caPEM, err := os.ReadFile(fed.FederationCAPath)
+		if err != nil {
+			return fmt.Errorf("federation ca: %w", err)
+		}
+		certPEM, err := os.ReadFile(fed.FederationCertPath)
+		if err != nil {
+			return fmt.Errorf("federation cert: %w", err)
+		}
+		keyPEM, err := os.ReadFile(fed.FederationKeyPath)
+		if err != nil {
+			return fmt.Errorf("federation key: %w", err)
+		}
+		hb, poll, conc := fed.FederationTimers()
+		fedSrv := fedcoord.New(gen.New(pool), fedcoord.Config{
+			ListenAddr: fed.ListenAddr,
+			Timers:     wire.ConfigUpdates{HeartbeatIntervalSeconds: hb, PinsPollIntervalSeconds: poll, MaxPinConcurrency: conc},
+			TLS:        fedcoord.TLSMaterial{CAPEM: caPEM, CertPEM: certPEM, KeyPEM: keyPEM},
+		})
+		if err := fedSrv.Listen(); err != nil {
+			return fmt.Errorf("federation listen %s: %w", fed.ListenAddr, err)
+		}
+		slog.Info("federation listener bound", "listen", fedSrv.Addr())
+		return runBoth(ctx, c.Run, fedSrv.Run)
+	}
 	return c.Run(ctx)
+}
+
+// runBoth runs each function concurrently under a derived context; the first
+// non-nil error cancels the rest and is returned. A clean (nil) return from one
+// runner does NOT cancel the others — only an error does.
+func runBoth(ctx context.Context, runs ...func(context.Context) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errc := make(chan error, len(runs))
+	for _, run := range runs {
+		run := run
+		go func() { errc <- run(ctx) }()
+	}
+	var first error
+	for range runs {
+		if e := <-errc; e != nil && first == nil {
+			first = e
+			cancel()
+		}
+	}
+	return first
+}
+
+// isLoopback reports whether addr's host is a loopback address (dev/test mode
+// where the nebula_interface guard is skipped).
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // buildAuthConfig assembles the coordinator's auth wiring from the environment.

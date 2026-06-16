@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/nova-archive/nova/internal/config"
@@ -67,6 +69,16 @@ func TestResolveOperatorConfigAssemblyConcurrency(t *testing.T) {
 	// default when neither set
 	rc = resolveOperatorConfig(nil, func(string) string { return "" })
 	require.Equal(t, config.DefaultMaxConcurrentAssembly, rc.MaxConcurrentAssembly)
+}
+
+func TestRunBothStopsOnFirstError(t *testing.T) {
+	ctx := context.Background()
+	good := func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+	bad := func(ctx context.Context) error { return errors.New("boom") }
+	err := runBoth(ctx, bad, good)
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("err = %v, want boom (and good must be cancelled)", err)
+	}
 }
 
 func TestApplyEnvOverridesAssemblyConcurrency(t *testing.T) {
