@@ -1657,18 +1657,20 @@ echo "OK: donor image inventory clean"
 - [ ] **Step 4: Add the Makefile node target block** (append after the `docker-build` target)
 
 ```makefile
-.PHONY: node-build node-validate node-deps-check node-image node-image-inventory node-sbom
+.PHONY: node-build node-validate node-image node-image-inventory node-sbom
 
 node-build:
 	mkdir -p bin
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/nova-node ./cmd/node
 
 # Runs the binary's validate behavior over good + malformed fixtures (table-driven).
+# NOTE: use `go test -v` directly, NOT $(GOTESTV) — that variable already carries
+# `./...`, which would run the whole repo suite instead of just the donor packages.
 node-validate:
-	$(GOTESTV) ./cmd/node/... ./internal/node/config/... -count=1
+	go test -v ./cmd/node/... ./internal/node/config/... -count=1
 
-node-deps-check:
-	./scripts/check_node_deps.sh
+# node-deps-check is added in Task 7 (with its own .PHONY); do NOT redefine it here
+# (a duplicate target triggers a make "overriding recipe" error).
 
 node-image:
 	docker build -f docker/node.Dockerfile -t nova-node:dev .
