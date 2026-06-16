@@ -2876,12 +2876,13 @@ git commit -m "feat(p2-m2): novactl node ca-init/issue/nebula-template (P2-M2)"
 
 - [ ] **Step 1: Write the failing test**
 
+`dbtest.New` spins up an ephemeral Postgres **testcontainer** and returns only a `*pgxpool.Pool` — it never exposes a DSN, so a command that reads `DATABASE_URL` internally cannot reach the test DB. Therefore each registry command is split into a thin flag-parsing/`DATABASE_URL` wrapper (`cmdNodeRevoke`) and a **testable core that takes an injected `*gen.Queries`** (`revokeNode`). Tests drive the core with the `dbtest` pool.
+
 ```go
 package main
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -2890,22 +2891,27 @@ import (
 	"github.com/nova-archive/nova/internal/dbtest"
 )
 
-func TestNodeRevokeDBDirect(t *testing.T) {
-	ctx := context.Background()
-	pool := dbtest.New(t, ctx)
-	q := gen.New(pool)
-	id := uuid.New()
-	// seed a node row
+func seedNode(t *testing.T, ctx context.Context, q *gen.Queries, id uuid.UUID, fp string) {
+	t.Helper()
 	_, err := q.RegisterNode(ctx, gen.RegisterNodeParams{
-		ID: pgtype.UUID{Bytes: id, Valid: true},
-		NebulaCertFingerprint: "sha256:n", FederationCertFingerprint: "sha256:f",
-		PolicyFilters: []byte("{}"), AdvertisedCapabilities: []string{}, RequiredCapabilities: []string{},
+		ID:                        pgtype.UUID{Bytes: id, Valid: true},
+		NebulaCertFingerprint:     "sha256:n",
+		FederationCertFingerprint: fp,
+		PolicyFilters:             []byte("{}"),
+		AdvertisedCapabilities:    []string{},
+		RequiredCapabilities:      []string{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("DATABASE_URL", os.Getenv("TEST_DATABASE_URL")) // dbtest's DSN; see note
-	if err := cmdNode([]string{"revoke", "--id", id.String(), "--no-confirm"}); err != nil {
+}
+
+func TestRevokeNodeCore(t *testing.T) {
+	ctx := context.Background()
+	q := gen.New(dbtest.New(t, ctx))
+	id := uuid.New()
+	seedNode(t, ctx, q, id, "sha256:f")
+	if err := revokeNode(ctx, q, pgtype.UUID{Bytes: id, Valid: true}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := q.GetNodeByID(ctx, pgtype.UUID{Bytes: id, Valid: true})
@@ -2913,9 +2919,23 @@ func TestNodeRevokeDBDirect(t *testing.T) {
 		t.Fatalf("status = %v", got.Status)
 	}
 }
+
+func TestRotateNodeCertCore(t *testing.T) {
+	ctx := context.Background()
+	q := gen.New(dbtest.New(t, ctx))
+	id := uuid.New()
+	seedNode(t, ctx, q, id, "sha256:old")
+	if err := rotateNodeCert(ctx, q, pgtype.UUID{Bytes: id, Valid: true}, "sha256:new"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := q.GetNodeByID(ctx, pgtype.UUID{Bytes: id, Valid: true})
+	if got.FederationCertFingerprint != "sha256:new" || !got.CertRotatedAt.Valid {
+		t.Fatalf("rotate not applied: fp=%s rotated=%v", got.FederationCertFingerprint, got.CertRotatedAt.Valid)
+	}
+}
 ```
 
-> Note: align `DATABASE_URL` with whatever DSN `dbtest.New` uses (read `internal/dbtest/dbtest.go`). If `dbtest` exposes the DSN, use it directly; otherwise set `DATABASE_URL` to the same env var `dbtest` reads so the DB-direct command hits the same database.
+> Note: confirm the seed params + `gen.NodeStatusRevoked` + `got.CertRotatedAt` (pgtype.Timestamptz) names against Task 5's sqlc output.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -2976,16 +2996,24 @@ func cmdNodeRevoke(args []string) error {
 		}
 	}
 	return withNodeDB(func(ctx context.Context, q *gen.Queries) error {
-		n, err := q.RevokeNode(ctx, pgID)
-		if err != nil {
+		if err := revokeNode(ctx, q, pgID); err != nil {
 			return err
-		}
-		if n == 0 {
-			return fmt.Errorf("node %s not found or already revoked", *idStr)
 		}
 		fmt.Printf("revoked node %s\n", *idStr)
 		return nil
 	})
+}
+
+// revokeNode is the testable core: it flips status to revoked.
+func revokeNode(ctx context.Context, q *gen.Queries, pgID pgtype.UUID) error {
+	n, err := q.RevokeNode(ctx, pgID)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("node not found or already revoked")
+	}
+	return nil
 }
 
 func cmdNodeRotateCert(args []string) error {
@@ -3028,18 +3056,23 @@ func cmdNodeRotateCert(args []string) error {
 	}
 	newFP := leafFingerprint(certPEM)
 	if err := withNodeDB(func(ctx context.Context, q *gen.Queries) error {
-		n, err := q.RotateNodeCert(ctx, gen.RotateNodeCertParams{ID: pgtype.UUID{Bytes: id, Valid: true}, FederationCertFingerprint: newFP})
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return fmt.Errorf("node %s not found", *idStr)
-		}
-		return nil
+		return rotateNodeCert(ctx, q, pgtype.UUID{Bytes: id, Valid: true}, newFP)
 	}); err != nil {
 		return err
 	}
 	fmt.Printf("rotated node %s — new fingerprint %s active (downtime cutover until donor restarts with %s)\n", *idStr, newFP, outDir)
+	return nil
+}
+
+// rotateNodeCert is the testable core: it swaps the stored fingerprint to newFP.
+func rotateNodeCert(ctx context.Context, q *gen.Queries, pgID pgtype.UUID, newFP string) error {
+	n, err := q.RotateNodeCert(ctx, gen.RotateNodeCertParams{ID: pgID, FederationCertFingerprint: newFP})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("node not found")
+	}
 	return nil
 }
 
