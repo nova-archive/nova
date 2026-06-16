@@ -97,6 +97,14 @@ type ReplicationFactor struct {
 }
 
 type Federation struct {
+	// M2 additions: listener + mTLS material.
+	ListenAddr         string `yaml:"listen_addr"`
+	NebulaInterface    string `yaml:"nebula_interface"`
+	FederationCAPath   string `yaml:"federation_ca_path"`
+	FederationCertPath string `yaml:"federation_cert_path"`
+	FederationKeyPath  string `yaml:"federation_key_path"`
+
+	// Existing timers.
 	HeartbeatIntervalSeconds     int `yaml:"heartbeat_interval_seconds"`
 	PinsPollIntervalSeconds      int `yaml:"pins_poll_interval_seconds"`
 	MaxPinConcurrency            int `yaml:"max_pin_concurrency"`
@@ -104,6 +112,10 @@ type Federation struct {
 	UnreachableAfterSeconds      int `yaml:"unreachable_after_seconds"`
 	EvictedAfterSeconds          int `yaml:"evicted_after_seconds"`
 }
+
+// Enabled reports whether the federation listener should run (operator set a
+// listen_addr).
+func (f Federation) Enabled() bool { return f.ListenAddr != "" }
 
 // IntegrityAudit mirrors the operator.yaml integrity_audit section. Phase 1
 // (M8) consumes the INTEGRITY_AUDIT.md schedule defaults as code constants via
