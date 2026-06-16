@@ -40,6 +40,8 @@ Located in [`phase2/`](phase2/).
 |---|---|
 | [phase2/2026-06-11-phase2-federation.md](phase2/2026-06-11-phase2-federation.md) | **Master plan** — milestone table P2-M0 … P2-M10; P2-M0 (spec reconciliation) and P2-M1 (repo separation) detailed |
 | [phase2/2026-06-13-phase2-m0-spec-reconciliation.md](phase2/2026-06-13-phase2-m0-spec-reconciliation.md) | P2-M0 — spec reconciliation (docs-only gate; detailed authority) |
+| [phase2/2026-06-15-phase2-m1-build-repo-separation.md](phase2/2026-06-15-phase2-m1-build-repo-separation.md) | P2-M1 — build/repo separation (`nova-node` boundary, split images, SBOM/sign) |
+| [phase2/2026-06-16-phase2-m2-identity-registration.md](phase2/2026-06-16-phase2-m2-identity-registration.md) | P2-M2 — identity, registration, capability negotiation (mTLS control channel) |
 
 Each subsequent Phase 2 milestone gets its own detailed plan in `phase2/` at the
 start of that milestone, the same cadence Phase 1 used.

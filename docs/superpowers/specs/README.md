@@ -42,6 +42,8 @@ Located in [`phase2/`](phase2/).
 |---|---|
 | [phase2/2026-06-11-phase2-federation-design.md](phase2/2026-06-11-phase2-federation-design.md) | **Master design** — donor nodes, binary split, mesh federation, healing, possession audits, streaming-AEAD; spec-reconciliation backlog |
 | [phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md](phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md) | P2-M0 — spec reconciliation (+ post-1.0 future-proofing) |
+| [phase2/2026-06-15-phase2-m1-build-repo-separation-design.md](phase2/2026-06-15-phase2-m1-build-repo-separation-design.md) | P2-M1 — build/repo separation (`nova-node` dependency-boundary artifact) |
+| [phase2/2026-06-16-phase2-m2-identity-registration-design.md](phase2/2026-06-16-phase2-m2-identity-registration-design.md) | P2-M2 — identity, registration, capability negotiation (live mTLS federation) |
 
 Per-milestone Phase 2 designs (P2-M0 … P2-M10) are added to `phase2/` as each
 milestone begins, mirroring the Phase 1 cadence.
