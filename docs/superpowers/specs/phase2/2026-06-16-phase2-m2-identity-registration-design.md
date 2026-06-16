@@ -306,10 +306,14 @@ that. The rotation test asserts old-fails / new-works / `node_id`-unchanged
   unregistered, `register`; then `heartbeat` every `heartbeat_interval_seconds`
   (honoring `config_updates`), with bounded backoff on transport failure. **No
   `pins/changes` poll** (M3).
-- **`internal/node/transport` use:** the donor builds its mTLS client from
+- **`internal/federation/transport` use:** the donor builds its mTLS client from
   `federation_cert_path` / `federation_key_path` + `federation_ca_path`, reading
-  the material through the `internal/secret` precedence chain — the "donor begins
-  *using* `ResolveSecret` from M2" the M1 design anticipated.
+  the PEM **at the configured `node.yaml` paths** (`os.ReadFile`) — these may point
+  at `/run/secrets/*` mounts, which is how the donor honors the secret-mount model.
+  (`secret.ResolveSecret` is *not* used here: it resolves env-keyed secret
+  *contents*, not the path-based `*_path` references the M1 design itself flagged
+  it is the wrong tool for. The donor may grow env/`_FILE` overrides later; M2 is
+  path-based.)
 - **`internal/node/state`** gains a `RegistrationStore` (kept **separate** from
   the existing cursor/jti `Store` interface, which stays an M3/M4 seam):
 
