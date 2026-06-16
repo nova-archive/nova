@@ -16,6 +16,9 @@
 //	novactl upload-token create [--label <s>] [--collection <uuid>] [--product <type>] [--max-file-size <bytes>] [--expires <dur>]
 //	novactl upload-token list
 //	novactl upload-token revoke <id> [--no-confirm]
+//	novactl node ca-init [--dir <d>] [--coordinator-ip <ip>] [--coordinator-dns <dns>]
+//	novactl node issue --name <name> [--dir <d>] [--out <dir>]
+//	novactl node nebula-template --name <name> [--nebula-ip <ip/cidr>] [--out <dir>]
 package main
 
 import (
@@ -1238,7 +1241,7 @@ func promptAnswers() (setup.Answers, error) {
 // --------------------------------------------------------------------------
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup|upload-token|config> <subcommand>")
+	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup|upload-token|config|node> <subcommand>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth login [--url <base>] [--username <u>]")
@@ -1260,6 +1263,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  config get [--effects]")
 	fmt.Fprintln(os.Stderr, "  config set <dotted.key> <value> [--json]")
 	fmt.Fprintln(os.Stderr, "  config apply --config-file <path>")
+	fmt.Fprintln(os.Stderr, "  node ca-init [--dir <d>] [--coordinator-ip <ip>] [--coordinator-dns <dns>]")
+	fmt.Fprintln(os.Stderr, "  node issue --name <name> [--dir <d>] [--out <dir>]")
+	fmt.Fprintln(os.Stderr, "  node nebula-template --name <name> [--nebula-ip <ip/cidr>] [--out <dir>]")
 }
 
 func main() {
@@ -1285,6 +1291,8 @@ func main() {
 		err = cmdUploadToken(args[1:])
 	case "config":
 		err = cmdConfig(args[1:])
+	case "node":
+		err = cmdNode(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()

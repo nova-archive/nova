@@ -1,0 +1,16 @@
+# nova-node config for {{.Name}}. Federation cert/key issued by `novactl node issue`;
+# Nebula cert/key issued by `nebula-cert`. Two distinct trust roots — do not mix.
+coordinator_url: "https://{{.CoordinatorOverlayIP}}:9443"
+federation_ca_path:   /etc/nova/federation/federation-ca.crt
+federation_cert_path: /etc/nova/federation/federation.crt
+federation_key_path:  /etc/nova/federation/federation.key
+nebula_cert_path: /etc/nebula/nebula.crt
+nebula_key_path:  /etc/nebula/nebula.key
+swarm_key_path:   /etc/nova/swarm.key
+storage_dir: /var/lib/nova-node
+bandwidth_budget_bytes_per_day: 53687091200
+health_listen_addr: "127.0.0.1:9100"
+failure_domain:
+  provider: ""
+  asn: ""
+  region: ""

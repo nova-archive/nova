@@ -1,0 +1,27 @@
+# Nova donor Nebula sidecar config for {{.Name}} (overlay IP {{.NebulaIP}}).
+# Provision the Nebula cert/key with the upstream nebula-cert tool (NOT novactl):
+#   nebula-cert sign -name "{{.Name}}" -ip "{{.NebulaIP}}" -ca-crt nebula-ca.crt -ca-key nebula-ca.key
+pki:
+  ca: /etc/nebula/nebula-ca.crt
+  cert: /etc/nebula/nebula.crt
+  key: /etc/nebula/nebula.key
+static_host_map:
+  "{{.LighthouseOverlayIP}}": ["{{.LighthousePublicIP}}:4242"]
+lighthouse:
+  am_lighthouse: false
+  hosts:
+    - "{{.LighthouseOverlayIP}}"
+listen:
+  host: 0.0.0.0
+  port: 4242
+tun:
+  dev: nebula1
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: any
+      proto: any
+      host: any

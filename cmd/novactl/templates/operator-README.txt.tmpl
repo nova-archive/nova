@@ -1,0 +1,22 @@
+Nova donor bundle for {{.Name}} (Nebula overlay IP {{.NebulaIP}})
+================================================================
+
+TWO trust roots — keep them straight:
+  Nebula overlay (mesh membership):   nebula-ca.crt / nebula.crt / nebula.key
+  Nova federation HTTP mTLS (app id): federation-ca.crt / federation.crt / federation.key
+
+1. Nebula certs (run on the operator host that holds the Nebula CA — NOT novactl):
+     nebula-cert ca   -name "Nova Overlay CA"             # once, if you have no CA yet
+     nebula-cert sign -name "{{.Name}}" -ip "{{.NebulaIP}}" \
+                      -ca-crt nebula-ca.crt -ca-key nebula-ca.key
+   Copy nebula-ca.crt, nebula.crt, nebula.key into this bundle.
+
+2. Federation certs (already issued by `novactl node issue`):
+     federation-ca.crt, federation.crt, federation.key
+
+3. Hand the bundle to the donor. They run:
+     docker compose up -d
+   nova-node binds only the Nebula interface; it publishes no ports.
+
+Lighthouse: {{.LighthouseOverlayIP}} (public {{.LighthousePublicIP}}).
+Coordinator federation endpoint: https://{{.CoordinatorOverlayIP}}:9443

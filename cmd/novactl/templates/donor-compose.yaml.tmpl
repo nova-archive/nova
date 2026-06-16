@@ -1,0 +1,40 @@
+# Donor deployment for {{.Name}}. Nebula runs as a privileged sidecar; nova-node
+# shares its network namespace and is otherwise minimal — no published ports.
+services:
+  nebula:
+    image: nebulaoss/nebula:latest
+    cap_add: ["NET_ADMIN"]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes:
+      - ./nebula-config.yml:/etc/nebula/config.yml:ro
+      - ./nebula-ca.crt:/etc/nebula/nebula-ca.crt:ro
+      - ./nebula.crt:/etc/nebula/nebula.crt:ro
+      - ./nebula.key:/etc/nebula/nebula.key:ro
+    command: ["-config", "/etc/nebula/config.yml"]
+    restart: unless-stopped
+
+  nova-node:
+    image: ghcr.io/nova-archive/nova-node:latest
+    depends_on: [nebula]
+    network_mode: "service:nebula"   # share the overlay; no own ports
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    volumes:
+      - ./node.yaml:/etc/nova/node.yaml:ro
+      - ./federation-ca.crt:/etc/nova/federation/federation-ca.crt:ro
+      - ./federation.crt:/etc/nova/federation/federation.crt:ro
+      - ./federation.key:/etc/nova/federation/federation.key:ro
+      - ./swarm.key:/etc/nova/swarm.key:ro
+      - nova-node-data:/var/lib/nova-node
+    command: ["--config", "/etc/nova/node.yaml"]
+    healthcheck:
+      test: ["CMD", "/nova-node", "--healthcheck", "--config", "/etc/nova/node.yaml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  nova-node-data:
