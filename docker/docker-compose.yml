@@ -74,7 +74,7 @@ services:
   coordinator:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/coordinator.Dockerfile
     container_name: nova-coordinator
     environment:
       # sslmode=disable is intentional for the shipped single-host topology:

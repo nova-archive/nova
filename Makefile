@@ -63,7 +63,7 @@ clean:
 # M13 Docker image build. Builds the multi-stage image locally (no push).
 # Requires Docker 29+ with BuildKit enabled (the default).
 docker-build:
-	docker build -f docker/Dockerfile -t nova-coordinator:dev .
+	docker build -f docker/coordinator.Dockerfile -t nova-coordinator:dev .
 
 migrations-frozen:
 	./scripts/check-migrations-frozen.sh
@@ -158,3 +158,24 @@ web: admin widget setup-spa
 .PHONY: node-deps-check
 node-deps-check:
 	./scripts/check_node_deps.sh
+
+.PHONY: node-build node-validate node-image node-image-inventory node-sbom
+
+node-build:
+	mkdir -p bin
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/nova-node ./cmd/node
+
+# Runs the binary's validate behavior over good + malformed fixtures (table-driven).
+node-validate:
+	go test -v ./cmd/node/... ./internal/node/config/... -count=1
+
+node-image:
+	docker build -f docker/node.Dockerfile -t nova-node:dev .
+
+node-image-inventory: node-image
+	./scripts/check_node_image.sh nova-node:dev
+
+# Local SBOM (requires syft on PATH). CI uses the same tool on the built image.
+node-sbom: node-image
+	mkdir -p dist
+	syft nova-node:dev -o spdx-json=dist/nova-node.sbom.spdx.json
