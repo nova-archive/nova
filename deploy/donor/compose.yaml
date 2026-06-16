@@ -1,0 +1,45 @@
+# Donor deployment — NOT a profile in the operator compose (different actor,
+# trust, secrets, ports, storage). No published ports: all federation traffic
+# is mTLS over the Nebula overlay. M1 stands up the shape; live federation is M2+.
+name: nova-donor
+
+services:
+  nebula:
+    # Nebula runs as a SIDECAR so nova-node needs no NET_ADMIN. Pin a digest in
+    # production (see docs/quickstart/donor.md). Config/cert wiring + a real
+    # readiness check land in M2 — no healthcheck here yet (the image's probe
+    # command and config are not established until then; gating nova-node on a
+    # failing probe would wedge it).
+    image: nebulaoss/nebula:latest
+    cap_add: ["NET_ADMIN"]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes:
+      - ./nebula:/etc/nebula:ro
+    restart: unless-stopped
+
+  nova-node:
+    build:
+      context: ../..
+      dockerfile: docker/node.Dockerfile
+    image: nova-node:dev
+    # Share the Nebula network namespace so the donor binds the overlay address.
+    network_mode: "service:nebula"
+    # Start-order only (no health gate yet — see the nebula service note). M2
+    # adds a real Nebula readiness condition.
+    depends_on:
+      - nebula
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+    volumes:
+      - ./node.yaml:/etc/nova/node.yaml:ro
+      - ./secrets:/run/secrets:ro
+      - node-data:/var/lib/nova-node/data
+    restart: unless-stopped
+    # HEALTHCHECK is defined in the image (nova-node --healthcheck).
+
+volumes:
+  node-data:

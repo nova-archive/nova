@@ -1,0 +1,33 @@
+# nova-node (donor) configuration. Copy to node.yaml and edit.
+# All secret material is referenced by PATH; this file holds no secret bytes.
+
+# Coordinator federation endpoint (reachable over the Nebula overlay from M2).
+coordinator_url: https://coordinator.nebula.example:8443
+
+# Two-cert model: the Nebula cert authorizes the overlay; the federation cert
+# authorizes the HTTP API. Mount these read-only.
+federation_cert_path: /etc/nova/federation.crt
+federation_key_path:  /run/secrets/nova_node_federation_key
+nebula_cert_path:     /etc/nebula/node.crt
+nebula_key_path:      /run/secrets/nebula_key
+
+# Private-IPFS swarm key (shared with the operator's swarm).
+swarm_key_path: /run/secrets/ipfs_swarm_key
+
+# Where replica ciphertext is stored (created if absent).
+storage_dir: /var/lib/nova-node/data
+
+# Authoritative daily egress budget (bytes/day). The donor refuses work beyond
+# this regardless of coordinator scheduling (D11). 50 GiB shown.
+bandwidth_budget_bytes_per_day: 53687091200
+
+# Operator-declared anti-affinity hints (informational until operator-verified
+# at the coordinator, D8).
+failure_domain:
+  provider: example-vps
+  asn: "64500"
+  region: us-east
+
+# Health endpoint bind address (loopback by default; the federation listener
+# binds the Nebula interface from M2).
+health_listen_addr: 127.0.0.1:9100
