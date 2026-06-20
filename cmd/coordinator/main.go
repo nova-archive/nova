@@ -11,7 +11,7 @@
 //	NOVA_KUBO_REPO            Kubo repo dir (required)
 //	IPFS_SWARM_KEY_FILE       swarm key path (required in private mode)
 //	NOVA_AUTH_ANONYMOUS       "true" to request anonymous mode (refused in prod builds)
-//	NOVA_VERSION              version string for /health (default "dev")
+//	NOVA_VERSION              version string for /health (overrides the build-stamped version; default is the git-describe stamp, else "dev")
 //	NOVA_UPLOAD_TMP_DIR       tus chunk dir (default <tmpdir>/nova-uploads)
 //	NOVA_MAX_UPLOAD_SIZE_BYTES   max upload size (default 100 MiB)
 //	NOVA_MAX_CONCURRENT_ASSEMBLY concurrent in-memory encrypts (default 8)
@@ -80,6 +80,12 @@ import (
 	"github.com/nova-archive/nova/pkg/coordinator"
 )
 
+// buildVersion is stamped at build time via -ldflags "-X main.buildVersion=..."
+// (see the Makefile and docs/VERSIONING.md). It is the fallback used when the
+// NOVA_VERSION env var is unset; "dev" when neither a stamp nor the env var is
+// present (e.g. plain `go run`).
+var buildVersion = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "coordinator: %v\n", err)
@@ -128,7 +134,7 @@ func run() error {
 		}
 		version := os.Getenv("NOVA_VERSION")
 		if version == "" {
-			version = "dev"
+			version = buildVersion
 		}
 		secretsDir := os.Getenv("NOVA_SECRETS_DIR")
 		if secretsDir == "" {
@@ -170,7 +176,7 @@ func run() error {
 	}
 	version := os.Getenv("NOVA_VERSION")
 	if version == "" {
-		version = "dev"
+		version = buildVersion
 	}
 
 	tmpDir := os.Getenv("NOVA_UPLOAD_TMP_DIR")

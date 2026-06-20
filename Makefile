@@ -4,6 +4,11 @@ GOTEST    := go test ./...
 GOTESTV   := go test -v ./...
 DC        := docker compose -f docker/docker-compose.yml --env-file docker/.env
 
+# Unique per-build version stamp (see docs/VERSIONING.md). Tagged build => tag;
+# untagged => nearest tag + commits + short SHA; dirty tree => -dirty suffix.
+VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+GO_LDFLAGS := -X main.buildVersion=$(VERSION)
+
 help:
 	@echo "Phase 1 M1 targets:"
 	@echo "  test              Run all Go tests (unit + integration)"
@@ -77,10 +82,10 @@ codegen-check: sqlc-generate
 	git diff --exit-code -- internal/db/gen || (echo "sqlc drift: run 'make sqlc-generate' and commit" && exit 1)
 
 build-coordinator:
-	go build -o bin/coordinator ./cmd/coordinator
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/coordinator ./cmd/coordinator
 
 run-coordinator:
-	go run ./cmd/coordinator
+	go run -ldflags "$(GO_LDFLAGS)" ./cmd/coordinator
 
 .PHONY: admin admin-install admin-build admin-lint admin-test hermetic-spa
 
