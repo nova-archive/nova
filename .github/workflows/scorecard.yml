@@ -1,0 +1,46 @@
+name: scorecard
+
+on:
+  # Re-run when branch protection changes (Scorecard scores it).
+  branch_protection_rule:
+  schedule:
+    - cron: "31 4 * * 1"
+  push:
+    branches: [main]
+
+# Default to read-only; the analysis job elevates only what it needs.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload SARIF to THIS repo's own code-scanning dashboard (in-GitHub only).
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.4.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # false keeps findings in-repo (code-scanning) and does NOT send results
+          # to the public OpenSSF API. Flip to true (and restore `id-token: write`
+          # above) if you want the public Scorecard badge.
+          publish_results: false
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload SARIF to code-scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif

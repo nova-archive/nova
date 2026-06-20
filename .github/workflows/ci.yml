@@ -216,3 +216,66 @@ jobs:
           syft "$DIGEST_REF" -o spdx-json=nova-node.sbom.spdx.json
           cosign attest --yes --type spdxjson \
             --predicate nova-node.sbom.spdx.json "$DIGEST_REF"
+
+  # Go vulnerability reachability analysis. Complements the manual Dependabot
+  # triage (CONTRIBUTING.md "Toolchain currency") with call-graph reachability:
+  # only vulns that are actually reachable from Nova's code fail the build.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install libvips
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev libheif-dev libjxl-dev
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # Coordinator release image: build + push BY DIGEST to GHCR, cosign keyless
+  # sign, provenance + SBOM attestation. Mirrors donor-sbom-sign so the operator
+  # image has the same supply-chain guarantees as the donor image. Trusted ref
+  # only: never on pull requests.
+  coordinator-sbom-sign:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build + push coordinator image by digest
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/coordinator.Dockerfile
+          push: true
+          tags: ghcr.io/nova-archive/nova-coordinator:sha-${{ github.sha }}
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the image digest (keyless)
+        run: cosign sign --yes ghcr.io/nova-archive/nova-coordinator@${{ steps.push.outputs.digest }}
+      - name: Attest provenance to the digest
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ghcr.io/nova-archive/nova-coordinator
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - uses: anchore/sbom-action/download-syft@v0
+      - name: SBOM for the pushed digest + attest
+        run: |
+          DIGEST_REF=ghcr.io/nova-archive/nova-coordinator@${{ steps.push.outputs.digest }}
+          syft "$DIGEST_REF" -o spdx-json=nova-coordinator.sbom.spdx.json
+          cosign attest --yes --type spdxjson \
+            --predicate nova-coordinator.sbom.spdx.json "$DIGEST_REF"
