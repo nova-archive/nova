@@ -64,9 +64,11 @@ deliberately:
 - A separate `nova-node` **repository** — deferred until the protocol and donor
   API stabilize and independent maintenance is demonstrably useful (see
   § "Repository topology" → "When to split later").
-- Pruning the coordinator's origin copy / donor-backed reads — Phase 2
-  **replicates, it does not migrate**; origin pruning is a later, explicitly
-  designed storage-tier feature.
+- ~~Pruning the coordinator's origin copy / donor-backed reads~~ — **redirected
+  into scope by P2-M2.1** (2026-06-20): donor-backed reads, origin pruning, and
+  reputation-based best-link selection are now the Phase-2 storage target,
+  designed into M3/M4/M5. See § "Storage/read architecture (P2-M2.1 amendment)".
+  (Automatic access-frequency hot/cold *tiering* remains Phase-8 research.)
 
 ## Source of truth and spec reconciliation
 
@@ -287,12 +289,118 @@ collections, filenames, MIME, product, moderation status, replication factor,
 owner, visibility — **or even the `priority:"tier1"` flag**, which leaks "this is
 the federation's last safe copy" and is purely coordinator scheduling metadata.
 
-**Replicate, don't migrate.** The coordinator's local Kubo copy remains the read
+**Replicate, then migrate — amended; see § "Storage/read architecture (P2-M2.1
+amendment)".** Through P2-M2 the coordinator's local Kubo copy is the read
 origin, transform source, initial replication source, repair fallback, and audit
-verification source. Donor replicas **add** durability. The replication factor
-`R` counts **donor** replicas; the operator origin copy is **additional**, not
-counted toward `R` — so donor loss is independent from origin loss. Origin
-pruning is a later, explicitly-designed feature.
+verification source, and donor replicas only **add** durability. **P2-M2.1
+redirects this:** the operator is no longer required to retain the full corpus —
+the donor replica set becomes the durable substrate, the operator keeps a
+bounded cache, and cold reads are donor-backed. `R` still counts **donor**
+replicas; what changes is that the operator copy becomes a prunable cache rather
+than a guaranteed additional copy. Binding M3/M4/M5 constraints are in the
+amendment section below.
+
+### Storage/read architecture (P2-M2.1 amendment)
+
+**Supersedes** the "Out of scope → Pruning the coordinator's origin copy /
+donor-backed reads" bullet and the "Replicate, don't migrate" stance above.
+Recorded 2026-06-20; binds the M3/M4/M5 milestone designs. No code or migration
+in P2-M2.1 — this section records the **direction**; each milestone carries the
+normative spec edits with its version bump, exactly as P2-M0 did for the
+federation reconciliation.
+
+**Why.** Nova's target is not a single host that happens to have backups — it is
+media infrastructure for **tens of thousands of DAU served cheaply with S3-grade
+reliability**. An operator forced to store the **entire corpus locally**
+(Phase-1 / early-Phase-2 behavior) pays full single-host storage cost and gains
+only redundancy from federation, which defeats the cost model that justifies
+federation at all. The friend-group QA deployment never exercises this; the
+production target does. The assumption is cheap to remove now and expensive to
+remove after M3/M4 build the schema and read path around a permanent local
+origin.
+
+**Target.** The operator coordinator stores **metadata, keys, upload staging,
+and a bounded hot cache** — **not** a guaranteed full-corpus copy. The **donor
+replica set is the durable substrate.** Reads are **donor-backed**: on a cache
+miss the coordinator selects the best live donor holding the ciphertext, fetches
+it over the mesh, decrypts, serves, and may re-cache. Origin **pruning** —
+evicting the post-upload staging copy once a safety threshold of live donor
+holders is met — is a Phase-2 deliverable, not a deferred feature.
+
+**Two independent axes (do not conflate).** Donors are **donor-blind (ciphertext
+only)**; the operator is the only party that can decrypt (`T1.26`). Therefore:
+
+- **Storage** scales down with donor-backed reads + pruning (operator disk →
+  metadata + cache).
+- **Read bandwidth does not.** The operator stays the decrypt/serve point for
+  every byte; on a cache miss it ingests ciphertext from a donor *and* egresses
+  plaintext to the user (≈2× bytes + a round-trip). Serving many DAU is a
+  **separate axis**, solved by (a) the operator hot cache (popular
+  objects/derivatives stay resident) and (b) optional CDN fronting (plaintext at
+  the edge — the existing documented tradeoff, `docs/recipes/CLOUDFLARE.md`).
+  Donors **never** serve plaintext to end users; that would require client-side
+  keys (operator-blindness, `T1.26`, a permanent non-goal).
+- Distinct from Phase-8 access-frequency auto-tiering (still research): M2.1
+  mandates "operator may hold no full copy + donor-backed cold reads," not
+  automatic class migration.
+
+**Reputation-based link selection.** The same live-holder selection serves both
+repair-source and read-source. Recommend **VPS (bare-metal / KVM) donors as
+primary** read/repair sources with **residential donors as fallback**, chosen
+per request by a node **reputation score** that detects short- and long-term,
+temporary and permanent link degradation (saturation, DDoS, churn, disk-full,
+sustained latency). Preferring VPS donors as *sources* must not let them become a
+correlated failure domain — failure-domain anti-affinity (D8) still governs
+*placement*.
+
+**Binding constraints for M3 / M4 / M5.**
+
+- **M3 (assignment sync).** The durable pin/holder state must be query-shaped for
+  **read selection**, not only healing: "which live donors hold CID X, ranked by
+  reputation / link-quality" must be answerable cheaply (extends
+  `blob_replication_state` / `pin_assignments` with the holder set + selection
+  inputs). Do **not** assume a local origin always satisfies a read.
+- **M4 (replication + transfer + read path).** Coordinator-as-source remains the
+  **initial** fill, but after a **commit quorum** of donor acks the staging copy
+  is **prunable**. Add: (1) the donor-backed read path (select → fetch ciphertext
+  → verify → decrypt → serve → bounded re-cache); (2)
+  `require_replication_quorum_before_commit` so an upload is not durable/visible
+  until quorum; (3) a `prune_safety_floor` so an object is never pruned below N
+  live donor holders. Transforms re-fetch from donors on demand when the original
+  is not cached.
+- **M5 (liveness & healing).** With no guaranteed local origin the coordinator
+  can no longer be the universal **repair/audit source** — repair is
+  donor-sourced (already the donor↔donor design) and possession audits run
+  challenge-response against donors (`POSSESSION_AUDIT`). Healing must treat the
+  operator cache as **not a replica**: cache copies never count toward `R`.
+
+**Config surface (target — settled in the milestone designs).**
+
+```yaml
+storage:
+  coordinator_storage_mode: bounded_cache   # origin_copy | bounded_cache | transient
+  operator_replica_policy: none             # required | opportunistic | none
+  local_cache_max_bytes: ...
+  transform_cache_max_bytes: ...
+  upload_staging_max_bytes: ...
+  require_replication_quorum_before_commit: true
+  commit_quorum: { important: 2, normal: 2, cache: 1 }
+  prune_safety_floor: 2                      # min live donor holders before staging eviction
+```
+
+`origin_copy` preserves today's behavior (single-host / archival operators who
+*want* a local canonical copy); `bounded_cache` is the new default target for
+federations; `transient` is the most aggressive (staging only).
+
+**Specs to amend at the owning milestone (not in P2-M2.1).**
+`FEDERATION_PROTOCOL` (read-source selection + fetch), `HEALING_PROTOCOL`
+(repair-source = donors; cache ≠ replica), `POSSESSION_AUDIT` (audit source =
+donors), `DATA_MODEL` (holder set + cache/staging state), `THREAT_MODEL`
+(read-availability now depends on donor liveness + cache hit-rate),
+`ARCHITECTURE_DECISIONS` (reframe the read-origin rows). The README's
+"serves all reads from the coordinator" stays accurate — the coordinator remains
+the serving/decrypt endpoint; it merely sources bytes from donors instead of
+local disk.
 
 ### Versioning model
 
@@ -485,6 +593,11 @@ already in `ARCHITECTURE_DECISIONS.md`; P2-M0 does not re-edit them.
 Mirrors Phase 1: the master plan details P2-M0 + P2-M1; later milestones get
 their own design/plan pairs at the start of each milestone. "Tier-1?" flags a
 formal spec amendment.
+
+> **Amended by § "Storage/read architecture (P2-M2.1 amendment)".** The M3, M4,
+> and M5 exit criteria below are extended by the donor-backed-read / origin-prune
+> / reputation-link constraints recorded there; those constraints are normative
+> for the milestone designs even though the table text predates them.
 
 | ID | Theme | Exit criterion (summary) | Tier-1? |
 |---|---|---|:--:|
