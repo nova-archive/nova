@@ -1,9 +1,12 @@
 # Contributing to Nova
 
-Thanks for your interest in contributing. This project is in **Phase 0**
-(specifications and contracts), so most contributions at this stage are
-review and refinement of the documents under `docs/specs/` rather than
-production code.
+Thanks for your interest in contributing. Nova is in **active
+development**: Phase 0 (specifications) and Phase 1 (single-node MVP)
+are complete, and Phase 2 (federation + streaming-AEAD) is underway —
+see [`docs/ROADMAP.md`](docs/ROADMAP.md) for current milestone status.
+Both code and specification contributions are welcome. The protocol
+and data-model contracts under `docs/specs/` are deliberately
+constrained, so discuss changes there before opening a PR (see below).
 
 ## How to contribute
 
@@ -65,6 +68,16 @@ Staying current is treated as routine maintenance, not incident response:
   every milestone's definition of done: determine reachability on Nova,
   record the verdict (see the M14 design's triage table for the format), and
   patch — exploitable or not — unless a bump is genuinely breaking.
+
+## Versioning
+
+Nova uses semantic versioning, and **every milestone is released under a
+unique version** — no two builds of Nova, however small the change,
+share a version number. Milestones are tagged annotated commits (see the
+tag history and `docs/ROADMAP.md`); release artifacts derive their
+version from `git describe --tags --always --dirty`, so any build off an
+untagged or dirty tree is still uniquely identified. See
+[`docs/VERSIONING.md`](docs/VERSIONING.md) for the full policy.
 
 ## Code of Conduct
 

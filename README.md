@@ -12,11 +12,14 @@ Future product layers (`nova-video`, `nova-audio`, `nova-archive`,
 
 > **Status:** Phase 1 (single-node MVP) is **complete** at
 > `v0.1.0-rc1` — all fourteen milestones (foundation through setup
-> wizard, Docker production, and release polish) are tagged. New
-> operators: start at [`docs/quickstart.md`](docs/quickstart.md).
-> Federation and the streaming-AEAD envelope arrive in Phase 2,
-> which is next. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for
-> per-milestone status.
+> wizard, Docker production, and release polish) are tagged. **Phase 2
+> (federation + streaming-AEAD envelope) is in progress:** the
+> operator-UX/privacy remediation track (P2-M0.1–M0.6) plus the first
+> federation milestones — build/repo separation (P2-M1) and live
+> identity/registration over mTLS (P2-M2) — are tagged; assignment
+> synchronization (P2-M3) is next. New operators: start at
+> [`docs/quickstart.md`](docs/quickstart.md). See
+> [`docs/ROADMAP.md`](docs/ROADMAP.md) for per-milestone status.
 
 ## Who is this for?
 
@@ -95,7 +98,7 @@ docs/
   specs/        protocol, data model, encryption envelope
   legal/        license, ToS template, DMCA procedure
   recipes/      deployment recipes (CDN, nginx, etc.)
-.github/        CI workflows, issue templates, security policy
+.github/        CI workflows, security policy, code owners
 internal/       internal Go packages (subject to change)
 pkg/            exported, semver-stable Go library packages
 cmd/            command-line entry points
@@ -104,13 +107,16 @@ web/admin/      operator admin SPA (TypeScript)
 nginx/          reference reverse-proxy configuration
 ```
 
-## Phase 1 status
+## Project status
 
 Phase 0 (specifications) and Phase 1 (single-node MVP) are complete;
-Phase 1 closed at the `v0.1.0-rc1` release candidate. See
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for the per-milestone progress
-checklist (M1 through M14 are tagged). Phase 2 (federation +
-streaming-AEAD envelope) is next.
+Phase 1 closed at the `v0.1.0-rc1` release candidate (M1 through M14
+are tagged). **Phase 2 (federation + streaming-AEAD envelope) is in
+progress:** the P2-M0.x operator-UX/privacy remediation track and the
+first two federation milestones (P2-M1 build/repo separation, P2-M2
+identity/registration) are tagged; P2-M3 (assignment synchronization)
+is next. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the authoritative
+per-milestone status.
 
 ## Try Nova (developer setup)
 
@@ -221,27 +227,25 @@ Both should return 200 with a JSON body. From here:
   credentials.
 - **Authenticated endpoints** (uploads at `/api/v1/uploads`,
   `/api/v1/blobs`, `/api/v1/images`, plus `/api/v1/users/me`) require
-  a bearer token. Until `novactl user create` lands in M9, the
-  fastest path is to insert an `operator` user via `psql` with an
-  argon2id password hash (see `internal/auth/password` for the
-  format), then `go run ./cmd/novactl auth login` to fetch a token.
+  a bearer token. The production setup wizard (M13) creates the first
+  operator account; for this manual dev path, insert an `operator`
+  user via `psql` with an argon2id password hash (see
+  `internal/auth/password` for the format), then `go run
+  ./cmd/novactl auth login` to fetch a token.
 
-### What is not yet wired
+### Beyond this dev walkthrough
 
-The following Phase 1 promises are deferred to dedicated milestones;
-see [`docs/ROADMAP.md`](docs/ROADMAP.md) for slot details:
-
-- Signed-URL HMAC verifier (M7)
-- Integrity-audit admin listing (M8)
-- DMCA / moderation flows (M9)
-- Master-key rotation tooling (M10)
-- Admin SPA (M11) and drag-and-drop widget (M12)
-- Operator quickstart (`docs/quickstart.md`) + end-to-end smoke in CI (M14)
-
-The setup wizard + production Docker compose + TLS modes shipped in
-M13 (`docker compose --profile setup up`; see the dev-walkthrough
-note above). The manual recipe above remains the lightest dev-test
-path; the polished operator quickstart lands in M14.
+This manual recipe is the lightest dev-test path. Everything the
+Phase 1 milestones promised is shipped and tagged (M1–M14):
+signed-URL HMAC (M7), integrity-audit listing (M8), DMCA/moderation
+(M9), master-key rotation (M10), the admin SPA (M11) and drag-and-drop
+widget (M12), the first-run setup wizard + production Docker + TLS
+modes (M13), and the operator quickstart + end-to-end CI smoke (M14).
+For a production-style first-run, use the setup wizard (`docker
+compose --profile setup up`; see the dev-walkthrough note above) and
+the operator quickstart at [`docs/quickstart.md`](docs/quickstart.md).
+Phase 2 (federation + streaming-AEAD) is in progress; see
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Development MCP servers
 
