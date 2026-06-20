@@ -129,18 +129,30 @@ Default values are operator-configurable per class:
 orchestrator:
   replication:
     factor:
-      important: 3        # operator can raise to 5+ as donor capacity permits
+      important: 5        # default; lower toward 3 only if donor capacity is tight
       normal: 3
       cache: 2
     classifier: default   # 'default' classifies by blobs.parent_cid + product
 ```
 
-The default important `R=3` reflects realistic donor budgets at
-launch. Operators with sufficient donor capacity should raise it to
-5 for archival-grade durability; the 6.4 % loss-on-40%-failure
-result from the simulation is a function of low R, and operators who
-care about durability for irreplaceable user content should plan to
-move to R=5 once their network has the capacity.
+The default important `R=5` errs toward durability for irreplaceable
+user-uploaded originals: the 6.4 % loss-on-40%-failure result from the
+simulation is a function of *low* R, so the default is set high and
+operators trade down deliberately. Lowering `important` below the
+default is allowed but **warn-not-force** (consistent with the
+privacy-preset model in `docs/PRIVACY_AUDIT.md`): the coordinator emits
+a startup/admin warning when `important < 5` stating that **lower R
+raises the chance of permanent data loss**, while **higher R raises the
+storage burden on donor nodes**. `R=3` is the recommended practical
+floor for originals when donor capacity is tight; derivatives (`normal`)
+and transient artifacts (`cache`) regenerate, so they default lower
+(3 and 2). Operators raise `important` toward the 20-replica ceiling as
+donor capacity permits.
+
+> **Implementation note.** The default is enforced today (config loader
+> default + setup-wizard render). The warn-not-force *emission* is wired
+> when the orchestrator consumes the replication factor in P2-M5, and is
+> surfaced alongside the existing privacy warnings (`PrivacyWarnings`).
 
 `drain(queue, target_pins_after)` iterates the queue (sorted by
 `byte_size` ascending — small files clear faster, the order does
@@ -431,7 +443,7 @@ Operator-tunable in `operator.yaml` under `orchestrator`:
 |---------------------------------------|---------------|-------|
 | `tick_interval_seconds`               | 60            | 5..600 |
 | `step_seconds`                        | 60            | Capacity-window for per-tick caps |
-| `replication.factor.important`        | 3             | Bump to 5 for archival-grade durability |
+| `replication.factor.important`        | 5             | Lower toward 3 only if donor capacity is tight (warn-not-force) |
 | `replication.factor.normal`           | 3             | Derivatives, regenerable transforms |
 | `replication.factor.cache`            | 2             | Operator-configurable per class |
 | `replication.classifier`              | `default`     | Reserved for future custom classifiers |

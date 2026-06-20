@@ -22,12 +22,35 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("config: unmarshal: %w", err)
 	}
+	// Replication defaults are applied before validation: validate() range-checks
+	// the important factor, so an omitted section must be defaulted first (durable
+	// R by default rather than a hard "out of range" error).
+	applyReplicationDefaults(&cfg)
 	if err := validate(&cfg); err != nil {
 		return nil, err
 	}
 	cfg.privacyWarnings = ApplyPrivacyPreset(&cfg)
 	applyUploadDefaults(&cfg)
 	return &cfg, nil
+}
+
+// applyReplicationDefaults fills zero-valued replication factors with the
+// Default* constants so a config that omits orchestrator.replication still gets
+// durable defaults. Runs before validate() because the validator range-checks
+// the important factor. Lowering important below the default is permitted here
+// (validation enforces only the 1..20 range); the warn-not-force notice is
+// emitted by the orchestrator when it consumes R (P2-M5). See
+// docs/specs/HEALING_PROTOCOL.md.
+func applyReplicationDefaults(cfg *Config) {
+	if cfg.Orchestrator.Replication.Factor.Important <= 0 {
+		cfg.Orchestrator.Replication.Factor.Important = DefaultReplicationImportant
+	}
+	if cfg.Orchestrator.Replication.Factor.Normal <= 0 {
+		cfg.Orchestrator.Replication.Factor.Normal = DefaultReplicationNormal
+	}
+	if cfg.Orchestrator.Replication.Factor.Cache <= 0 {
+		cfg.Orchestrator.Replication.Factor.Cache = DefaultReplicationCache
+	}
 }
 
 // applyUploadDefaults fills zero-valued Uploads fields with the Default*

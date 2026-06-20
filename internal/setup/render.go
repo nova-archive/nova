@@ -43,9 +43,9 @@ func RenderOperatorYAML(a Answers) ([]byte, error) {
 		Orchestrator: config.Orchestrator{
 			Replication: config.Replication{
 				Factor: config.ReplicationFactor{
-					Important: 3,
-					Normal:    2,
-					Cache:     1,
+					Important: config.DefaultReplicationImportant,
+					Normal:    config.DefaultReplicationNormal,
+					Cache:     config.DefaultReplicationCache,
 				},
 			},
 		},

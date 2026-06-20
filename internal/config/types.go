@@ -174,6 +174,21 @@ const (
 	DefaultMaxFilesPerSession = 100
 )
 
+// Replication-factor defaults (per content class). Applied by the loader
+// (applyReplicationDefaults) before validation so a config that omits the
+// section still gets durable defaults. The important-class default errs high
+// for durability of irreplaceable originals; see docs/specs/HEALING_PROTOCOL.md.
+const (
+	// DefaultReplicationImportant is the donor replica count for user-uploaded
+	// originals. High by default; lowering it is warn-not-force.
+	DefaultReplicationImportant = 5
+	// DefaultReplicationNormal is the donor replica count for regenerable
+	// derivatives.
+	DefaultReplicationNormal = 3
+	// DefaultReplicationCache is the donor replica count for transient artifacts.
+	DefaultReplicationCache = 2
+)
+
 // Uploads configures the M4 write path. Zero-valued fields are filled with the
 // Default* constants by the loader (applyUploadDefaults).
 type Uploads struct {
