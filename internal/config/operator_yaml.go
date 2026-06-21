@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -123,6 +124,12 @@ func validate(cfg *Config) error {
 	if cfg.Orchestrator.Replication.Factor.Important < 1 ||
 		cfg.Orchestrator.Replication.Factor.Important > 20 {
 		return fmt.Errorf("config: orchestrator.replication.factor.important out of range")
+	}
+
+	if s := cfg.Uploads.DefaultCollectionID; s != "" {
+		if _, err := uuid.Parse(s); err != nil {
+			return fmt.Errorf("config: uploads.default_collection_id must be a uuid: %w", err)
+		}
 	}
 
 	switch cfg.Moderation.TakedownDefaultAction {

@@ -38,6 +38,7 @@ var fieldEffect = map[string]effect{
 	"uploads.session_ttl_seconds":     effectRestart,
 	"uploads.tmp_dir":                 effectRestart,
 	"uploads.public_uploads":          effectRestart,
+	"uploads.default_collection_id":   effectLive,
 	"coordinator":                     effectRestart,
 	"auth":                            effectRestart,
 	"tls":                             effectRestart,

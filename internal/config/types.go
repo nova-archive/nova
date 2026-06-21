@@ -204,6 +204,12 @@ type Uploads struct {
 	CORS CORS `yaml:"cors"`
 	// Limits caps concurrent and per-session upload activity.
 	Limits UploadLimits `yaml:"limits,omitempty"`
+	// DefaultCollectionID, when set, is the collection that uploads with no
+	// explicit collection (and no token-bound collection) join. Point it at a
+	// public collection (see `novactl collection create`) to make anonymous
+	// widget uploads publicly viewable without per-upload wiring. Empty = none
+	// (uploads with no collection resolve to private). Live-reloadable.
+	DefaultCollectionID string `yaml:"default_collection_id,omitempty"`
 }
 
 // CORS configures the Access-Control-* response headers for the upload endpoint.

@@ -124,6 +124,57 @@ func TestCreateTusSuccess(t *testing.T) {
 	require.Equal(t, "0", rec.Header().Get("Upload-Offset"))
 }
 
+func TestUploadDefaultCollection(t *testing.T) {
+	def := uuid.New()
+
+	t.Run("tus applies default when none provided", func(t *testing.T) {
+		fs := &fakeStore{createID: uuid.New()}
+		h := NewUploadHandler(fs, &fakeMP{}, 100, false, nil)
+		h.SetDefaultCollection(def.String())
+		rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/uploads", nil, map[string]string{
+			"Tus-Resumable": "1.0.0", "Upload-Length": "5",
+		})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		require.NotNil(t, fs.lastParams.CollectionID)
+		require.Equal(t, def, *fs.lastParams.CollectionID)
+	})
+
+	t.Run("tus explicit collection_id wins over default", func(t *testing.T) {
+		explicit := uuid.New()
+		fs := &fakeStore{createID: uuid.New()}
+		h := NewUploadHandler(fs, &fakeMP{}, 100, false, nil)
+		h.SetDefaultCollection(def.String())
+		meta := "collection_id " + base64.StdEncoding.EncodeToString([]byte(explicit.String()))
+		rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/uploads", nil, map[string]string{
+			"Tus-Resumable": "1.0.0", "Upload-Length": "5", "Upload-Metadata": meta,
+		})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		require.NotNil(t, fs.lastParams.CollectionID)
+		require.Equal(t, explicit, *fs.lastParams.CollectionID)
+	})
+
+	t.Run("tus no default leaves collection nil", func(t *testing.T) {
+		fs := &fakeStore{createID: uuid.New()}
+		h := NewUploadHandler(fs, &fakeMP{}, 100, false, nil)
+		rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/uploads", nil, map[string]string{
+			"Tus-Resumable": "1.0.0", "Upload-Length": "5",
+		})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		require.Nil(t, fs.lastParams.CollectionID)
+	})
+
+	t.Run("multipart applies default when none provided", func(t *testing.T) {
+		mp := &fakeMP{res: &storage.PutResult{CID: "bafy", ByteSize: 3, MIME: "image/png", Product: "raw"}}
+		h := NewUploadHandler(&fakeStore{}, mp, 100, false, nil)
+		h.SetDefaultCollection(def.String())
+		body, ctype := multipartFileBody(t, "abc", "image/png")
+		rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		require.NotNil(t, mp.gotPC.CollectionID)
+		require.Equal(t, def, *mp.gotPC.CollectionID)
+	})
+}
+
 func TestPatchTus(t *testing.T) {
 	id := uuid.New()
 	url := "/api/v1/uploads/" + id.String()

@@ -88,6 +88,17 @@ coordinator:
   public_ipfs_dht: false
 `
 
+func TestLoadRejectsInvalidDefaultCollectionID(t *testing.T) {
+	_, err := config.LoadFromBytes([]byte(minimalYAML + "uploads:\n  default_collection_id: not-a-uuid\n"))
+	require.Error(t, err)
+}
+
+func TestLoadAcceptsValidDefaultCollectionID(t *testing.T) {
+	cfg, err := config.LoadFromBytes([]byte(minimalYAML + "uploads:\n  default_collection_id: 11111111-1111-1111-1111-111111111111\n"))
+	require.NoError(t, err)
+	require.Equal(t, "11111111-1111-1111-1111-111111111111", cfg.Uploads.DefaultCollectionID)
+}
+
 func TestUploadLimitDefaults(t *testing.T) {
 	cfg, err := config.LoadFromFile("testdata/operator.minimal.yaml")
 	require.NoError(t, err)

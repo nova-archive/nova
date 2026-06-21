@@ -59,6 +59,11 @@ type UploadHandler struct {
 
 	// cfgStore, when non-nil, provides live cap reads (set via SetConfigStore).
 	cfgStore *reload.Store
+
+	// defaultCollection is the fallback collection UUID (string) for uploads with
+	// no explicit or token-bound collection. Read live from cfgStore when present,
+	// else this static value (nil-store/test path), mirroring maxFilesCap.
+	defaultCollection string
 }
 
 // NewUploadHandler builds the upload handler. recordIP=false (paranoid mode)
@@ -124,6 +129,27 @@ func (h *UploadHandler) maxUploadCap() int64 {
 		return h.maxUploadSize
 	}
 	return h.cfgStore.Load().Uploads.MaxUploadSizeBytes
+}
+
+// SetDefaultCollection sets the static fallback collection (nil-store/test path).
+// In production the value is read live from cfgStore.
+func (h *UploadHandler) SetDefaultCollection(s string) { h.defaultCollection = s }
+
+// defaultCollectionID resolves the configured default collection for uploads
+// that carry no explicit or token-bound collection. Live from cfgStore when
+// present, else the static value. Returns nil when unset or unparseable.
+func (h *UploadHandler) defaultCollectionID() *uuid.UUID {
+	raw := h.defaultCollection
+	if h.cfgStore != nil {
+		raw = h.cfgStore.Load().Uploads.DefaultCollectionID
+	}
+	if raw == "" {
+		return nil
+	}
+	if u, err := uuid.Parse(raw); err == nil {
+		return &u
+	}
+	return nil
 }
 
 // CreateTus handles POST /api/v1/uploads (tus Creation extension).
@@ -211,6 +237,12 @@ func (h *UploadHandler) CreateTus(w http.ResponseWriter, r *http.Request) {
 
 			p.UploadTokenID = &tid
 		}
+	}
+
+	// No explicit and no token-bound collection: fall back to the operator's
+	// configured default (e.g. a public collection) so the upload is reachable.
+	if p.CollectionID == nil {
+		p.CollectionID = h.defaultCollectionID()
 	}
 
 	id, err := h.store.Create(r.Context(), p)
@@ -406,6 +438,9 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 		pc.CollectionID = &col
 	}
 	pc.OwnerID = ownerFromContext(r.Context())
+	if pc.CollectionID == nil {
+		pc.CollectionID = h.defaultCollectionID()
+	}
 
 	res, err := h.put.Put(r.Context(), boundedFile, header.Size, pc)
 	if err != nil {
