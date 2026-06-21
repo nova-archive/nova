@@ -205,6 +205,9 @@ open it and drag an image onto the widget. Anonymous widget uploads
 require **public uploads** to be enabled (the wizard toggle); otherwise
 mount the widget via JS with a `getToken` provider (see the
 [operator checklist](legal/OPERATOR_CHECKLIST.md#upload-widget-m12)).
+By default those uploads are *private* (they join no collection); set
+`uploads.default_collection_id` to a public collection — see Option B —
+to make widget uploads publicly viewable without per-upload wiring.
 
 **Authenticated / off-origin embedding.** To accept authenticated
 uploads — or to embed the widget on a *different* origin (e.g. your own
@@ -231,34 +234,38 @@ embedded tokens, and the `uploads.limits.*` backstops are in the
 
 ### Option B — curl
 
-One honest caveat first: **in Phase 1, uploads are private by
-default.** A blob's visibility comes from the collections it belongs
-to, and a blob in no collection resolves to *private* — uploading
-works, but anonymous reads of it return 401. Phase 1 has no
-collection-management API yet (it is on the
-[roadmap](ROADMAP.md)), so to serve a blob publicly you seed a public
-collection directly in Postgres, owned by your operator account:
+One honest caveat first: **uploads are private by default.** A blob's
+visibility comes from the collections it belongs to, and a blob in no
+collection resolves to *private* — uploading works, but anonymous reads
+return 401/403. So first create a **public collection** (no raw SQL —
+`novactl collection create` is DB-direct, like `novactl node`):
 
 ```sh
-COL_ID="$(docker compose -f docker/docker-compose.yml --env-file docker/.env exec -T postgres \
-  psql -U nova -d nova -tA -c \
-  "INSERT INTO collections (owner_id, name, slug, visibility, public_archival)
-   SELECT id, 'quickstart-public', 'quickstart-public', 'public', false
-   FROM users WHERE email = 'you@example.org'
-   RETURNING id;" | head -n1 | tr -d '[:space:]')"
-echo "$COL_ID"
+novactl collection create --name "Public" --slug public --visibility public
+# prints: created collection <COL_ID> (slug=public visibility=public owner=…)
 ```
 
-(Replace `you@example.org` with the admin email you gave the wizard.)
+`--owner` defaults to your sole operator account; pass `--owner <user-uuid>`
+if you have several. Now make uploads land in it, either:
 
-Upload an image into that collection — `product=image` is what makes
-the transform routes accept it:
+- **Per upload** — pass `collection_id=<COL_ID>` (curl below), or mint a
+  token bound to it and hand it to the widget's `getToken`:
+  `novactl upload-token create --product image --collection <COL_ID>`.
+- **By default** — set `uploads.default_collection_id: <COL_ID>` (via
+  `novactl config set uploads.default_collection_id <COL_ID>`, the admin
+  Settings screen, or `operator.yaml`). Then **any** upload with no explicit
+  collection — including anonymous widget uploads — joins it automatically.
+  Point it at a *public* collection only if you intend those uploads to be
+  publicly viewable.
+
+Upload an image — `product=image` is what makes the transform routes
+accept it (`collection_id` is optional once a default is set):
 
 ```sh
 curl -ks --resolve "nova.example.org:8443:127.0.0.1" \
   -F "file=@photo.png;type=image/png" \
   -F "product=image" \
-  -F "collection_id=$COL_ID" \
+  -F "collection_id=<COL_ID>" \
   https://nova.example.org:8443/api/v1/blobs
 ```
 
