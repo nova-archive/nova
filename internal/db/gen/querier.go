@@ -32,6 +32,10 @@ type Querier interface {
 	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
 	CountModerationDecisions(ctx context.Context) (int64, error)
 	CountSigningKeysForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
+	// Creates a collection (owner_id must reference an existing user; the
+	// public_archival CHECK requires visibility='public'). Backs
+	// `novactl collection create` so operators don't seed collections via raw SQL.
+	CreateCollection(ctx context.Context, arg CreateCollectionParams) (Collection, error)
 	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
 	CreateUploadToken(ctx context.Context, arg CreateUploadTokenParams) (UploadToken, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
@@ -134,6 +138,9 @@ type Querier interface {
 	// be orphaned if left under the retiring version.
 	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
 	ListUploadTokens(ctx context.Context) ([]ListUploadTokensRow, error)
+	// Owner resolution for `novactl collection create`: the sole operator user is
+	// the default collection owner when --owner is omitted.
+	ListUserIDsByRole(ctx context.Context, role UserRole) ([]pgtype.UUID, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller

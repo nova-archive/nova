@@ -1266,6 +1266,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  node ca-init [--dir <d>] [--coordinator-ip <ip>] [--coordinator-dns <dns>]")
 	fmt.Fprintln(os.Stderr, "  node issue --name <name> [--dir <d>] [--out <dir>]")
 	fmt.Fprintln(os.Stderr, "  node nebula-template --name <name> [--nebula-ip <ip/cidr>] [--out <dir>]")
+	fmt.Fprintln(os.Stderr, "  collection create --name <s> --slug <s> [--visibility public|unlisted|private] [--owner <uuid>] [--public-archival]")
 }
 
 func main() {
@@ -1293,6 +1294,8 @@ func main() {
 		err = cmdConfig(args[1:])
 	case "node":
 		err = cmdNode(args[1:])
+	case "collection":
+		err = cmdCollection(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()

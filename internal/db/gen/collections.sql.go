@@ -7,7 +7,73 @@ package gen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const createCollection = `-- name: CreateCollection :one
+INSERT INTO collections (owner_id, name, slug, visibility, public_archival)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, owner_id, name, slug, visibility, public_archival, created_at
+`
+
+type CreateCollectionParams struct {
+	OwnerID        pgtype.UUID
+	Name           string
+	Slug           string
+	Visibility     CollectionVisibility
+	PublicArchival bool
+}
+
+// Creates a collection (owner_id must reference an existing user; the
+// public_archival CHECK requires visibility='public'). Backs
+// `novactl collection create` so operators don't seed collections via raw SQL.
+func (q *Queries) CreateCollection(ctx context.Context, arg CreateCollectionParams) (Collection, error) {
+	row := q.db.QueryRow(ctx, createCollection,
+		arg.OwnerID,
+		arg.Name,
+		arg.Slug,
+		arg.Visibility,
+		arg.PublicArchival,
+	)
+	var i Collection
+	err := row.Scan(
+		&i.ID,
+		&i.OwnerID,
+		&i.Name,
+		&i.Slug,
+		&i.Visibility,
+		&i.PublicArchival,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const listUserIDsByRole = `-- name: ListUserIDsByRole :many
+SELECT id FROM users WHERE role = $1
+`
+
+// Owner resolution for `novactl collection create`: the sole operator user is
+// the default collection owner when --owner is omitted.
+func (q *Queries) ListUserIDsByRole(ctx context.Context, role UserRole) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listUserIDsByRole, role)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const resolveEffectiveVisibility = `-- name: ResolveEffectiveVisibility :many
 SELECT c.visibility::text AS visibility
