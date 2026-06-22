@@ -50,6 +50,7 @@ func (s *Server) mux() *http.ServeMux {
 	m.HandleFunc("/fed/v1/register", s.handleRegister)
 	m.HandleFunc("/fed/v1/heartbeat", s.handleHeartbeat)
 	m.HandleFunc("GET /fed/v1/pins/changes", s.handleChanges)
+	m.HandleFunc("GET /fed/v1/pins/snapshot", s.handleSnapshot)
 	return m
 }
 

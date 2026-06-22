@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -125,4 +126,65 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("fed.changes.served", "node_id", node, "since_seq", since, "returned", len(rows), "next_seq", next)
 	writeJSON(w, http.StatusOK, wire.ChangesResponse{Changes: changes, NextSeq: next, CurrentEpoch: head})
+}
+
+func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
+		return
+	}
+	node, ok := s.authNode(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	cursor := r.URL.Query().Get("cursor")
+	limRaw, err := queryInt(r, "limit", defaultPinPageLimit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	limit := clampLimit(limRaw)
+
+	head, err := s.q.GetChangeLogHead(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "head")
+		return
+	}
+	epoch := head // first page captures the global head
+	if ep := r.URL.Query().Get("snapshot_epoch"); ep != "" {
+		epoch, err = queryInt(r, "snapshot_epoch", head)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		changed, err := s.q.NodeHasChangesAfter(ctx, gen.NodeHasChangesAfterParams{NodeID: pgUUIDFrom(node), Sequence: epoch})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "epoch-check")
+			return
+		}
+		if changed {
+			slog.Info("fed.snapshot.conflict", "node_id", node, "epoch", epoch)
+			writeJSON(w, http.StatusConflict, map[string]any{"code": "snapshot_epoch_changed", "snapshot_epoch": head})
+			return
+		}
+	}
+	rows, err := s.q.GetPinSnapshotPage(ctx, gen.GetPinSnapshotPageParams{NodeID: pgUUIDFrom(node), Cid: cursor, Limit: int32(limit)})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "snapshot")
+		return
+	}
+	items := make([]wire.SnapshotItem, len(rows))
+	for i, row := range rows {
+		items[i] = wire.SnapshotItem{
+			CID: row.Cid, AssignmentID: uuid.UUID(row.AssignmentID.Bytes).String(),
+			Generation: row.Generation, ByteSize: row.ByteSize, AssignedAt: row.AssignedAt.Format(time.RFC3339),
+		}
+	}
+	nextCursor := ""
+	if int64(len(rows)) == int64(limit) && len(rows) > 0 {
+		nextCursor = rows[len(rows)-1].Cid
+	}
+	slog.Info("fed.snapshot.page", "node_id", node, "epoch", epoch, "returned", len(rows))
+	writeJSON(w, http.StatusOK, wire.SnapshotResponse{Data: items, Cursor: nextCursor, SnapshotEpoch: epoch})
 }
