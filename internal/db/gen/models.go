@@ -747,6 +747,11 @@ type DmcaCase struct {
 	Status         DmcaStatus
 }
 
+type FederationChangeLogState struct {
+	ID               bool
+	PrunedThroughSeq int64
+}
+
 type ImageMetadatum struct {
 	Cid            string
 	Width          int32
@@ -873,11 +878,13 @@ type Node struct {
 }
 
 type PinAssignment struct {
-	Cid        string
-	NodeID     pgtype.UUID
-	State      PinState
-	AssignedAt time.Time
-	AckedAt    pgtype.Timestamptz
+	Cid          string
+	NodeID       pgtype.UUID
+	State        PinState
+	AssignedAt   time.Time
+	AckedAt      pgtype.Timestamptz
+	AssignmentID pgtype.UUID
+	Generation   int64
 }
 
 type PinAudit struct {
@@ -893,6 +900,17 @@ type PinAudit struct {
 	Error         pgtype.Text
 	ChallengedAt  time.Time
 	CompletedAt   pgtype.Timestamptz
+}
+
+type PinChange struct {
+	Sequence     int64
+	NodeID       pgtype.UUID
+	AssignmentID pgtype.UUID
+	Generation   int64
+	Kind         string
+	Cid          string
+	ByteSize     int64
+	CreatedAt    time.Time
 }
 
 type RefreshToken struct {

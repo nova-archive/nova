@@ -46,3 +46,99 @@ WHERE id = $1;
 SELECT id, display_name, status, trust_state, selected_protocol, last_seen_at
 FROM nodes
 ORDER BY joined_at DESC;
+
+-- name: GetChangeLogHead :one
+SELECT COALESCE(MAX(sequence), 0)::bigint AS head FROM pin_changes;
+
+-- name: GetPruneWatermark :one
+SELECT pruned_through_seq FROM federation_change_log_state WHERE id = true;
+
+-- name: AcquireChangeLogLock :exec
+-- Transaction-scoped advisory lock that serializes change-log appends so
+-- pin_changes.sequence values commit in assignment order (commit-order-safe):
+-- a donor never advances its cursor past a lower-sequence row that can still
+-- commit. Gaps from rolled-back txns are harmless (cursor uses sequence > N).
+SELECT pg_advisory_xact_lock(8030600000000000001);
+
+-- name: GetBlobSize :one
+SELECT byte_size FROM blobs WHERE cid = $1;
+
+-- name: UpsertPinAssignmentAssign :one
+INSERT INTO pin_assignments (cid, node_id, state, generation)
+VALUES ($1, $2, 'pending', 1)
+ON CONFLICT (cid, node_id) DO UPDATE SET
+    state       = 'pending',
+    generation  = pin_assignments.generation + 1,
+    acked_at    = NULL,
+    assigned_at = now()
+RETURNING assignment_id, generation;
+
+-- name: GetPinAssignmentForUpdate :one
+SELECT assignment_id, generation FROM pin_assignments
+WHERE cid = $1 AND node_id = $2
+FOR UPDATE;
+
+-- name: DeletePinAssignment :execrows
+DELETE FROM pin_assignments WHERE cid = $1 AND node_id = $2;
+
+-- name: InsertPinChange :one
+INSERT INTO pin_changes (node_id, assignment_id, generation, kind, cid, byte_size)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING sequence;
+
+-- name: GetPinChangesSince :many
+SELECT sequence, assignment_id, generation, kind, cid, byte_size
+FROM pin_changes
+WHERE node_id = $1 AND sequence > $2
+ORDER BY sequence
+LIMIT $3;
+
+-- name: NodeHasChangesAfter :one
+SELECT EXISTS (
+    SELECT 1 FROM pin_changes WHERE node_id = $1 AND sequence > $2
+) AS changed;
+
+-- name: GetPinSnapshotPage :many
+SELECT pa.cid, pa.assignment_id, pa.generation, b.byte_size, pa.assigned_at
+FROM pin_assignments pa
+JOIN blobs b ON b.cid = pa.cid
+WHERE pa.node_id = $1 AND pa.cid > $2
+ORDER BY pa.cid
+LIMIT $3;
+
+-- name: AckPinAssignment :execrows
+UPDATE pin_assignments
+SET state = 'acked', acked_at = now()
+WHERE cid = $1 AND node_id = $2 AND assignment_id = $3 AND generation = $4 AND state = 'pending';
+
+-- name: FailPinAssignment :execrows
+UPDATE pin_assignments
+SET state = 'failed'
+WHERE cid = $1 AND node_id = $2 AND assignment_id = $3 AND generation = $4 AND state = 'pending';
+
+-- name: GetPinAssignment :one
+SELECT cid, node_id, state, assignment_id, generation, assigned_at, acked_at
+FROM pin_assignments
+WHERE cid = $1 AND node_id = $2;
+
+-- name: PruneChangeLog :one
+-- Atomic delete + watermark advance in one statement (no tx needed).
+WITH del AS (
+    DELETE FROM pin_changes WHERE created_at < $1 RETURNING sequence
+)
+UPDATE federation_change_log_state
+SET pruned_through_seq = GREATEST(
+    pruned_through_seq,
+    COALESCE((SELECT MAX(sequence) FROM del), pruned_through_seq)
+)
+WHERE id = true
+RETURNING pruned_through_seq;
+
+-- name: ListDesiredAssignmentsByCID :many
+SELECT node_id, generation, state FROM pin_assignments WHERE cid = $1 ORDER BY node_id;
+
+-- name: ListVerifiedHoldersByCID :many
+SELECT node_id, generation FROM pin_assignments WHERE cid = $1 AND state = 'acked' ORDER BY node_id;
+
+-- name: ListDesiredAssignmentsByNode :many
+SELECT cid, generation, state FROM pin_assignments WHERE node_id = $1 ORDER BY cid;

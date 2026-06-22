@@ -7,9 +7,114 @@ package gen
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const ackPinAssignment = `-- name: AckPinAssignment :execrows
+UPDATE pin_assignments
+SET state = 'acked', acked_at = now()
+WHERE cid = $1 AND node_id = $2 AND assignment_id = $3 AND generation = $4 AND state = 'pending'
+`
+
+type AckPinAssignmentParams struct {
+	Cid          string
+	NodeID       pgtype.UUID
+	AssignmentID pgtype.UUID
+	Generation   int64
+}
+
+func (q *Queries) AckPinAssignment(ctx context.Context, arg AckPinAssignmentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, ackPinAssignment,
+		arg.Cid,
+		arg.NodeID,
+		arg.AssignmentID,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const acquireChangeLogLock = `-- name: AcquireChangeLogLock :exec
+SELECT pg_advisory_xact_lock(8030600000000000001)
+`
+
+// Transaction-scoped advisory lock that serializes change-log appends so
+// pin_changes.sequence values commit in assignment order (commit-order-safe):
+// a donor never advances its cursor past a lower-sequence row that can still
+// commit. Gaps from rolled-back txns are harmless (cursor uses sequence > N).
+func (q *Queries) AcquireChangeLogLock(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, acquireChangeLogLock)
+	return err
+}
+
+const deletePinAssignment = `-- name: DeletePinAssignment :execrows
+DELETE FROM pin_assignments WHERE cid = $1 AND node_id = $2
+`
+
+type DeletePinAssignmentParams struct {
+	Cid    string
+	NodeID pgtype.UUID
+}
+
+func (q *Queries) DeletePinAssignment(ctx context.Context, arg DeletePinAssignmentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePinAssignment, arg.Cid, arg.NodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failPinAssignment = `-- name: FailPinAssignment :execrows
+UPDATE pin_assignments
+SET state = 'failed'
+WHERE cid = $1 AND node_id = $2 AND assignment_id = $3 AND generation = $4 AND state = 'pending'
+`
+
+type FailPinAssignmentParams struct {
+	Cid          string
+	NodeID       pgtype.UUID
+	AssignmentID pgtype.UUID
+	Generation   int64
+}
+
+func (q *Queries) FailPinAssignment(ctx context.Context, arg FailPinAssignmentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failPinAssignment,
+		arg.Cid,
+		arg.NodeID,
+		arg.AssignmentID,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getBlobSize = `-- name: GetBlobSize :one
+SELECT byte_size FROM blobs WHERE cid = $1
+`
+
+func (q *Queries) GetBlobSize(ctx context.Context, cid string) (int64, error) {
+	row := q.db.QueryRow(ctx, getBlobSize, cid)
+	var byte_size int64
+	err := row.Scan(&byte_size)
+	return byte_size, err
+}
+
+const getChangeLogHead = `-- name: GetChangeLogHead :one
+SELECT COALESCE(MAX(sequence), 0)::bigint AS head FROM pin_changes
+`
+
+func (q *Queries) GetChangeLogHead(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, getChangeLogHead)
+	var head int64
+	err := row.Scan(&head)
+	return head, err
+}
 
 const getNodeByID = `-- name: GetNodeByID :one
 SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes FROM nodes WHERE id = $1
@@ -44,6 +149,264 @@ func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
 		&i.LastStoredBytes,
 	)
 	return i, err
+}
+
+const getPinAssignment = `-- name: GetPinAssignment :one
+SELECT cid, node_id, state, assignment_id, generation, assigned_at, acked_at
+FROM pin_assignments
+WHERE cid = $1 AND node_id = $2
+`
+
+type GetPinAssignmentParams struct {
+	Cid    string
+	NodeID pgtype.UUID
+}
+
+type GetPinAssignmentRow struct {
+	Cid          string
+	NodeID       pgtype.UUID
+	State        PinState
+	AssignmentID pgtype.UUID
+	Generation   int64
+	AssignedAt   time.Time
+	AckedAt      pgtype.Timestamptz
+}
+
+func (q *Queries) GetPinAssignment(ctx context.Context, arg GetPinAssignmentParams) (GetPinAssignmentRow, error) {
+	row := q.db.QueryRow(ctx, getPinAssignment, arg.Cid, arg.NodeID)
+	var i GetPinAssignmentRow
+	err := row.Scan(
+		&i.Cid,
+		&i.NodeID,
+		&i.State,
+		&i.AssignmentID,
+		&i.Generation,
+		&i.AssignedAt,
+		&i.AckedAt,
+	)
+	return i, err
+}
+
+const getPinAssignmentForUpdate = `-- name: GetPinAssignmentForUpdate :one
+SELECT assignment_id, generation FROM pin_assignments
+WHERE cid = $1 AND node_id = $2
+FOR UPDATE
+`
+
+type GetPinAssignmentForUpdateParams struct {
+	Cid    string
+	NodeID pgtype.UUID
+}
+
+type GetPinAssignmentForUpdateRow struct {
+	AssignmentID pgtype.UUID
+	Generation   int64
+}
+
+func (q *Queries) GetPinAssignmentForUpdate(ctx context.Context, arg GetPinAssignmentForUpdateParams) (GetPinAssignmentForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getPinAssignmentForUpdate, arg.Cid, arg.NodeID)
+	var i GetPinAssignmentForUpdateRow
+	err := row.Scan(&i.AssignmentID, &i.Generation)
+	return i, err
+}
+
+const getPinChangesSince = `-- name: GetPinChangesSince :many
+SELECT sequence, assignment_id, generation, kind, cid, byte_size
+FROM pin_changes
+WHERE node_id = $1 AND sequence > $2
+ORDER BY sequence
+LIMIT $3
+`
+
+type GetPinChangesSinceParams struct {
+	NodeID   pgtype.UUID
+	Sequence int64
+	Limit    int32
+}
+
+type GetPinChangesSinceRow struct {
+	Sequence     int64
+	AssignmentID pgtype.UUID
+	Generation   int64
+	Kind         string
+	Cid          string
+	ByteSize     int64
+}
+
+func (q *Queries) GetPinChangesSince(ctx context.Context, arg GetPinChangesSinceParams) ([]GetPinChangesSinceRow, error) {
+	rows, err := q.db.Query(ctx, getPinChangesSince, arg.NodeID, arg.Sequence, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetPinChangesSinceRow
+	for rows.Next() {
+		var i GetPinChangesSinceRow
+		if err := rows.Scan(
+			&i.Sequence,
+			&i.AssignmentID,
+			&i.Generation,
+			&i.Kind,
+			&i.Cid,
+			&i.ByteSize,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPinSnapshotPage = `-- name: GetPinSnapshotPage :many
+SELECT pa.cid, pa.assignment_id, pa.generation, b.byte_size, pa.assigned_at
+FROM pin_assignments pa
+JOIN blobs b ON b.cid = pa.cid
+WHERE pa.node_id = $1 AND pa.cid > $2
+ORDER BY pa.cid
+LIMIT $3
+`
+
+type GetPinSnapshotPageParams struct {
+	NodeID pgtype.UUID
+	Cid    string
+	Limit  int32
+}
+
+type GetPinSnapshotPageRow struct {
+	Cid          string
+	AssignmentID pgtype.UUID
+	Generation   int64
+	ByteSize     int64
+	AssignedAt   time.Time
+}
+
+func (q *Queries) GetPinSnapshotPage(ctx context.Context, arg GetPinSnapshotPageParams) ([]GetPinSnapshotPageRow, error) {
+	rows, err := q.db.Query(ctx, getPinSnapshotPage, arg.NodeID, arg.Cid, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetPinSnapshotPageRow
+	for rows.Next() {
+		var i GetPinSnapshotPageRow
+		if err := rows.Scan(
+			&i.Cid,
+			&i.AssignmentID,
+			&i.Generation,
+			&i.ByteSize,
+			&i.AssignedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getPruneWatermark = `-- name: GetPruneWatermark :one
+SELECT pruned_through_seq FROM federation_change_log_state WHERE id = true
+`
+
+func (q *Queries) GetPruneWatermark(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, getPruneWatermark)
+	var pruned_through_seq int64
+	err := row.Scan(&pruned_through_seq)
+	return pruned_through_seq, err
+}
+
+const insertPinChange = `-- name: InsertPinChange :one
+INSERT INTO pin_changes (node_id, assignment_id, generation, kind, cid, byte_size)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING sequence
+`
+
+type InsertPinChangeParams struct {
+	NodeID       pgtype.UUID
+	AssignmentID pgtype.UUID
+	Generation   int64
+	Kind         string
+	Cid          string
+	ByteSize     int64
+}
+
+func (q *Queries) InsertPinChange(ctx context.Context, arg InsertPinChangeParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertPinChange,
+		arg.NodeID,
+		arg.AssignmentID,
+		arg.Generation,
+		arg.Kind,
+		arg.Cid,
+		arg.ByteSize,
+	)
+	var sequence int64
+	err := row.Scan(&sequence)
+	return sequence, err
+}
+
+const listDesiredAssignmentsByCID = `-- name: ListDesiredAssignmentsByCID :many
+SELECT node_id, generation, state FROM pin_assignments WHERE cid = $1 ORDER BY node_id
+`
+
+type ListDesiredAssignmentsByCIDRow struct {
+	NodeID     pgtype.UUID
+	Generation int64
+	State      PinState
+}
+
+func (q *Queries) ListDesiredAssignmentsByCID(ctx context.Context, cid string) ([]ListDesiredAssignmentsByCIDRow, error) {
+	rows, err := q.db.Query(ctx, listDesiredAssignmentsByCID, cid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDesiredAssignmentsByCIDRow
+	for rows.Next() {
+		var i ListDesiredAssignmentsByCIDRow
+		if err := rows.Scan(&i.NodeID, &i.Generation, &i.State); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDesiredAssignmentsByNode = `-- name: ListDesiredAssignmentsByNode :many
+SELECT cid, generation, state FROM pin_assignments WHERE node_id = $1 ORDER BY cid
+`
+
+type ListDesiredAssignmentsByNodeRow struct {
+	Cid        string
+	Generation int64
+	State      PinState
+}
+
+func (q *Queries) ListDesiredAssignmentsByNode(ctx context.Context, nodeID pgtype.UUID) ([]ListDesiredAssignmentsByNodeRow, error) {
+	rows, err := q.db.Query(ctx, listDesiredAssignmentsByNode, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDesiredAssignmentsByNodeRow
+	for rows.Next() {
+		var i ListDesiredAssignmentsByNodeRow
+		if err := rows.Scan(&i.Cid, &i.Generation, &i.State); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listNodes = `-- name: ListNodes :many
@@ -86,6 +449,74 @@ func (q *Queries) ListNodes(ctx context.Context) ([]ListNodesRow, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const listVerifiedHoldersByCID = `-- name: ListVerifiedHoldersByCID :many
+SELECT node_id, generation FROM pin_assignments WHERE cid = $1 AND state = 'acked' ORDER BY node_id
+`
+
+type ListVerifiedHoldersByCIDRow struct {
+	NodeID     pgtype.UUID
+	Generation int64
+}
+
+func (q *Queries) ListVerifiedHoldersByCID(ctx context.Context, cid string) ([]ListVerifiedHoldersByCIDRow, error) {
+	rows, err := q.db.Query(ctx, listVerifiedHoldersByCID, cid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListVerifiedHoldersByCIDRow
+	for rows.Next() {
+		var i ListVerifiedHoldersByCIDRow
+		if err := rows.Scan(&i.NodeID, &i.Generation); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const nodeHasChangesAfter = `-- name: NodeHasChangesAfter :one
+SELECT EXISTS (
+    SELECT 1 FROM pin_changes WHERE node_id = $1 AND sequence > $2
+) AS changed
+`
+
+type NodeHasChangesAfterParams struct {
+	NodeID   pgtype.UUID
+	Sequence int64
+}
+
+func (q *Queries) NodeHasChangesAfter(ctx context.Context, arg NodeHasChangesAfterParams) (bool, error) {
+	row := q.db.QueryRow(ctx, nodeHasChangesAfter, arg.NodeID, arg.Sequence)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
+}
+
+const pruneChangeLog = `-- name: PruneChangeLog :one
+WITH del AS (
+    DELETE FROM pin_changes WHERE created_at < $1 RETURNING sequence
+)
+UPDATE federation_change_log_state
+SET pruned_through_seq = GREATEST(
+    pruned_through_seq,
+    COALESCE((SELECT MAX(sequence) FROM del), pruned_through_seq)
+)
+WHERE id = true
+RETURNING pruned_through_seq
+`
+
+// Atomic delete + watermark advance in one statement (no tx needed).
+func (q *Queries) PruneChangeLog(ctx context.Context, createdAt time.Time) (int64, error) {
+	row := q.db.QueryRow(ctx, pruneChangeLog, createdAt)
+	var pruned_through_seq int64
+	err := row.Scan(&pruned_through_seq)
+	return pruned_through_seq, err
 }
 
 const registerNode = `-- name: RegisterNode :one
@@ -247,5 +678,33 @@ func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbe
 		&i.LastFreeBytes,
 		&i.LastStoredBytes,
 	)
+	return i, err
+}
+
+const upsertPinAssignmentAssign = `-- name: UpsertPinAssignmentAssign :one
+INSERT INTO pin_assignments (cid, node_id, state, generation)
+VALUES ($1, $2, 'pending', 1)
+ON CONFLICT (cid, node_id) DO UPDATE SET
+    state       = 'pending',
+    generation  = pin_assignments.generation + 1,
+    acked_at    = NULL,
+    assigned_at = now()
+RETURNING assignment_id, generation
+`
+
+type UpsertPinAssignmentAssignParams struct {
+	Cid    string
+	NodeID pgtype.UUID
+}
+
+type UpsertPinAssignmentAssignRow struct {
+	AssignmentID pgtype.UUID
+	Generation   int64
+}
+
+func (q *Queries) UpsertPinAssignmentAssign(ctx context.Context, arg UpsertPinAssignmentAssignParams) (UpsertPinAssignmentAssignRow, error) {
+	row := q.db.QueryRow(ctx, upsertPinAssignmentAssign, arg.Cid, arg.NodeID)
+	var i UpsertPinAssignmentAssignRow
+	err := row.Scan(&i.AssignmentID, &i.Generation)
 	return i, err
 }

@@ -89,6 +89,16 @@ func TestMigrationsUpDown(t *testing.T) {
 	requireColumnExists(t, ctx, pool, "users", "password_hash")
 	requireColumnExists(t, ctx, pool, "users", "disabled")
 
+	// Assert schema additions from 0012 (P2-M3 assignment sync).
+	requireColumnExists(t, ctx, pool, "pin_assignments", "assignment_id")
+	requireColumnExists(t, ctx, pool, "pin_assignments", "generation")
+	requireTableExists(t, ctx, pool, "pin_changes")
+	requireTableExists(t, ctx, pool, "federation_change_log_state")
+	var prunedThroughSeq int64
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT pruned_through_seq FROM federation_change_log_state`).Scan(&prunedThroughSeq))
+	require.Equal(t, int64(0), prunedThroughSeq, "watermark must seed to 0")
+
 	// Roll back all migrations to verify down migrations are clean.
 	require.NoError(t, goose.DownToContext(ctx, sqlDB, ".", 0))
 }

@@ -6,12 +6,19 @@ package gen
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
 	AbortUploadSession(ctx context.Context, id pgtype.UUID) error
+	AckPinAssignment(ctx context.Context, arg AckPinAssignmentParams) (int64, error)
+	// Transaction-scoped advisory lock that serializes change-log appends so
+	// pin_changes.sequence values commit in assignment order (commit-order-safe):
+	// a donor never advances its cursor past a lower-sequence row that can still
+	// commit. Gaps from rolled-back txns are harmless (cursor uses sequence > N).
+	AcquireChangeLogLock(ctx context.Context) error
 	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
 	// Atomically mark the source version 'rotating' iff it is currently 'active'
 	// and no other version is already rotating. 0 rows => caller maps to 409/400.
@@ -46,12 +53,14 @@ type Querier interface {
 	// the index scan instead of a sequential scan. Revoked-but-old rows are
 	// cleaned up by DeleteRevokedRefreshTokensOlderThan below.
 	DeleteExpiredRefreshTokens(ctx context.Context) (int64, error)
+	DeletePinAssignment(ctx context.Context, arg DeletePinAssignmentParams) (int64, error)
 	// Drops refresh_tokens rows that were explicitly revoked more than $1 ago
 	// (typically 30 days, giving operators a window to forensically inspect
 	// revoke events). Uses the refresh_tokens_revoked_gc_idx partial index
 	// added in migration 0007.
 	DeleteRevokedRefreshTokensOlderThan(ctx context.Context, revokedAt pgtype.Timestamptz) (int64, error)
 	DeleteUploadSession(ctx context.Context, id pgtype.UUID) error
+	FailPinAssignment(ctx context.Context, arg FailPinAssignmentParams) (int64, error)
 	FinalizeUploadSession(ctx context.Context, arg FinalizeUploadSessionParams) error
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
 	GetBlobCore(ctx context.Context, cid string) (GetBlobCoreRow, error)
@@ -71,6 +80,8 @@ type Querier interface {
 	// soft_deleted / quarantined / tombstoned blob. owner_id coalesced to '' (the
 	// GetBlobForModeration precedent) so a NULL owner never crashes the scan.
 	GetBlobMeta(ctx context.Context, cid string) (GetBlobMetaRow, error)
+	GetBlobSize(ctx context.Context, cid string) (int64, error)
+	GetChangeLogHead(ctx context.Context) (int64, error)
 	GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (GetCollectionForWriteRow, error)
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
 	GetDMCACase(ctx context.Context, id pgtype.UUID) (GetDMCACaseRow, error)
@@ -78,6 +89,11 @@ type Querier interface {
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
 	GetMasterVersionByLabel(ctx context.Context, versionLabel string) (MasterKeyVersion, error)
 	GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
+	GetPinAssignment(ctx context.Context, arg GetPinAssignmentParams) (GetPinAssignmentRow, error)
+	GetPinAssignmentForUpdate(ctx context.Context, arg GetPinAssignmentForUpdateParams) (GetPinAssignmentForUpdateRow, error)
+	GetPinChangesSince(ctx context.Context, arg GetPinChangesSinceParams) ([]GetPinChangesSinceRow, error)
+	GetPinSnapshotPage(ctx context.Context, arg GetPinSnapshotPageParams) ([]GetPinSnapshotPageRow, error)
+	GetPruneWatermark(ctx context.Context) (int64, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)
 	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
 	GetSigningKeyByKID(ctx context.Context, kid string) (GetSigningKeyByKIDRow, error)
@@ -101,6 +117,7 @@ type Querier interface {
 	InsertIntegrityAudit(ctx context.Context, arg []InsertIntegrityAuditParams) *InsertIntegrityAuditBatchResults
 	InsertManifest(ctx context.Context, arg InsertManifestParams) error
 	InsertModerationDecision(ctx context.Context, arg InsertModerationDecisionParams) (pgtype.UUID, error)
+	InsertPinChange(ctx context.Context, arg InsertPinChangeParams) (int64, error)
 	InsertRefreshToken(ctx context.Context, arg InsertRefreshTokenParams) (pgtype.UUID, error)
 	InsertRevocation(ctx context.Context, arg InsertRevocationParams) error
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
@@ -118,6 +135,8 @@ type Querier interface {
 	ListBlocklist(ctx context.Context, arg ListBlocklistParams) ([]ListBlocklistRow, error)
 	ListDMCACases(ctx context.Context, arg ListDMCACasesParams) ([]ListDMCACasesRow, error)
 	ListDerivativeCIDs(ctx context.Context, parentCid pgtype.Text) ([]string, error)
+	ListDesiredAssignmentsByCID(ctx context.Context, cid string) ([]ListDesiredAssignmentsByCIDRow, error)
+	ListDesiredAssignmentsByNode(ctx context.Context, nodeID pgtype.UUID) ([]ListDesiredAssignmentsByNodeRow, error)
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
 	ListIntegrityAudits(ctx context.Context, arg ListIntegrityAuditsParams) ([]ListIntegrityAuditsRow, error)
 	ListMasterVersions(ctx context.Context) ([]ListMasterVersionsRow, error)
@@ -141,11 +160,15 @@ type Querier interface {
 	// Owner resolution for `novactl collection create`: the sole operator user is
 	// the default collection owner when --owner is omitted.
 	ListUserIDsByRole(ctx context.Context, role UserRole) ([]pgtype.UUID, error)
+	ListVerifiedHoldersByCID(ctx context.Context, cid string) ([]ListVerifiedHoldersByCIDRow, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
 	// distinguishes 404 vs 409 via GetBlobMeta).
 	MarkSoftDeleted(ctx context.Context, cid string) (int64, error)
+	NodeHasChangesAfter(ctx context.Context, arg NodeHasChangesAfterParams) (bool, error)
+	// Atomic delete + watermark advance in one statement (no tx needed).
+	PruneChangeLog(ctx context.Context, createdAt time.Time) (int64, error)
 	RegisterNode(ctx context.Context, arg RegisterNodeParams) (Node, error)
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
@@ -181,6 +204,7 @@ type Querier interface {
 	ShredExpiredRetiredSigningKeys(ctx context.Context, wrappedKey []byte) error
 	TouchUploadTokenUsed(ctx context.Context, id pgtype.UUID) error
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) (Node, error)
+	UpsertPinAssignmentAssign(ctx context.Context, arg UpsertPinAssignmentAssignParams) (UpsertPinAssignmentAssignRow, error)
 	UpsertRepeatInfringer(ctx context.Context, userID pgtype.UUID) error
 }
 
