@@ -22,6 +22,41 @@ const (
 	CodeSnapshotRequired  = "snapshot_required" // since_seq predates retention (D7)
 	CodeIncompatible      = "incompatible_capabilities"
 	CodeUnknownChangeKind = "unknown_change_kind" // fail-closed (D7)
+	CodeStaleAssignment   = "stale_assignment"    // ack/fail for a superseded generation
+)
+
+// Fail.Reason domain (FEDERATION_PROTOCOL.md).
+const (
+	FailReasonOutOfSpace         = "out_of_space"
+	FailReasonBlobUnavailable    = "blob_unavailable"
+	FailReasonPolicyFilter       = "policy_filter"
+	FailReasonNetworkError       = "network_error"
+	FailReasonKuboError          = "kubo_error"
+	FailReasonSourceUnauthorized = "source_unauthorized"
+	FailReasonCIDMismatch        = "cid_mismatch"
+	FailReasonBudgetExceeded     = "budget_exceeded"
+	FailReasonOther              = "other"
+)
+
+// NormalizeFailReason maps "" to FailReasonOther and returns "" for an
+// unrecognized reason (the /fail handler rejects that with 400).
+func NormalizeFailReason(r string) string {
+	switch r {
+	case "":
+		return FailReasonOther
+	case FailReasonOutOfSpace, FailReasonBlobUnavailable, FailReasonPolicyFilter,
+		FailReasonNetworkError, FailReasonKuboError, FailReasonSourceUnauthorized,
+		FailReasonCIDMismatch, FailReasonBudgetExceeded, FailReasonOther:
+		return r
+	default:
+		return ""
+	}
+}
+
+// Change kinds. Donors fail closed on any other value (D7).
+const (
+	ChangeKindAssign = "assign"
+	ChangeKindUnpin  = "unpin"
 )
 
 // ErrorResponse is the normalized error envelope for fed/v1 responses.
@@ -77,26 +112,59 @@ type HeartbeatResponse struct {
 type ChangesRequest struct {
 	SinceSeq int64 `json:"since_seq"`
 }
+
+// ChangeSource is the repair-fetch source for an assign change. Populated in M4
+// (repair tokens); nil in M3.
+type ChangeSource struct {
+	NodeID     string `json:"node_id"`
+	NebulaAddr string `json:"nebula_addr"`
+	Token      string `json:"token"`
+}
+
+type PinChange struct {
+	Sequence     int64         `json:"seq"`
+	AssignmentID string        `json:"assignment_id"`
+	Generation   int64         `json:"generation"`
+	Kind         string        `json:"kind"`
+	CID          string        `json:"cid"`
+	ByteSize     int64         `json:"byte_size"`
+	Source       *ChangeSource `json:"source,omitempty"` // M4
+}
+
 type ChangesResponse struct {
 	Changes      []PinChange `json:"changes"`
-	CurrentSeq   int64       `json:"current_seq"`
+	NextSeq      int64       `json:"next_seq"`
 	CurrentEpoch int64       `json:"current_epoch"`
 }
-type PinChange struct {
-	Sequence     int64  `json:"sequence"`
+
+// SnapshotItem is one row of the recovery snapshot.
+type SnapshotItem struct {
+	CID          string `json:"cid"`
 	AssignmentID string `json:"assignment_id"`
 	Generation   int64  `json:"generation"`
-	Kind         string `json:"kind"`
-	CID          string `json:"cid"`
+	ByteSize     int64  `json:"byte_size"`
+	AssignedAt   string `json:"assigned_at"` // RFC3339
 }
+
+type SnapshotResponse struct {
+	Data          []SnapshotItem `json:"data"`
+	Cursor        string         `json:"cursor"` // empty ⇒ last page
+	SnapshotEpoch int64          `json:"snapshot_epoch"`
+}
+
 type Ack struct {
-	AssignmentID string `json:"assignment_id"`
-	Generation   int64  `json:"generation"`
-	CID          string `json:"cid"`
+	AssignmentID      string `json:"assignment_id"`
+	Generation        int64  `json:"generation"`
+	CID               string `json:"cid"`
+	ByteSize          int64  `json:"byte_size,omitempty"`
+	IPFSPinStatus     string `json:"ipfs_pin_status,omitempty"`
+	FetchedFromNodeID string `json:"fetched_from_node_id,omitempty"`
 }
+
 type Fail struct {
 	AssignmentID string `json:"assignment_id"`
 	Generation   int64  `json:"generation"`
 	CID          string `json:"cid"`
 	Reason       string `json:"reason"`
+	Details      string `json:"details,omitempty"`
 }
