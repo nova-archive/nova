@@ -275,4 +275,9 @@ func TestBlobOversizeRejected(t *testing.T) {
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversize: status %d body %s", w.Code, w.Body)
 	}
+	var er wire.ErrorResponse
+	json.Unmarshal(w.Body.Bytes(), &er)
+	if er.Code != "blob_too_large" {
+		t.Fatalf("oversize: code %q, want %q", er.Code, "blob_too_large")
+	}
 }

@@ -51,6 +51,11 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cidStr := r.PathValue("cid")
+	c, err := gocid.Decode(cidStr)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_cid", "")
+		return
+	}
 	now := time.Now()
 
 	tok := r.Header.Get("X-Nova-Repair-Token")
@@ -102,11 +107,6 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, err := gocid.Decode(cidStr)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_cid", "")
-		return
-	}
 	rc, err := s.backend.Get(r.Context(), c)
 	if err != nil {
 		writeError(w, http.StatusNotFound, wire.FailReasonBlobUnavailable, "")
