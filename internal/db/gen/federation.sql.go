@@ -106,9 +106,16 @@ func (q *Queries) GetBlobSize(ctx context.Context, cid string) (int64, error) {
 }
 
 const getChangeLogHead = `-- name: GetChangeLogHead :one
-SELECT COALESCE(MAX(sequence), 0)::bigint AS head FROM pin_changes
+SELECT GREATEST(
+    (SELECT COALESCE(MAX(sequence), 0) FROM pin_changes),
+    (SELECT pruned_through_seq FROM federation_change_log_state WHERE id = true)
+)::bigint AS head
 `
 
+// Monotonic change-log head: the greatest sequence ever issued that a donor
+// cursor should reach = max(retained max sequence, highest pruned sequence). Using
+// the prune watermark keeps the head from regressing to 0 when the log is fully
+// pruned (which would otherwise loop a recovered donor back into snapshot_required).
 func (q *Queries) GetChangeLogHead(ctx context.Context) (int64, error) {
 	row := q.db.QueryRow(ctx, getChangeLogHead)
 	var head int64

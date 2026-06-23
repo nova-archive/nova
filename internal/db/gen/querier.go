@@ -81,6 +81,10 @@ type Querier interface {
 	// GetBlobForModeration precedent) so a NULL owner never crashes the scan.
 	GetBlobMeta(ctx context.Context, cid string) (GetBlobMetaRow, error)
 	GetBlobSize(ctx context.Context, cid string) (int64, error)
+	// Monotonic change-log head: the greatest sequence ever issued that a donor
+	// cursor should reach = max(retained max sequence, highest pruned sequence). Using
+	// the prune watermark keeps the head from regressing to 0 when the log is fully
+	// pruned (which would otherwise loop a recovered donor back into snapshot_required).
 	GetChangeLogHead(ctx context.Context) (int64, error)
 	GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (GetCollectionForWriteRow, error)
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)

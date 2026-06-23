@@ -48,7 +48,14 @@ FROM nodes
 ORDER BY joined_at DESC;
 
 -- name: GetChangeLogHead :one
-SELECT COALESCE(MAX(sequence), 0)::bigint AS head FROM pin_changes;
+-- Monotonic change-log head: the greatest sequence ever issued that a donor
+-- cursor should reach = max(retained max sequence, highest pruned sequence). Using
+-- the prune watermark keeps the head from regressing to 0 when the log is fully
+-- pruned (which would otherwise loop a recovered donor back into snapshot_required).
+SELECT GREATEST(
+    (SELECT COALESCE(MAX(sequence), 0) FROM pin_changes),
+    (SELECT pruned_through_seq FROM federation_change_log_state WHERE id = true)
+)::bigint AS head;
 
 -- name: GetPruneWatermark :one
 SELECT pruned_through_seq FROM federation_change_log_state WHERE id = true;
