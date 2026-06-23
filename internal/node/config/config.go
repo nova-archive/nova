@@ -122,6 +122,10 @@ func checkWritableDir(dir string) error {
 // coordinator overrides it via config_updates. M2 default 300.
 func (c *Config) HeartbeatIntervalSeconds() int { return 300 }
 
+// PinsPollIntervalSeconds is the donor's initial pins-poll cadence before the
+// coordinator overrides it via config_updates.
+func (c *Config) PinsPollIntervalSeconds() int { return 600 }
+
 // checkReadableFile verifies a *_path is set, exists, is a regular file (not a
 // directory), and is readable. It does NOT parse the contents.
 func checkReadableFile(field, path string) error {

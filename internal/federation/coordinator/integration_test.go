@@ -57,7 +57,8 @@ func TestEndToEndRegisterHeartbeatRevoke(t *testing.T) {
 	client := agent.NewHTTPClient("https://"+s.Addr(), tlsCfg)
 
 	// Run the real agent briefly: it registers once then heartbeats.
-	ag := agent.New(&nodeconfig.Config{BandwidthBudgetBytesPerDay: 1}, state.NewFileRegistrationStore(t.TempDir()), client, 20*time.Millisecond)
+	stateDir := t.TempDir()
+	ag := agent.New(&nodeconfig.Config{BandwidthBudgetBytesPerDay: 1}, state.NewFileRegistrationStore(stateDir), state.NewFileStore(stateDir), state.NewFileAssignmentStore(stateDir), client, 20*time.Millisecond, time.Hour)
 	agCtx, agCancel := context.WithTimeout(ctx, 120*time.Millisecond)
 	defer agCancel()
 	_ = ag.Run(agCtx)

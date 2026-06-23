@@ -137,7 +137,11 @@ func serve(cfg *nodeconfig.Config, stdout io.Writer) error {
 	}
 	client := agent.NewHTTPClient(cfg.CoordinatorURL, tlsCfg)
 	regStore := state.NewFileRegistrationStore(cfg.StorageDir)
-	ag := agent.New(cfg, regStore, client, time.Duration(cfg.HeartbeatIntervalSeconds())*time.Second)
+	cursor := state.NewFileStore(cfg.StorageDir)
+	assignments := state.NewFileAssignmentStore(cfg.StorageDir)
+	ag := agent.New(cfg, regStore, cursor, assignments, client,
+		time.Duration(cfg.HeartbeatIntervalSeconds())*time.Second,
+		time.Duration(cfg.PinsPollIntervalSeconds())*time.Second)
 	go func() {
 		if e := ag.Run(ctx); e != nil && ctx.Err() == nil {
 			slog.Error("nova-node agent stopped", "err", e)

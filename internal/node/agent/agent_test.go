@@ -28,12 +28,18 @@ func (f *fakeClient) Heartbeat(context.Context, wire.HeartbeatRequest) (wire.Hea
 	// register-once + repeated-heartbeat, not the interval-change path.
 	return wire.HeartbeatResponse{}, f.hbErr
 }
+func (f *fakeClient) GetChanges(context.Context, int64) (wire.ChangesResponse, error) {
+	return wire.ChangesResponse{}, nil
+}
+func (f *fakeClient) GetSnapshot(context.Context, string, int64) (wire.SnapshotResponse, error) {
+	return wire.SnapshotResponse{}, nil
+}
 
 func TestAgentRegistersOnceThenHeartbeats(t *testing.T) {
 	cfg := &nodeconfig.Config{BandwidthBudgetBytesPerDay: 1}
 	store := state.NewFileRegistrationStore(t.TempDir())
 	fc := &fakeClient{regResp: wire.RegisterResponse{NodeID: "n1", SelectedProtocol: wire.ProtocolV1}}
-	a := New(cfg, store, fc, 20*time.Millisecond)
+	a := New(cfg, store, state.NewFileStore(t.TempDir()), state.NewFileAssignmentStore(t.TempDir()), fc, 20*time.Millisecond, time.Hour)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()
@@ -54,7 +60,7 @@ func TestAgentSkipsRegisterWhenAlreadyRegistered(t *testing.T) {
 	store := state.NewFileRegistrationStore(t.TempDir())
 	_ = store.SaveRegistration(context.Background(), state.Registration{NodeID: "n9"})
 	fc := &fakeClient{}
-	a := New(&nodeconfig.Config{BandwidthBudgetBytesPerDay: 1}, store, fc, 20*time.Millisecond)
+	a := New(&nodeconfig.Config{BandwidthBudgetBytesPerDay: 1}, store, state.NewFileStore(t.TempDir()), state.NewFileAssignmentStore(t.TempDir()), fc, 20*time.Millisecond, time.Hour)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 	_ = a.Run(ctx)
