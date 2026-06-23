@@ -7,20 +7,9 @@ import (
 	"io"
 	"testing"
 
-	gocid "github.com/ipfs/go-cid"
-	"github.com/multiformats/go-multihash"
 	"github.com/nova-archive/nova/internal/federation/wire"
 	"github.com/nova-archive/nova/internal/node/transfer"
 )
-
-func mkCID(t *testing.T, data []byte) string {
-	t.Helper()
-	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return gocid.NewCidV1(gocid.Raw, mh).String()
-}
 
 type fakeFetcher struct {
 	data   []byte
@@ -108,34 +97,5 @@ func TestVerifyOversizeNotImported(t *testing.T) {
 	}
 	if p.got != nil {
 		t.Fatal("oversize source must NOT be imported (no truncated pin)")
-	}
-}
-
-// TestVerifyMismatchRealCIDs exercises the got.Equals(want) == false branch with
-// two valid, distinct CIDv1 strings. The placeholder-string test above covers the
-// decode-failure path; this test covers the actual CID-comparison logic.
-func TestVerifyMismatchRealCIDs(t *testing.T) {
-	assigned := mkCID(t, []byte("expected"))
-	computed := mkCID(t, []byte("actual"))
-	// Sanity: they must differ as strings so the fast-path is skipped.
-	if assigned == computed {
-		t.Fatal("test setup: CIDs must be distinct")
-	}
-	err := transfer.Verify(context.Background(), fakeFetcher{data: []byte("ciphertext")},
-		&fakePinner{root: computed}, wire.ChangeSource{}, assigned, 1<<20)
-	var fe *transfer.FailErr
-	if !errors.As(err, &fe) || fe.Reason != wire.FailReasonCIDMismatch {
-		t.Fatalf("want cid_mismatch, got %v", err)
-	}
-}
-
-// TestVerifyMatchRealCIDs exercises the got.Equals(want) == true path (and the
-// fast-path string-equality short-circuit) using a real CIDv1.
-func TestVerifyMatchRealCIDs(t *testing.T) {
-	cid := mkCID(t, []byte("same"))
-	err := transfer.Verify(context.Background(), fakeFetcher{data: []byte("ciphertext")},
-		&fakePinner{root: cid}, wire.ChangeSource{}, cid, 1<<20)
-	if err != nil {
-		t.Fatalf("expected match with real CIDs, got %v", err)
 	}
 }

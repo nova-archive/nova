@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 
-	gocid "github.com/ipfs/go-cid"
 	"github.com/nova-archive/nova/internal/federation/wire"
 )
 
@@ -71,19 +70,12 @@ func Verify(ctx context.Context, fetcher SourceFetcher, pinner Pinner, src wire.
 	if err != nil {
 		return &FailErr{Reason: wire.FailReasonKuboError, Err: err}
 	}
-	// Fast-path: identical strings are equal by definition; only decode when strings differ (handles multibase variants).
+	// Donor verification uses canonical CID-string equality, not general
+	// (multibase-normalized) CID equality. Both sides use the shared importspec +
+	// Kubo's canonical CIDv1 output, so a real match is byte-identical; normalization
+	// is intentionally out of scope for the donor runtime (D-M4-6/D-M4-10).
 	if root != cid {
-		want, err := gocid.Decode(cid)
-		if err != nil {
-			return &FailErr{Reason: wire.FailReasonCIDMismatch, Err: fmt.Errorf("bad assigned cid: %w", err)}
-		}
-		got, err := gocid.Decode(root)
-		if err != nil {
-			return &FailErr{Reason: wire.FailReasonCIDMismatch, Err: fmt.Errorf("bad computed cid: %w", err)}
-		}
-		if !got.Equals(want) {
-			return &FailErr{Reason: wire.FailReasonCIDMismatch, Err: fmt.Errorf("root %s != assigned %s", got, want)}
-		}
+		return &FailErr{Reason: wire.FailReasonCIDMismatch, Err: fmt.Errorf("root %s != assigned %s", root, cid)}
 	}
 	return nil
 }
