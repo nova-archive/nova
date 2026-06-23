@@ -8,14 +8,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"time"
 
+	gocid "github.com/ipfs/go-cid"
 	"github.com/nova-archive/nova/internal/db/gen"
+	"github.com/nova-archive/nova/internal/federation/tokens"
 	"github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/federation/wire"
 )
+
+// blobSource is the narrow read surface the source endpoint needs (accept narrow
+// interfaces): *ipfs.EmbeddedBackend satisfies it via its Get(ctx, cid.Cid).
+// Using it keeps the federation Server testable with a tiny fake and avoids
+// widening the operator-only ipfs import surface.
+type blobSource interface {
+	Get(ctx context.Context, c gocid.Cid) (io.ReadCloser, error)
+}
 
 // Config is the federation server's static configuration.
 type Config struct {
@@ -25,6 +36,9 @@ type Config struct {
 	TLS                  TLSMaterial
 	ChangeLogRetention   time.Duration // default 168h; 0 disables pruning
 	PrunePollInterval    time.Duration // default 1h
+	RepairTokenTTL       time.Duration
+	MaxTransferBytes     int64
+	SourceNebulaAddr     string
 }
 
 // TLSMaterial holds the PEM bytes for the federation listener.
@@ -41,10 +55,26 @@ type Server struct {
 
 	ln  net.Listener
 	srv *http.Server
+
+	backend        blobSource
+	signer         *tokens.Signer
+	sourceBootTime time.Time
+	jti            *jtiCache
 }
 
 // New constructs a federation Server.
 func New(q *gen.Queries, cfg Config) *Server { return &Server{q: q, cfg: cfg} }
+
+// SetSourceDeps wires the coordinator-as-source dependencies (D-M4-2). Called by
+// cmd/coordinator after constructing the embedded backend + signer.
+func (s *Server) SetSourceDeps(signer *tokens.Signer, backend blobSource, bootTime time.Time) {
+	s.signer = signer
+	s.backend = backend
+	s.sourceBootTime = bootTime
+	if s.jti == nil {
+		s.jti = newJTICache()
+	}
+}
 
 // mux returns the federation HTTP routes.
 func (s *Server) mux() *http.ServeMux {
@@ -55,6 +85,7 @@ func (s *Server) mux() *http.ServeMux {
 	m.HandleFunc("GET /fed/v1/pins/snapshot", s.handleSnapshot)
 	m.HandleFunc("POST /fed/v1/pins/{cid}/ack", s.handleAck)
 	m.HandleFunc("POST /fed/v1/pins/{cid}/fail", s.handleFail)
+	m.HandleFunc("GET /fed/v1/blob/{cid}", s.handleBlob)
 	return m
 }
 
