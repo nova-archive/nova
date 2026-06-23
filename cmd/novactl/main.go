@@ -1241,7 +1241,7 @@ func promptAnswers() (setup.Answers, error) {
 // --------------------------------------------------------------------------
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup|upload-token|config|node> <subcommand>")
+	fmt.Fprintln(os.Stderr, "usage: novactl <auth|signed-url|moderation|keys|setup|upload-token|config|node|pin> <subcommand>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth login [--url <base>] [--username <u>]")
@@ -1267,6 +1267,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  node issue --name <name> [--dir <d>] [--out <dir>]")
 	fmt.Fprintln(os.Stderr, "  node nebula-template --name <name> [--nebula-ip <ip/cidr>] [--out <dir>]")
 	fmt.Fprintln(os.Stderr, "  collection create --name <s> --slug <s> [--visibility public|unlisted|private] [--owner <uuid>] [--public-archival]")
+	fmt.Fprintln(os.Stderr, "  pin assign|unpin|list   manage pin assignments (DB-direct; operator/test seam)")
 }
 
 func main() {
@@ -1296,6 +1297,8 @@ func main() {
 		err = cmdNode(args[1:])
 	case "collection":
 		err = cmdCollection(args[1:])
+	case "pin":
+		err = cmdPin(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "novactl: unknown command %q\n\n", args[0])
 		usage()

@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/federation/ca"
@@ -28,6 +29,20 @@ func withNodeDB(fn func(ctx context.Context, q *gen.Queries) error) error {
 	}
 	defer pool.Close()
 	return fn(ctx, gen.New(pool))
+}
+
+func withNodeDBPool(fn func(ctx context.Context, pool *pgxpool.Pool) error) error {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		return errors.New("DATABASE_URL must be set for pin commands")
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	return fn(ctx, pool)
 }
 
 func parsePGUUID(s string) (pgtype.UUID, error) {
