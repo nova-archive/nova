@@ -47,3 +47,9 @@ func TestHeartbeatResponseShape(t *testing.T) {
 		}
 	}
 }
+
+func TestCapBlobTransferConst(t *testing.T) {
+	if CapBlobTransfer != "blob-transfer/v1" {
+		t.Fatalf("got %q", CapBlobTransfer)
+	}
+}

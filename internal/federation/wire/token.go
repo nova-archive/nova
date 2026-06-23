@@ -96,3 +96,19 @@ func Verify(pub ed25519.PublicKey, token string, now time.Time) (Claims, error) 
 	}
 	return c, nil
 }
+
+// EncodePublicKey renders an Ed25519 public key as base64url(raw 32 bytes) for
+// delivery to donors via HeartbeatResponse.RepairTokenPublicKey (D-M4-7).
+func EncodePublicKey(pub ed25519.PublicKey) string { return b64.EncodeToString(pub) }
+
+// DecodePublicKey parses the wire form back into an Ed25519 public key.
+func DecodePublicKey(s string) (ed25519.PublicKey, error) {
+	raw, err := b64.DecodeString(s)
+	if err != nil {
+		return nil, ErrMalformedToken
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, ErrMalformedToken
+	}
+	return ed25519.PublicKey(raw), nil
+}

@@ -13,9 +13,17 @@ const ProtocolV1 = "fed/v1"
 const (
 	CapPinChangeLog   = "pin-change-log/v1"
 	CapSnapshot       = "snapshot/v1"
-	CapRepairStream   = "repair-stream/v1"
+	CapBlobTransfer   = "blob-transfer/v1" // M4: donor can fetch source-bearing assignments, verify, pin, ack
+	CapRepairStream   = "repair-stream/v1" // RESERVED for M5 donor-as-source; not advertised in M4
 	CapAuditBlockHash = "audit-block-hash/v1"
 )
+
+// CoordinatorSourceID is the reserved synthetic source identity for
+// coordinator-as-source transfers (D-M4-2). It is a protocol constant shared by
+// both sides — defined here in the dependency-free wire package so the donor
+// (which cannot import the operator-only tokens package) can reference it as
+// Ack.FetchedFromNodeID. It is NOT a nodes row. Fixed forever.
+const CoordinatorSourceID = "00000000-0000-0000-0000-000000000001"
 
 // Normalized machine-readable error codes carried in ErrorResponse.Code.
 const (

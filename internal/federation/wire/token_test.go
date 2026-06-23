@@ -2,6 +2,7 @@ package wire_test
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"strings"
 	"testing"
 	"time"
@@ -123,4 +124,19 @@ func TestTokenMalformedToken(t *testing.T) {
 	pub, _, _ := ed25519.GenerateKey(nil)
 	_, err := wire.Verify(pub, "not-a-token", time.Now())
 	require.ErrorIs(t, err, wire.ErrMalformedToken)
+}
+
+func TestPublicKeyRoundTrip(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	s := wire.EncodePublicKey(pub)
+	got, err := wire.DecodePublicKey(s)
+	if err != nil || !got.Equal(pub) {
+		t.Fatalf("round-trip failed: %v", err)
+	}
+	if _, err := wire.DecodePublicKey("not-base64-!!"); err == nil {
+		t.Fatal("expected decode error")
+	}
+	if _, err := wire.DecodePublicKey(wire.EncodePublicKey(pub)[:10]); err == nil {
+		t.Fatal("expected length error")
+	}
 }
