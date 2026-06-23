@@ -71,8 +71,7 @@ func Verify(ctx context.Context, fetcher SourceFetcher, pinner Pinner, src wire.
 	if err != nil {
 		return &FailErr{Reason: wire.FailReasonKuboError, Err: err}
 	}
-	// Fast-path: identical strings are always equal (avoids decode for unit tests
-	// that use placeholder CID strings and for coordinator-echoed CIDs).
+	// Fast-path: identical strings are equal by definition; only decode when strings differ (handles multibase variants).
 	if root != cid {
 		want, err := gocid.Decode(cid)
 		if err != nil {
