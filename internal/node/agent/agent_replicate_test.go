@@ -132,6 +132,30 @@ func (p *fakePinner) RepoStoredBytes(_ context.Context) (int64, error) {
 	return 0, nil // always fits
 }
 
+// fakePinnerWithStored is a fakePinner that reports a fixed stored-bytes value.
+type fakePinnerWithStored struct {
+	*fakePinner
+	storedBytes int64
+}
+
+func newFakePinnerWithStored(root string, stored int64) *fakePinnerWithStored {
+	return &fakePinnerWithStored{fakePinner: newFakePinner(root), storedBytes: stored}
+}
+
+func (p *fakePinnerWithStored) RepoStoredBytes(_ context.Context) (int64, error) {
+	return p.storedBytes, nil
+}
+
+// countingFetcher increments onCall each time Fetch is invoked and always errors.
+type countingFetcher struct {
+	onCall func()
+}
+
+func (f *countingFetcher) Fetch(_ context.Context, _ wire.ChangeSource, _ string, _ int64) (io.ReadCloser, error) {
+	f.onCall()
+	return nil, fmt.Errorf("fetcher must not be called in ack-retry path")
+}
+
 // ---- harness ---------------------------------------------------------------
 
 type testHarness struct {
@@ -455,6 +479,71 @@ func TestAckErrorKeepsVerifiedPending(t *testing.T) {
 	p, ok := h.progress.Get(cid)
 	if !ok || p.State != state.ProgressVerifiedPending {
 		t.Fatalf("progress = %v (ok=%v), want verified-ack-pending", p, ok)
+	}
+}
+
+// TestStorageCapZeroMeansUncapped verifies that storageMax == 0 skips the cap
+// check entirely so replication proceeds even when RepoStoredBytes is non-zero.
+func TestStorageCapZeroMeansUncapped(t *testing.T) {
+	const cid = "bafyuncapped"
+	dir := t.TempDir()
+	asgStore := state.NewFileAssignmentStore(dir)
+	progress, _ := state.NewFileProgressStore(dir)
+	client := newRepClient()
+	// Pinner reports 10 GiB already stored — with a zero cap this must not block.
+	pinner := newFakePinnerWithStored(cid, 10<<30)
+
+	a := New(&nodeconfig.Config{}, state.NewFileRegistrationStore(dir), state.NewFileStore(dir), asgStore, client, 0, 0)
+	WithSource(a, &fakeFetcher{body: "hello"}, pinner, progress, 0 /* uncapped */)
+
+	if err := asgStore.ApplyChanges([]state.ChangeInput{
+		{CID: cid, AssignmentID: "a1", Generation: 1, Kind: wire.ChangeKindAssign, ByteSize: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.sources[cid] = &wire.ChangeSource{NodeID: wire.CoordinatorSourceID, Token: "tok"}
+
+	a.ReplicatePending(context.Background())
+
+	if !client.ackedCID(cid) {
+		t.Fatal("expected ack when storageMax == 0 (uncapped), got none")
+	}
+	if r := client.lastFailReason(cid); r == wire.FailReasonOutOfSpace {
+		t.Fatal("must not fail with out_of_space when uncapped")
+	}
+}
+
+// TestVerifiedAckPendingRetriesAckWithoutRefetch confirms that when a CID's
+// progress is already verified-ack-pending for the current (assignment_id,
+// generation), ReplicatePending calls deliverAck directly and does NOT invoke
+// the fetcher again.
+func TestVerifiedAckPendingRetriesAckWithoutRefetch(t *testing.T) {
+	const cid = "bafyackretry"
+	h := newAgentHarness(t, cid)
+	h.seedAssignment(t, cid, "a1", 1, 5)
+
+	// Pre-seed progress as verified-ack-pending (simulates crash after verify).
+	if err := h.progress.Set(cid, state.Progress{
+		AssignmentID: "a1", Generation: 1, ByteSize: 5, State: state.ProgressVerifiedPending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the fetcher with one that fails if called.
+	fetchCalls := 0
+	h.agent.fetcher = &countingFetcher{onCall: func() { fetchCalls++ }}
+
+	h.agent.ReplicatePending(context.Background())
+
+	if fetchCalls != 0 {
+		t.Fatalf("fetcher was called %d time(s); expected 0 (ack retry must not re-fetch)", fetchCalls)
+	}
+	if !h.client.ackedCID(cid) {
+		t.Fatal("expected ack to be delivered on retry")
+	}
+	p, ok := h.progress.Get(cid)
+	if !ok || p.State != state.ProgressAckDelivered {
+		t.Fatalf("progress = %v (ok=%v), want acked-delivered", p, ok)
 	}
 }
 

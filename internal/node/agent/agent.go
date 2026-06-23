@@ -271,9 +271,15 @@ func (a *Agent) ReplicatePending(ctx context.Context) {
 	}
 	for _, da := range das {
 		p, hasProg := a.progress.Get(da.CID)
-		// Skip if already acked for this exact (assignment_id, generation).
-		if hasProg && progressMatches(p, da) && p.State == state.ProgressAckDelivered {
-			continue
+		if hasProg && progressMatches(p, da) {
+			switch p.State {
+			case state.ProgressAckDelivered:
+				continue // already done for this (assignment_id, generation)
+			case state.ProgressVerifiedPending:
+				// Pin already present; retry the ack without re-fetching.
+				a.deliverAck(ctx, da)
+				continue
+			}
 		}
 		// Clear stale-generation progress so the CID is re-fetched at the new generation.
 		if hasProg && !progressMatches(p, da) {
@@ -291,21 +297,23 @@ func (a *Agent) ReplicatePending(ctx context.Context) {
 
 // replicateOne runs the storage-cap check + Verify + persist + ack for one CID.
 func (a *Agent) replicateOne(ctx context.Context, da state.DesiredAssignment, src *wire.ChangeSource) {
-	// Storage cap check.
-	stored, err := a.pinner.RepoStoredBytes(ctx)
-	if err != nil {
-		slog.Warn("node.replicate.repo_stat_error", "cid", da.CID, "err", err)
-		return
-	}
-	if stored+da.ByteSize > a.storageMax {
-		slog.Warn("node.replicate.out_of_space", "cid", da.CID)
-		if ferr := a.client.Fail(ctx, da.CID, wire.Fail{
-			AssignmentID: da.AssignmentID, Generation: da.Generation, CID: da.CID,
-			Reason: wire.FailReasonOutOfSpace,
-		}); ferr != nil {
-			slog.Warn("node.replicate.fail_error", "cid", da.CID, "err", ferr)
+	// Storage cap check — only when a positive cap is configured (0 = uncapped).
+	if a.storageMax > 0 {
+		stored, err := a.pinner.RepoStoredBytes(ctx)
+		if err != nil {
+			slog.Warn("node.replicate.repo_stat_error", "cid", da.CID, "err", err)
+			return
 		}
-		return
+		if stored+da.ByteSize > a.storageMax {
+			slog.Warn("node.replicate.out_of_space", "cid", da.CID)
+			if ferr := a.client.Fail(ctx, da.CID, wire.Fail{
+				AssignmentID: da.AssignmentID, Generation: da.Generation, CID: da.CID,
+				Reason: wire.FailReasonOutOfSpace,
+			}); ferr != nil {
+				slog.Warn("node.replicate.fail_error", "cid", da.CID, "err", ferr)
+			}
+			return
+		}
 	}
 
 	if err := transfer.Verify(ctx, a.fetcher, a.pinner, *src, da.CID, transferMax(da.ByteSize)); err != nil {
@@ -364,11 +372,12 @@ func (a *Agent) deliverAck(ctx context.Context, da state.DesiredAssignment) {
 	slog.Warn("node.replicate.ack_error", "cid", da.CID, "err", err)
 }
 
-// HandleUnpin clears progress for cid and removes the local pin.
+// HandleUnpin clears progress for cid, drops the source-cache entry, and removes the local pin.
 func (a *Agent) HandleUnpin(ctx context.Context, cid string) {
 	if err := a.progress.Clear(cid); err != nil {
 		slog.Warn("node.replicate.clear_unpin_error", "cid", cid, "err", err)
 	}
+	delete(a.sources, cid)
 	if err := a.pinner.Unpin(ctx, cid); err != nil {
 		slog.Warn("node.replicate.unpin_error", "cid", cid, "err", err)
 	}
