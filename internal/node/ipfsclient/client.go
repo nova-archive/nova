@@ -53,8 +53,18 @@ func (c *Client) AddDeterministic(ctx context.Context, envelope []byte) (string,
 
 // blockPutRaw mirrors addRaw: Block().Put(Format("raw"), Hash(sha2-256), Pin).
 func (c *Client) blockPutRaw(ctx context.Context, envelope []byte) (string, error) {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("data", "block")
+	if err != nil {
+		return "", err
+	}
+	if _, err := fw.Write(envelope); err != nil {
+		return "", err
+	}
+	mw.Close()
 	q := url.Values{"cid-codec": {importspec.CodecRaw}, "mhtype": {importspec.HashAlg}, "pin": {"true"}}
-	resp, err := c.post(ctx, "/api/v0/block/put", q, bytes.NewReader(envelope), "application/octet-stream")
+	resp, err := c.post(ctx, "/api/v0/block/put", q, &body, mw.FormDataContentType())
 	if err != nil {
 		return "", err
 	}
@@ -140,6 +150,9 @@ func (c *Client) RepoStoredBytes(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("ipfsclient: repo/stat status %d", resp.StatusCode)
+	}
 	var out struct{ RepoSize int64 }
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return 0, err

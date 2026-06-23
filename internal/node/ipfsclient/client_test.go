@@ -84,30 +84,54 @@ func TestRawThresholdBoundary(t *testing.T) {
 	_, srv := newFakeKubo(t)
 	c := ipfsclient.New(srv.URL)
 	// exactly threshold => raw (bafyRAW); threshold+1 => dag-pb (bafyDAGPB)
-	if r, _ := c.AddDeterministic(context.Background(), make([]byte, importspec.RawCodecThresholdBytes)); r != "bafyRAW" {
-		t.Fatalf("threshold should be raw, got %q", r)
+	r1, err := c.AddDeterministic(context.Background(), make([]byte, importspec.RawCodecThresholdBytes))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if r, _ := c.AddDeterministic(context.Background(), make([]byte, importspec.RawCodecThresholdBytes+1)); r != "bafyDAGPB" {
-		t.Fatalf("threshold+1 should be dag-pb, got %q", r)
+	if r1 != "bafyRAW" {
+		t.Fatalf("threshold should be raw, got %q", r1)
+	}
+	r2, err := c.AddDeterministic(context.Background(), make([]byte, importspec.RawCodecThresholdBytes+1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r2 != "bafyDAGPB" {
+		t.Fatalf("threshold+1 should be dag-pb, got %q", r2)
 	}
 }
 
 func TestHasMeansPinnedAndUnpin(t *testing.T) {
 	_, srv := newFakeKubo(t)
 	c := ipfsclient.New(srv.URL)
-	if ok, _ := c.Has(context.Background(), "bafyKNOWN"); !ok {
+	ok1, err := c.Has(context.Background(), "bafyKNOWN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok1 {
 		t.Fatal("expected Has true for pinned cid")
 	}
-	if ok, _ := c.Has(context.Background(), "bafyMISSING"); ok {
+	ok2, err := c.Has(context.Background(), "bafyMISSING")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok2 {
 		t.Fatal("expected Has false for unpinned cid")
 	}
 	if err := c.Unpin(context.Background(), "bafyKNOWN"); err != nil {
 		t.Fatalf("unpin: %v", err)
 	}
-	if ok, _ := c.Has(context.Background(), "bafyKNOWN"); ok {
+	ok3, err := c.Has(context.Background(), "bafyKNOWN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok3 {
 		t.Fatal("expected Has false after unpin")
 	}
-	if n, _ := c.RepoStoredBytes(context.Background()); n != 4096 {
+	n, err := c.RepoStoredBytes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 4096 {
 		t.Fatalf("repo size %d", n)
 	}
 }
