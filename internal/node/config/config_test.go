@@ -99,3 +99,33 @@ func TestValidateRejectsBadHealthAddr(t *testing.T) {
 	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
 	require.ErrorContains(t, err, "health_listen_addr")
 }
+
+func TestStorageMaxBytesOptional(t *testing.T) {
+	// Omitted storage_max_bytes defaults to 0 (unlimited).
+	yaml, _ := writeValid(t)
+	cfg, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.NoError(t, err)
+	require.Equal(t, int64(0), cfg.StorageMaxBytes, "omitted storage_max_bytes should be 0 (unlimited)")
+}
+
+func TestStorageMaxBytesNegativeRejected(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml += "storage_max_bytes: -1\n"
+	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.ErrorContains(t, err, "storage_max_bytes")
+}
+
+func TestKuboAPIAddrDefault(t *testing.T) {
+	yaml, _ := writeValid(t)
+	cfg, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.NoError(t, err)
+	require.Equal(t, "http://127.0.0.1:5001", cfg.KuboAPIAddr, "default kubo_api_addr should be applied when omitted")
+}
+
+func TestKuboAPIAddrExplicit(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml += "kubo_api_addr: http://127.0.0.1:5099\n"
+	cfg, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.NoError(t, err)
+	require.Equal(t, "http://127.0.0.1:5099", cfg.KuboAPIAddr)
+}

@@ -42,6 +42,8 @@ type Config struct {
 	BandwidthBudgetBytesPerDay int64         `yaml:"bandwidth_budget_bytes_per_day"`
 	FailureDomain              FailureDomain `yaml:"failure_domain"`
 	HealthListenAddr           string        `yaml:"health_listen_addr"`
+	StorageMaxBytes            int64         `yaml:"storage_max_bytes"` // 0 ⇒ unlimited (M4 enforces out_of_space)
+	KuboAPIAddr                string        `yaml:"kubo_api_addr"`     // loopback Kubo sidecar HTTP API
 }
 
 // LoadFromFile reads, parses, defaults, and validates a node.yaml.
@@ -61,6 +63,9 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	}
 	if c.HealthListenAddr == "" {
 		c.HealthListenAddr = DefaultHealthListenAddr
+	}
+	if c.KuboAPIAddr == "" {
+		c.KuboAPIAddr = "http://127.0.0.1:5001"
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -90,6 +95,9 @@ func (c *Config) validate() error {
 	}
 	if c.BandwidthBudgetBytesPerDay <= 0 {
 		return fmt.Errorf("node config: bandwidth_budget_bytes_per_day must be positive")
+	}
+	if c.StorageMaxBytes < 0 {
+		return fmt.Errorf("node config: storage_max_bytes must be >= 0")
 	}
 	if _, _, err := net.SplitHostPort(c.HealthListenAddr); err != nil {
 		return fmt.Errorf("node config: health_listen_addr %q is not host:port: %w", c.HealthListenAddr, err)

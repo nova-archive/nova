@@ -20,12 +20,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/node/agent"
 	nodeconfig "github.com/nova-archive/nova/internal/node/config"
+	"github.com/nova-archive/nova/internal/node/ipfsclient"
 	"github.com/nova-archive/nova/internal/node/state"
 )
 
@@ -139,9 +141,15 @@ func serve(cfg *nodeconfig.Config, stdout io.Writer) error {
 	regStore := state.NewFileRegistrationStore(cfg.StorageDir)
 	cursor := state.NewFileStore(cfg.StorageDir)
 	assignments := state.NewFileAssignmentStore(cfg.StorageDir)
+	pinner := ipfsclient.New(cfg.KuboAPIAddr)
+	progress, err := state.NewFileProgressStore(filepath.Join(cfg.StorageDir, "state"))
+	if err != nil {
+		return fmt.Errorf("progress store: %w", err)
+	}
 	ag := agent.New(cfg, regStore, cursor, assignments, client,
 		time.Duration(cfg.HeartbeatIntervalSeconds())*time.Second,
 		time.Duration(cfg.PinsPollIntervalSeconds())*time.Second)
+	ag = agent.WithSource(ag, client, pinner, progress, cfg.StorageMaxBytes)
 	go func() {
 		if e := ag.Run(ctx); e != nil && ctx.Err() == nil {
 			slog.Error("nova-node agent stopped", "err", e)
