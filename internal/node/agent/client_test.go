@@ -7,9 +7,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nova-archive/nova/internal/federation/wire"
+	"github.com/nova-archive/nova/internal/node/transfer"
 )
 
 func TestGetChangesAndSnapshotRequired(t *testing.T) {
@@ -39,6 +41,91 @@ func TestGetChangesAndSnapshotRequired(t *testing.T) {
 	snap, err := c.GetSnapshot(context.Background(), "", 0)
 	if err != nil || snap.SnapshotEpoch != 5 {
 		t.Fatalf("GetSnapshot: %+v err=%v", snap, err)
+	}
+}
+
+func TestAckSuccessAndStale(t *testing.T) {
+	var statusCode int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/ack") {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(statusCode)
+		if statusCode == http.StatusConflict {
+			json.NewEncoder(w).Encode(wire.ErrorResponse{Code: wire.CodeStaleAssignment})
+		}
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, nil)
+
+	statusCode = http.StatusNoContent
+	if err := c.Ack(context.Background(), "bafyX", wire.Ack{AssignmentID: "a1", Generation: 1, CID: "bafyX"}); err != nil {
+		t.Fatalf("204 should succeed: %v", err)
+	}
+
+	statusCode = http.StatusConflict
+	if err := c.Ack(context.Background(), "bafyX", wire.Ack{AssignmentID: "a1", Generation: 1, CID: "bafyX"}); !errors.Is(err, ErrStaleAssignment) {
+		t.Fatalf("409 should be ErrStaleAssignment, got: %v", err)
+	}
+}
+
+func TestFailSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/fail") {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, nil)
+
+	if err := c.Fail(context.Background(), "bafyX", wire.Fail{AssignmentID: "a1", Generation: 1, CID: "bafyX", Reason: wire.FailReasonOther}); err != nil {
+		t.Fatalf("204 should succeed: %v", err)
+	}
+}
+
+func TestFetchClassifiesStatus(t *testing.T) {
+	type testCase struct {
+		status  int
+		body    string
+		wantErr error
+		wantRC  bool
+	}
+	cases := []testCase{
+		{status: http.StatusOK, body: "hello-bytes", wantRC: true},
+		{status: http.StatusNotFound, wantErr: transfer.ErrSourceMissing},
+		{status: http.StatusForbidden, wantErr: transfer.ErrSourceUnauthorized},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.Contains(r.URL.Path, "/fed/v1/blob/") {
+				http.NotFound(w, r)
+				return
+			}
+			w.WriteHeader(tc.status)
+			if tc.body != "" {
+				w.Write([]byte(tc.body))
+			}
+		}))
+		c := NewHTTPClient(srv.URL, nil)
+		src := wire.ChangeSource{Token: "tok1"}
+		rc, err := c.Fetch(context.Background(), src, "bafyX", 1<<20)
+		if tc.wantErr != nil {
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("status %d: want %v, got %v", tc.status, tc.wantErr, err)
+			}
+		} else if tc.wantRC {
+			if err != nil {
+				t.Errorf("status %d: unexpected error %v", tc.status, err)
+			} else {
+				rc.Close()
+			}
+		}
+		srv.Close()
 	}
 }
 

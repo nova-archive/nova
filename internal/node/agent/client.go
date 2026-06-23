@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nova-archive/nova/internal/federation/wire"
+	"github.com/nova-archive/nova/internal/node/transfer"
 )
 
 // HTTPClient is the donor's mTLS federation client.
@@ -122,6 +124,53 @@ func (c *HTTPClient) GetSnapshot(ctx context.Context, cursor string, epoch int64
 	}
 	var out wire.SnapshotResponse
 	return out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
+// ErrStaleAssignment is returned by Ack when the coordinator rejects the
+// ack with a 409 stale_assignment (the assignment has been superseded).
+var ErrStaleAssignment = errors.New("agent: stale_assignment")
+
+// Ack reports successful replication of cid to the coordinator.
+// Returns ErrStaleAssignment on 409 stale_assignment.
+func (c *HTTPClient) Ack(ctx context.Context, cid string, a wire.Ack) error {
+	err := c.post(ctx, "/fed/v1/pins/"+url.PathEscape(cid)+"/ack", a, nil, http.StatusNoContent)
+	if err != nil && strings.Contains(err.Error(), wire.CodeStaleAssignment) {
+		return ErrStaleAssignment
+	}
+	return err
+}
+
+// Fail reports a replication failure for cid to the coordinator.
+func (c *HTTPClient) Fail(ctx context.Context, cid string, f wire.Fail) error {
+	return c.post(ctx, "/fed/v1/pins/"+url.PathEscape(cid)+"/fail", f, nil, http.StatusNoContent)
+}
+
+// Fetch fetches ciphertext for cid from the source using its repair token.
+// In M4 the source is the coordinator so c.base/c.hc are reused.
+// Returns transfer.ErrSourceMissing on 404, transfer.ErrSourceUnauthorized on 403.
+func (c *HTTPClient) Fetch(ctx context.Context, src wire.ChangeSource, cid string, _ int64) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/fed/v1/blob/"+url.PathEscape(cid), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Nova-Repair-Token", src.Token)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return resp.Body, nil
+	case http.StatusNotFound:
+		resp.Body.Close()
+		return nil, transfer.ErrSourceMissing
+	case http.StatusForbidden:
+		resp.Body.Close()
+		return nil, transfer.ErrSourceUnauthorized
+	default:
+		resp.Body.Close()
+		return nil, fmt.Errorf("fetch %s: status %d", cid, resp.StatusCode)
+	}
 }
 
 var _ Client = (*HTTPClient)(nil)
