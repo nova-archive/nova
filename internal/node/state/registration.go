@@ -55,19 +55,25 @@ func (f *FileRegistrationStore) LoadRegistration(_ context.Context) (Registratio
 
 // SaveRegistration writes atomically: temp file → fsync → rename → dir fsync.
 func (f *FileRegistrationStore) SaveRegistration(_ context.Context, reg Registration) error {
-	if err := os.MkdirAll(f.dir, 0o700); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(reg, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(f.dir, "registration-*.json.tmp")
+	return atomicWrite(f.dir, "registration", data)
+}
+
+// atomicWrite writes <dir>/<name>.json atomically (temp→fsync→rename→dir fsync),
+// 0600 file / 0700 dir.
+func atomicWrite(dir, name string, data []byte) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, name+"-*.json.tmp")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
+	defer os.Remove(tmpName)
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		return err
@@ -83,10 +89,10 @@ func (f *FileRegistrationStore) SaveRegistration(_ context.Context, reg Registra
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, f.path()); err != nil {
+	if err := os.Rename(tmpName, filepath.Join(dir, name+".json")); err != nil {
 		return err
 	}
-	return fsyncDir(f.dir)
+	return fsyncDir(dir)
 }
 
 // fsyncDir flushes a directory entry so the rename survives a crash. Some
