@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/nova-archive/nova/internal/db/gen"
+	"github.com/nova-archive/nova/internal/federation/tokens"
 	"github.com/nova-archive/nova/internal/federation/wire"
 )
 
@@ -114,11 +115,17 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "head")
 		return
 	}
+	now := time.Now()
 	changes := make([]wire.PinChange, len(rows))
 	for i, row := range rows {
 		changes[i] = wire.PinChange{
 			Sequence: row.Sequence, AssignmentID: uuid.UUID(row.AssignmentID.Bytes).String(),
 			Generation: row.Generation, Kind: row.Kind, CID: row.Cid, ByteSize: row.ByteSize,
+		}
+		if row.Kind == wire.ChangeKindAssign && s.signer != nil {
+			if src := s.mintSource(changes[i], node, now); src != nil {
+				changes[i].Source = src
+			}
 		}
 	}
 	// next_seq must never exceed a row we actually delivered. Advancing to the
@@ -305,4 +312,33 @@ func (s *Server) handleFail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusConflict, wire.CodeStaleAssignment, "")
+}
+
+// mintSource builds a fresh coordinator-as-source grant for a pending assign
+// (D-M4-8). Tokens are minted per-serve and NEVER persisted in pin_changes.
+func (s *Server) mintSource(ch wire.PinChange, dest uuid.UUID, now time.Time) *wire.ChangeSource {
+	jti, err := uuid.NewRandom()
+	if err != nil {
+		return nil
+	}
+	// NotBefore is now-skew, but NEVER earlier than sourceBootTime — otherwise the
+	// blob endpoint's pre-boot replay floor (D-M4-9) would reject a token we just
+	// minted right after startup.
+	nb := now.Add(-5 * time.Second)
+	if nb.Before(s.sourceBootTime) {
+		nb = s.sourceBootTime
+	}
+	tok, err := s.signer.Mint(wire.Claims{
+		JTI: jti.String(), AssignmentID: ch.AssignmentID, Generation: ch.Generation,
+		CID: ch.CID, SourceNodeID: tokens.ReservedCoordinatorSourceID, DestNodeID: dest.String(),
+		NotBefore: nb.Unix(),
+		NotAfter:  now.Add(s.cfg.RepairTokenTTL).Unix(),
+		MaxBytes:  ch.ByteSize, ProtocolVersion: wire.ProtocolV1,
+	})
+	if err != nil {
+		slog.Warn("fed.token.mint_failed", "cid", ch.CID, "err", err)
+		return nil
+	}
+	slog.Info("fed.token.minted", "assignment_id", ch.AssignmentID, "cid", ch.CID, "dest_node_id", dest)
+	return &wire.ChangeSource{NodeID: tokens.ReservedCoordinatorSourceID, NebulaAddr: s.cfg.SourceNebulaAddr, Token: tok}
 }

@@ -174,11 +174,11 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timers := s.cfg.Timers
-	writeJSON(w, http.StatusOK, wire.HeartbeatResponse{
-		ConfigUpdates:        &timers,
-		CurrentEpoch:         head,
-		RepairTokenPublicKey: "", // M4 populates
-	})
+	resp := wire.HeartbeatResponse{ConfigUpdates: &timers, CurrentEpoch: head}
+	if s.signer != nil {
+		resp.RepairTokenPublicKey = s.signer.PublicKeyWire()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // pgInt8 wraps a byte count into a (non-null) bigint.
