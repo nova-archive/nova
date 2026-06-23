@@ -112,6 +112,12 @@ type Federation struct {
 	SuspectAfterMissedHeartbeats int `yaml:"suspect_after_missed_heartbeats"`
 	UnreachableAfterSeconds      int `yaml:"unreachable_after_seconds"`
 	EvictedAfterSeconds          int `yaml:"evicted_after_seconds"`
+
+	// M4: repair-token + transfer.
+	RepairTokenTTLSeconds int    `yaml:"repair_token_ttl_seconds"`
+	RepairSigningKeyPath  string `yaml:"repair_signing_key_path"`
+	MaxTransferBytes      int64  `yaml:"max_transfer_bytes"`
+	SourceNebulaAddr      string `yaml:"source_nebula_addr"`
 }
 
 // Enabled reports whether the federation listener should run (operator set a

@@ -86,3 +86,28 @@ func (f Federation) FederationRetention() (retention, prunePoll time.Duration) {
 	}
 	return time.Duration(hours) * time.Hour, time.Hour
 }
+
+// RepairTokenTTL returns the repair-token validity window (default 300s, clamped
+// to the spec range 60..1800).
+func (f Federation) RepairTokenTTL() time.Duration {
+	s := f.RepairTokenTTLSeconds
+	if s == 0 {
+		s = 300
+	}
+	if s < 60 {
+		s = 60
+	}
+	if s > 1800 {
+		s = 1800
+	}
+	return time.Duration(s) * time.Second
+}
+
+// MaxTransfer is the hard cap on a single coordinator-as-source transfer (default
+// 100 MiB).
+func (f Federation) MaxTransfer() int64 {
+	if f.MaxTransferBytes > 0 {
+		return f.MaxTransferBytes
+	}
+	return 100 * 1024 * 1024
+}

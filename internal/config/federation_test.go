@@ -1,6 +1,30 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestRepairTokenTTLDefaultAndClamp(t *testing.T) {
+	if d := (Federation{}).RepairTokenTTL(); d != 300*time.Second {
+		t.Fatalf("default ttl: %v", d)
+	}
+	if d := (Federation{RepairTokenTTLSeconds: 5}).RepairTokenTTL(); d != 60*time.Second {
+		t.Fatalf("low clamp: %v", d)
+	}
+	if d := (Federation{RepairTokenTTLSeconds: 9000}).RepairTokenTTL(); d != 1800*time.Second {
+		t.Fatalf("high clamp: %v", d)
+	}
+}
+
+func TestMaxTransferDefault(t *testing.T) {
+	if n := (Federation{}).MaxTransfer(); n != 100*1024*1024 {
+		t.Fatalf("default max transfer: %d", n)
+	}
+	if n := (Federation{MaxTransferBytes: 5 << 20}).MaxTransfer(); n != 5<<20 {
+		t.Fatalf("explicit: %d", n)
+	}
+}
 
 func TestFederationValidateLoopbackSkipsInterfaceGuard(t *testing.T) {
 	f := Federation{
