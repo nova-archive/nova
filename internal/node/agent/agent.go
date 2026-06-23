@@ -127,9 +127,11 @@ func (a *Agent) syncOnce(ctx context.Context, cursor int64) int64 {
 			AssignmentID: ch.AssignmentID, Generation: ch.Generation, Kind: ch.Kind, CID: ch.CID, ByteSize: ch.ByteSize,
 		})
 	}
-	if err := a.assignments.ApplyChanges(inputs); err != nil {
-		slog.Warn("node.state.write_error", "err", err)
-		return cursor // do not advance the cursor past unpersisted state
+	if len(inputs) > 0 {
+		if err := a.assignments.ApplyChanges(inputs); err != nil {
+			slog.Warn("node.state.write_error", "err", err)
+			return cursor // do not advance the cursor past unpersisted state
+		}
 	}
 	if err := a.cursor.SetCursor(resp.NextSeq); err != nil {
 		slog.Warn("node.state.write_error", "err", err)

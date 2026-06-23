@@ -121,9 +121,14 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 			Generation: row.Generation, Kind: row.Kind, CID: row.Cid, ByteSize: row.ByteSize,
 		}
 	}
-	next := head
-	if int64(len(rows)) == int64(limit) && len(rows) > 0 {
-		next = rows[len(rows)-1].Sequence // full page: more may exist
+	// next_seq must never exceed a row we actually delivered. Advancing to the
+	// global head would skip a change that committed for this node between the page
+	// read and the head read (the page misses it; head includes it) — silent
+	// assignment loss. Advance only to the highest delivered sequence; when the
+	// page is empty, stay at `since` and let the donor re-poll.
+	next := since
+	if len(rows) > 0 {
+		next = rows[len(rows)-1].Sequence
 	}
 	slog.Info("fed.changes.served", "node_id", node, "since_seq", since, "returned", len(rows), "next_seq", next)
 	writeJSON(w, http.StatusOK, wire.ChangesResponse{Changes: changes, NextSeq: next, CurrentEpoch: head})

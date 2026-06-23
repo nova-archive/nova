@@ -184,3 +184,36 @@ func TestRevokedNodeSnapshotAckFail403(t *testing.T) {
 		t.Fatalf("revoked fail → %d want 403", c)
 	}
 }
+
+func TestChangesNextSeqDoesNotSkipPastDelivered(t *testing.T) {
+	ctx := context.Background()
+	s, pool, caPEM, caKeyPEM := newTestServerPool(t)
+	idA := uuid.New()
+	leafA := registerOK(t, s, caPEM, caKeyPEM, idA)
+	idB := seedNode(t, ctx, pool)
+
+	// node A gets seq 1,2; node B gets seq 3 → global head advances to 3
+	for _, c := range []string{"bafa", "bafb"} {
+		seedBlob(t, ctx, pool, c, 1)
+		assignViaSeam(t, ctx, pool, c, idA)
+	}
+	seedBlob(t, ctx, pool, "bafc", 1)
+	assignViaSeam(t, ctx, pool, "bafc", idB)
+
+	w := httptest.NewRecorder()
+	s.handleChanges(w, reqWithCert(http.MethodGet, "/fed/v1/pins/changes?since_seq=0", nil, leafA))
+	var resp wire.ChangesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Changes) != 2 {
+		t.Fatalf("node A changes = %d, want 2", len(resp.Changes))
+	}
+	last := resp.Changes[len(resp.Changes)-1].Sequence
+	if resp.NextSeq != last {
+		t.Fatalf("next_seq = %d, must equal last delivered seq %d (NOT the global head)", resp.NextSeq, last)
+	}
+	if resp.CurrentEpoch < resp.NextSeq {
+		t.Fatalf("current_epoch %d should be >= next_seq %d", resp.CurrentEpoch, resp.NextSeq)
+	}
+}

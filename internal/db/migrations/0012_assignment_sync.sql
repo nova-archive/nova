@@ -19,7 +19,7 @@ CREATE TABLE pin_changes (
     kind          text   NOT NULL CHECK (kind IN ('assign', 'unpin')),
     cid           text   NOT NULL,
     byte_size     bigint NOT NULL DEFAULT 0,
-    created_at    timestamptz NOT NULL DEFAULT now()
+    created_at    timestamptz NOT NULL DEFAULT clock_timestamp() -- clock_timestamp() (not now()): evaluated at INSERT inside the change-log advisory lock, so created_at is monotonic with sequence and time-based prune stays a contiguous-sequence prefix.
 );
 CREATE INDEX pin_changes_node_seq_idx ON pin_changes (node_id, sequence);
 
