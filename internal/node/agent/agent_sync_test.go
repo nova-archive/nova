@@ -38,6 +38,8 @@ func (f *syncFake) GetChanges(_ context.Context, since int64) (wire.ChangesRespo
 func (f *syncFake) GetSnapshot(context.Context, string, int64) (wire.SnapshotResponse, error) {
 	return f.snapResp, nil
 }
+func (*syncFake) Ack(context.Context, string, wire.Ack) error   { return nil }
+func (*syncFake) Fail(context.Context, string, wire.Fail) error { return nil }
 
 func TestSyncOnceAppliesIdempotentlyAndNeverAcks(t *testing.T) {
 	dir := t.TempDir()

@@ -34,6 +34,8 @@ func (f *fakeClient) GetChanges(context.Context, int64) (wire.ChangesResponse, e
 func (f *fakeClient) GetSnapshot(context.Context, string, int64) (wire.SnapshotResponse, error) {
 	return wire.SnapshotResponse{}, nil
 }
+func (f *fakeClient) Ack(context.Context, string, wire.Ack) error   { return nil }
+func (f *fakeClient) Fail(context.Context, string, wire.Fail) error { return nil }
 
 func TestAgentRegistersOnceThenHeartbeats(t *testing.T) {
 	cfg := &nodeconfig.Config{BandwidthBudgetBytesPerDay: 1}

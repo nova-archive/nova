@@ -29,6 +29,8 @@ func (c replayClient) GetChanges(_ context.Context, since int64) (wire.ChangesRe
 func (replayClient) GetSnapshot(context.Context, string, int64) (wire.SnapshotResponse, error) {
 	return wire.SnapshotResponse{}, nil
 }
+func (replayClient) Ack(context.Context, string, wire.Ack) error   { return nil }
+func (replayClient) Fail(context.Context, string, wire.Fail) error { return nil }
 
 func TestSyncCrashBeforeCursorIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
@@ -74,6 +76,8 @@ func (c *snap409Once) GetSnapshot(context.Context, string, int64) (wire.Snapshot
 	}
 	return c.resp, nil
 }
+func (*snap409Once) Ack(context.Context, string, wire.Ack) error   { return nil }
+func (*snap409Once) Fail(context.Context, string, wire.Fail) error { return nil }
 
 func TestRecoverSnapshotRestartsOn409(t *testing.T) {
 	dir := t.TempDir()
