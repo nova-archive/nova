@@ -33,6 +33,23 @@ func (q *Queries) CountBlobs(ctx context.Context, arg CountBlobsParams) (int64, 
 	return count, err
 }
 
+const getBlobByteSize = `-- name: GetBlobByteSize :one
+SELECT byte_size FROM blobs WHERE cid = $1 AND state = 'active'
+`
+
+// M4 coordinator-as-source preflight: the on-disk envelope size for max_bytes
+// enforcement before streaming (D-M4-3). Only `active` blobs are sourceable for
+// federation replication — quarantined / tombstoned / soft_deleted blobs MUST
+// NOT be served to donors (a no-row result becomes 404 blob_unavailable at the
+// endpoint, which is the correct refusal). `blobs.state` is the `blob_state`
+// enum (`active`, `quarantined`, `tombstoned`, `soft_deleted`, …).
+func (q *Queries) GetBlobByteSize(ctx context.Context, cid string) (int64, error) {
+	row := q.db.QueryRow(ctx, getBlobByteSize, cid)
+	var byte_size int64
+	err := row.Scan(&byte_size)
+	return byte_size, err
+}
+
 const getBlobCore = `-- name: GetBlobCore :one
 SELECT
     cid,

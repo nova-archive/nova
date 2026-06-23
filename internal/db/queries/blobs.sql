@@ -95,3 +95,12 @@ FROM blobs
 WHERE (sqlc.narg('state')::text   IS NULL OR state::text   = sqlc.narg('state'))
   AND (sqlc.narg('product')::text IS NULL OR product::text = sqlc.narg('product'))
   AND (sqlc.narg('owner')::uuid    IS NULL OR owner_id      = sqlc.narg('owner'));
+
+-- name: GetBlobByteSize :one
+-- M4 coordinator-as-source preflight: the on-disk envelope size for max_bytes
+-- enforcement before streaming (D-M4-3). Only `active` blobs are sourceable for
+-- federation replication — quarantined / tombstoned / soft_deleted blobs MUST
+-- NOT be served to donors (a no-row result becomes 404 blob_unavailable at the
+-- endpoint, which is the correct refusal). `blobs.state` is the `blob_state`
+-- enum (`active`, `quarantined`, `tombstoned`, `soft_deleted`, …).
+SELECT byte_size FROM blobs WHERE cid = $1 AND state = 'active';

@@ -63,6 +63,13 @@ type Querier interface {
 	FailPinAssignment(ctx context.Context, arg FailPinAssignmentParams) (int64, error)
 	FinalizeUploadSession(ctx context.Context, arg FinalizeUploadSessionParams) error
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
+	// M4 coordinator-as-source preflight: the on-disk envelope size for max_bytes
+	// enforcement before streaming (D-M4-3). Only `active` blobs are sourceable for
+	// federation replication — quarantined / tombstoned / soft_deleted blobs MUST
+	// NOT be served to donors (a no-row result becomes 404 blob_unavailable at the
+	// endpoint, which is the correct refusal). `blobs.state` is the `blob_state`
+	// enum (`active`, `quarantined`, `tombstoned`, `soft_deleted`, …).
+	GetBlobByteSize(ctx context.Context, cid string) (int64, error)
 	GetBlobCore(ctx context.Context, cid string) (GetBlobCoreRow, error)
 	// Moderation queries (M9). See docs/specs/DATA_MODEL.sql and
 	// docs/superpowers/specs/2026-06-02-phase1-m9-moderation-design.md.
