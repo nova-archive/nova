@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -187,4 +188,116 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("fed.snapshot.page", "node_id", node, "epoch", epoch, "returned", len(rows))
 	writeJSON(w, http.StatusOK, wire.SnapshotResponse{Data: items, Cursor: nextCursor, SnapshotEpoch: epoch})
+}
+
+func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
+		return
+	}
+	node, ok := s.authNode(w, r)
+	if !ok {
+		return
+	}
+	cid := r.PathValue("cid")
+	var req wire.Ack
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "malformed ack")
+		return
+	}
+	if req.CID != "" && req.CID != cid {
+		writeError(w, http.StatusBadRequest, "cid_mismatch", "body cid does not match path")
+		return
+	}
+	aid, err := uuid.Parse(req.AssignmentID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_assignment_id", "")
+		return
+	}
+	ctx := r.Context()
+	n, err := s.q.AckPinAssignment(ctx, gen.AckPinAssignmentParams{
+		Cid: cid, NodeID: pgUUIDFrom(node), AssignmentID: pgUUIDFrom(aid), Generation: req.Generation,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "ack")
+		return
+	}
+	if n == 1 {
+		slog.Info("fed.ack.applied", "cid", cid, "assignment_id", req.AssignmentID, "generation", req.Generation)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	// 0 rows: idempotent replay vs stale vs unknown
+	cur, err := s.q.GetPinAssignment(ctx, gen.GetPinAssignmentParams{Cid: cid, NodeID: pgUUIDFrom(node)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "unknown_assignment", "")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "ack-lookup")
+		return
+	}
+	if uuid.UUID(cur.AssignmentID.Bytes) == aid && cur.Generation == req.Generation && cur.State == gen.PinStateAcked {
+		w.WriteHeader(http.StatusNoContent) // idempotent
+		return
+	}
+	slog.Info("fed.ack.stale", "cid", cid, "assignment_id", req.AssignmentID, "generation", req.Generation)
+	writeError(w, http.StatusConflict, wire.CodeStaleAssignment, "")
+}
+
+func (s *Server) handleFail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
+		return
+	}
+	node, ok := s.authNode(w, r)
+	if !ok {
+		return
+	}
+	cid := r.PathValue("cid")
+	var req wire.Fail
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "malformed fail")
+		return
+	}
+	if req.CID != "" && req.CID != cid {
+		writeError(w, http.StatusBadRequest, "cid_mismatch", "body cid does not match path")
+		return
+	}
+	if req.Reason = wire.NormalizeFailReason(req.Reason); req.Reason == "" {
+		writeError(w, http.StatusBadRequest, "bad_reason", "unknown fail reason")
+		return
+	}
+	aid, err := uuid.Parse(req.AssignmentID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_assignment_id", "")
+		return
+	}
+	ctx := r.Context()
+	n, err := s.q.FailPinAssignment(ctx, gen.FailPinAssignmentParams{
+		Cid: cid, NodeID: pgUUIDFrom(node), AssignmentID: pgUUIDFrom(aid), Generation: req.Generation,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "fail")
+		return
+	}
+	if n == 1 {
+		slog.Info("fed.fail.applied", "cid", cid, "reason", req.Reason, "generation", req.Generation)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	cur, err := s.q.GetPinAssignment(ctx, gen.GetPinAssignmentParams{Cid: cid, NodeID: pgUUIDFrom(node)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "unknown_assignment", "")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "fail-lookup")
+		return
+	}
+	if uuid.UUID(cur.AssignmentID.Bytes) == aid && cur.Generation == req.Generation && cur.State == gen.PinStateFailed {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeError(w, http.StatusConflict, wire.CodeStaleAssignment, "")
 }

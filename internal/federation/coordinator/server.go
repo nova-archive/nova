@@ -51,6 +51,8 @@ func (s *Server) mux() *http.ServeMux {
 	m.HandleFunc("/fed/v1/heartbeat", s.handleHeartbeat)
 	m.HandleFunc("GET /fed/v1/pins/changes", s.handleChanges)
 	m.HandleFunc("GET /fed/v1/pins/snapshot", s.handleSnapshot)
+	m.HandleFunc("POST /fed/v1/pins/{cid}/ack", s.handleAck)
+	m.HandleFunc("POST /fed/v1/pins/{cid}/fail", s.handleFail)
 	return m
 }
 
