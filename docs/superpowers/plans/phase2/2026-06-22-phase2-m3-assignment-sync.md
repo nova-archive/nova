@@ -974,7 +974,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "head")
 		return
 	}
-		changes := make([]wire.PinChange, len(rows))
+	changes := make([]wire.PinChange, len(rows))
 	for i, row := range rows {
 		changes[i] = wire.PinChange{
 			Sequence: row.Sequence, AssignmentID: uuid.UUID(row.AssignmentID.Bytes).String(),
@@ -1194,7 +1194,7 @@ func TestAckSuccessStaleIdempotentUnknown(t *testing.T) {
 
 	// success ⇒ 204
 	w := httptest.NewRecorder()
-	s.handleAck(w, reqWithCert(http.MethodPost, "/fed/v1/pins/bafy1/ack",
+	s.mux().ServeHTTP(w, reqWithCert(http.MethodPost, "/fed/v1/pins/bafy1/ack",
 		ackBody(wire.Ack{AssignmentID: aid, Generation: cur.Generation, CID: "bafy1"}), leaf))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("ack = %d, want 204 (%s)", w.Code, w.Body)
@@ -1202,7 +1202,7 @@ func TestAckSuccessStaleIdempotentUnknown(t *testing.T) {
 
 	// idempotent re-ack same generation ⇒ 204
 	w = httptest.NewRecorder()
-	s.handleAck(w, reqWithCert(http.MethodPost, "/fed/v1/pins/bafy1/ack",
+	s.mux().ServeHTTP(w, reqWithCert(http.MethodPost, "/fed/v1/pins/bafy1/ack",
 		ackBody(wire.Ack{AssignmentID: aid, Generation: cur.Generation, CID: "bafy1"}), leaf))
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("idempotent re-ack = %d, want 204", w.Code)
@@ -1210,7 +1210,7 @@ func TestAckSuccessStaleIdempotentUnknown(t *testing.T) {
 
 	// stale (older generation) ⇒ 409
 	w = httptest.NewRecorder()
-	s.handleAck(w, reqWithCert(http.MethodPost, "/fed/v1/pins/bafy1/ack",
+	s.mux().ServeHTTP(w, reqWithCert(http.MethodPost, "/fed/v1/pins/bafy1/ack",
 		ackBody(wire.Ack{AssignmentID: aid, Generation: cur.Generation - 1, CID: "bafy1"}), leaf))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("stale ack = %d, want 409", w.Code)
@@ -1218,7 +1218,7 @@ func TestAckSuccessStaleIdempotentUnknown(t *testing.T) {
 
 	// unknown cid ⇒ 404
 	w = httptest.NewRecorder()
-	s.handleAck(w, reqWithCert(http.MethodPost, "/fed/v1/pins/nope/ack",
+	s.mux().ServeHTTP(w, reqWithCert(http.MethodPost, "/fed/v1/pins/nope/ack",
 		ackBody(wire.Ack{AssignmentID: aid, Generation: 1, CID: "nope"}), leaf))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("unknown ack = %d, want 404", w.Code)
@@ -1226,7 +1226,7 @@ func TestAckSuccessStaleIdempotentUnknown(t *testing.T) {
 }
 ```
 
-> The route uses the `{cid}` pattern, so the test exercises it via `s.mux()` if you prefer; calling `s.handleAck` directly also works because `r.SetPathValue` is set by `httptest.NewRequest` for `/fed/v1/pins/bafy1/ack` only when routed through a mux — so for the direct-call tests, set it explicitly: `req.SetPathValue("cid", "bafy1")`. Prefer routing through `s.mux().ServeHTTP` to exercise the real pattern.
+> The handler reads `r.PathValue("cid")`, which is only populated when the request is matched against the `{cid}` route pattern — so the test routes through `s.mux().ServeHTTP(w, req)` (NOT a direct `s.handleAck` call, which would leave `cid==""` and trip the new `cid_mismatch` guard). `reqWithCert` still sets `r.TLS`, so auth works through the mux.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1424,16 +1424,14 @@ import (
 	"context"
 	"log/slog"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // pruneOnce deletes change-log rows older than retention and advances the
 // watermark (one atomic statement). A donor whose cursor predates the watermark
-// then recovers via snapshot.
+// then recovers via snapshot. NB: sqlc maps timestamptz→time.Time (see
+// internal/db/sqlc.yaml override), so PruneChangeLog takes a time.Time directly.
 func (s *Server) pruneOnce(ctx context.Context, retention time.Duration) error {
-	cutoff := pgtype.Timestamptz{Time: time.Now().Add(-retention), Valid: true}
-	wm, err := s.q.PruneChangeLog(ctx, cutoff)
+	wm, err := s.q.PruneChangeLog(ctx, time.Now().Add(-retention))
 	if err != nil {
 		return err
 	}
@@ -2536,7 +2534,9 @@ git commit -m "feat(p2-m3): novactl pin assign|unpin|list (DB-direct) (P2-M3)"
 
 - [ ] **Step 1: Write the integration test**
 
-Real `Server` + real `Agent`/`HTTPClient` over loopback mTLS + `dbtest`. Drives the donor poll loop directly via `syncOnce` (deterministic, no ticker flakiness).
+Real `Server` + real `Agent`/`HTTPClient` over loopback mTLS + `dbtest`.
+
+> **Correction (applied during execution):** `Agent.syncOnce` is **unexported** and this test is in package `coordinator`, so it cannot be called cross-package. The test instead drives the donor via the exported `ag.Run` (short poll interval) and polls the `FileAssignmentStore` to convergence with a deadline (`waitFor`). The snapshot-recovery path is forced deterministically by registering the node, assigning, pruning the change log (watermark advances to head), then starting a **fresh-cursor** donor whose first `GetChanges(0)` is below the watermark → `snapshot_required` → snapshot recovery. The code block below is the original `syncOnce` sketch, superseded by the `Run`-based test actually committed.
 
 ```go
 func TestEndToEndAssignmentSync(t *testing.T) {
