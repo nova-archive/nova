@@ -108,6 +108,7 @@ type Federation struct {
 	HeartbeatIntervalSeconds     int `yaml:"heartbeat_interval_seconds"`
 	PinsPollIntervalSeconds      int `yaml:"pins_poll_interval_seconds"`
 	MaxPinConcurrency            int `yaml:"max_pin_concurrency"`
+	ChangeLogRetentionHours      int `yaml:"change_log_retention_hours"`
 	SuspectAfterMissedHeartbeats int `yaml:"suspect_after_missed_heartbeats"`
 	UnreachableAfterSeconds      int `yaml:"unreachable_after_seconds"`
 	EvictedAfterSeconds          int `yaml:"evicted_after_seconds"`

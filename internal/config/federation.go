@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"time"
 )
 
 // Default federation timers (mirrors FEDERATION_PROTOCOL.md).
@@ -10,6 +11,7 @@ const (
 	DefaultHeartbeatIntervalSeconds = 300
 	DefaultPinsPollIntervalSeconds  = 600
 	DefaultMaxPinConcurrency        = 16
+	DefaultChangeLogRetentionHours  = 168 // 7 days
 )
 
 // Validate checks the federation block. dev=true (loopback/test) skips the
@@ -73,4 +75,14 @@ func (f Federation) FederationTimers() (heartbeat, poll, concurrency int) {
 		concurrency = DefaultMaxPinConcurrency
 	}
 	return heartbeat, poll, concurrency
+}
+
+// FederationRetention returns the change-log retention window and prune cadence.
+// Retention defaults to DefaultChangeLogRetentionHours; the prune poll is 1h.
+func (f Federation) FederationRetention() (retention, prunePoll time.Duration) {
+	hours := f.ChangeLogRetentionHours
+	if hours <= 0 {
+		hours = DefaultChangeLogRetentionHours
+	}
+	return time.Duration(hours) * time.Hour, time.Hour
 }

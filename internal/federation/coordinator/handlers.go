@@ -168,10 +168,15 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	head, err := s.q.GetChangeLogHead(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "change-log head")
+		return
+	}
 	timers := s.cfg.Timers
 	writeJSON(w, http.StatusOK, wire.HeartbeatResponse{
 		ConfigUpdates:        &timers,
-		CurrentEpoch:         0,  // M3 gives this meaning
+		CurrentEpoch:         head,
 		RepairTokenPublicKey: "", // M4 populates
 	})
 }

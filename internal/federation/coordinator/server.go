@@ -23,6 +23,8 @@ type Config struct {
 	RequiredCapabilities []string           // [] in M2 — see design § capability negotiation
 	Timers               wire.ConfigUpdates // delivered to donors via heartbeat config_updates
 	TLS                  TLSMaterial
+	ChangeLogRetention   time.Duration // default 168h; 0 disables pruning
+	PrunePollInterval    time.Duration // default 1h
 }
 
 // TLSMaterial holds the PEM bytes for the federation listener.
@@ -86,6 +88,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.ln == nil {
 		return errors.New("coordinator: federation Listen() not called")
 	}
+	go s.runRetention(ctx, s.cfg.PrunePollInterval, s.cfg.ChangeLogRetention)
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

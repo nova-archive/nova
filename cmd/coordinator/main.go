@@ -392,10 +392,13 @@ func run() error {
 			return fmt.Errorf("federation key: %w", err)
 		}
 		hb, poll, conc := fed.FederationTimers()
+		retention, prunePoll := fed.FederationRetention()
 		fedSrv := fedcoord.New(gen.New(pool), fedcoord.Config{
-			ListenAddr: fed.ListenAddr,
-			Timers:     wire.ConfigUpdates{HeartbeatIntervalSeconds: hb, PinsPollIntervalSeconds: poll, MaxPinConcurrency: conc},
-			TLS:        fedcoord.TLSMaterial{CAPEM: caPEM, CertPEM: certPEM, KeyPEM: keyPEM},
+			ListenAddr:         fed.ListenAddr,
+			Timers:             wire.ConfigUpdates{HeartbeatIntervalSeconds: hb, PinsPollIntervalSeconds: poll, MaxPinConcurrency: conc},
+			TLS:                fedcoord.TLSMaterial{CAPEM: caPEM, CertPEM: certPEM, KeyPEM: keyPEM},
+			ChangeLogRetention: retention,
+			PrunePollInterval:  prunePoll,
 		})
 		if err := fedSrv.Listen(); err != nil {
 			return fmt.Errorf("federation listen %s: %w", fed.ListenAddr, err)
