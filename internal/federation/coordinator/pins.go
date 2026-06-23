@@ -317,6 +317,10 @@ func (s *Server) handleFail(w http.ResponseWriter, r *http.Request) {
 // mintSource builds a fresh coordinator-as-source grant for a pending assign
 // (D-M4-8). Tokens are minted per-serve and NEVER persisted in pin_changes.
 func (s *Server) mintSource(ch wire.PinChange, dest uuid.UUID, now time.Time) *wire.ChangeSource {
+	if s.cfg.RepairTokenTTL <= 0 {
+		slog.Warn("fed.token.mint_skipped", "reason", "non_positive_ttl", "cid", ch.CID)
+		return nil
+	}
 	jti, err := uuid.NewRandom()
 	if err != nil {
 		return nil

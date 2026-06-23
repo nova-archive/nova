@@ -129,6 +129,43 @@ func TestMintedTokenAcceptedImmediatelyAfterBoot(t *testing.T) {
 	}
 }
 
+// TestMintSourceSkippedWhenTTLZero asserts that mintSource returns nil (and
+// the change is served without a Source) when RepairTokenTTL is zero.
+func TestMintSourceSkippedWhenTTLZero(t *testing.T) {
+	ctx := context.Background()
+	s, pool, caPEM, caKeyPEM := newTestServerPool(t)
+	id := uuid.New()
+	leaf := registerOK(t, s, caPEM, caKeyPEM, id)
+
+	signer, err := tokens.NewSignerFromSeed(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TTL = 0 must trigger the guard and return nil Source.
+	s.cfg.RepairTokenTTL = 0
+	s.SetSourceDeps(signer, fakeBackendFor("unused", nil), time.Now().Add(-time.Minute))
+
+	seedBlob(t, ctx, pool, "bafy-ttl-zero", 7)
+	assignViaSeam(t, ctx, pool, "bafy-ttl-zero", id)
+
+	w := httptest.NewRecorder()
+	s.handleChanges(w, reqWithCert(http.MethodGet, "/fed/v1/pins/changes?since_seq=0", nil, leaf))
+	if w.Code != http.StatusOK {
+		t.Fatalf("changes: status %d body %s", w.Code, w.Body)
+	}
+	var resp wire.ChangesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Changes) != 1 {
+		t.Fatalf("expected 1 change, got %d: %+v", len(resp.Changes), resp.Changes)
+	}
+	ch := resp.Changes[0]
+	if ch.Source != nil {
+		t.Fatalf("expected Source to be nil when TTL=0, got %+v", ch.Source)
+	}
+}
+
 // TestHeartbeatReturnsPublicKey verifies that a configured signer causes
 // handleHeartbeat to include RepairTokenPublicKey in the response.
 func TestHeartbeatReturnsPublicKey(t *testing.T) {
