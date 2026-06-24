@@ -24,11 +24,12 @@ ORDER BY n.reputation_score DESC, n.id;
 INSERT INTO blob_storage_state (cid, commit_state, durability_class, local_role, local_present, local_bytes, updated_at)
 VALUES ($1, 'staging', sqlc.arg(durability_class), 'staging', false, 0, now())
 ON CONFLICT (cid) DO UPDATE SET
-    commit_state = 'staging',
-    local_role   = 'staging',
-    local_present = false,
-    local_bytes  = 0,
-    updated_at   = now();
+    commit_state    = 'staging',
+    durability_class = EXCLUDED.durability_class,
+    local_role      = 'staging',
+    local_present   = false,
+    local_bytes     = 0,
+    updated_at      = now();
 
 -- name: MarkCommitted :execrows
 -- Reconciler: staging → committed, set committed_at and local_bytes.
@@ -82,8 +83,8 @@ WHERE cid = $1
 -- name: SumCacheBytes :one
 -- Per-segment byte totals for admission/eviction budgeting.
 SELECT
-    COALESCE(SUM(local_bytes) FILTER (WHERE cache_segment = 'probationary'), 0) AS probationary_bytes,
-    COALESCE(SUM(local_bytes) FILTER (WHERE cache_segment = 'protected'),    0) AS protected_bytes
+    COALESCE(SUM(local_bytes) FILTER (WHERE cache_segment = 'probationary'), 0)::bigint AS probationary_bytes,
+    COALESCE(SUM(local_bytes) FILTER (WHERE cache_segment = 'protected'),    0)::bigint AS protected_bytes
 FROM blob_storage_state
 WHERE local_role = 'cache' AND local_present;
 
