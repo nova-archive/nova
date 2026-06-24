@@ -145,7 +145,7 @@ func (q *Queries) GetEnvelopeSize(ctx context.Context, cid string) (int64, error
 }
 
 const getNodeByID = `-- name: GetNodeByID :one
-SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes FROM nodes WHERE id = $1
+SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr FROM nodes WHERE id = $1
 `
 
 func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error) {
@@ -175,6 +175,7 @@ func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
 		&i.CertRotatedAt,
 		&i.LastFreeBytes,
 		&i.LastStoredBytes,
+		&i.SourceNebulaAddr,
 	)
 	return i, err
 }
@@ -570,7 +571,7 @@ ON CONFLICT (id) DO UPDATE SET
     advertised_capabilities        = EXCLUDED.advertised_capabilities,
     required_capabilities          = EXCLUDED.required_capabilities,
     client_version                 = EXCLUDED.client_version
-RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes
+RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr
 `
 
 type RegisterNodeParams struct {
@@ -628,6 +629,7 @@ func (q *Queries) RegisterNode(ctx context.Context, arg RegisterNodeParams) (Nod
 		&i.CertRotatedAt,
 		&i.LastFreeBytes,
 		&i.LastStoredBytes,
+		&i.SourceNebulaAddr,
 	)
 	return i, err
 }
@@ -671,7 +673,7 @@ const updateNodeHeartbeat = `-- name: UpdateNodeHeartbeat :one
 UPDATE nodes
 SET last_seen_at = now(), last_free_bytes = $2, last_stored_bytes = $3
 WHERE id = $1
-RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes
+RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr
 `
 
 type UpdateNodeHeartbeatParams struct {
@@ -707,6 +709,7 @@ func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbe
 		&i.CertRotatedAt,
 		&i.LastFreeBytes,
 		&i.LastStoredBytes,
+		&i.SourceNebulaAddr,
 	)
 	return i, err
 }

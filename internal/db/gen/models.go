@@ -103,6 +103,49 @@ func (ns NullAuditResult) Value() (driver.Value, error) {
 	return string(ns.AuditResult), nil
 }
 
+type BlobCommitState string
+
+const (
+	BlobCommitStateStaging   BlobCommitState = "staging"
+	BlobCommitStateCommitted BlobCommitState = "committed"
+	BlobCommitStateFailed    BlobCommitState = "failed"
+)
+
+func (e *BlobCommitState) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BlobCommitState(s)
+	case string:
+		*e = BlobCommitState(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BlobCommitState: %T", src)
+	}
+	return nil
+}
+
+type NullBlobCommitState struct {
+	BlobCommitState BlobCommitState
+	Valid           bool // Valid is true if BlobCommitState is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBlobCommitState) Scan(value interface{}) error {
+	if value == nil {
+		ns.BlobCommitState, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BlobCommitState.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBlobCommitState) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BlobCommitState), nil
+}
+
 type BlobProduct string
 
 const (
@@ -193,6 +236,48 @@ func (ns NullBlobState) Value() (driver.Value, error) {
 	return string(ns.BlobState), nil
 }
 
+type CacheSegment string
+
+const (
+	CacheSegmentProbationary CacheSegment = "probationary"
+	CacheSegmentProtected    CacheSegment = "protected"
+)
+
+func (e *CacheSegment) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = CacheSegment(s)
+	case string:
+		*e = CacheSegment(s)
+	default:
+		return fmt.Errorf("unsupported scan type for CacheSegment: %T", src)
+	}
+	return nil
+}
+
+type NullCacheSegment struct {
+	CacheSegment CacheSegment
+	Valid        bool // Valid is true if CacheSegment is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullCacheSegment) Scan(value interface{}) error {
+	if value == nil {
+		ns.CacheSegment, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.CacheSegment.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullCacheSegment) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.CacheSegment), nil
+}
+
 type CollectionVisibility string
 
 const (
@@ -234,6 +319,50 @@ func (ns NullCollectionVisibility) Value() (driver.Value, error) {
 		return nil, nil
 	}
 	return string(ns.CollectionVisibility), nil
+}
+
+type CoordinatorLocalRole string
+
+const (
+	CoordinatorLocalRoleOrigin  CoordinatorLocalRole = "origin"
+	CoordinatorLocalRoleStaging CoordinatorLocalRole = "staging"
+	CoordinatorLocalRoleCache   CoordinatorLocalRole = "cache"
+	CoordinatorLocalRoleAbsent  CoordinatorLocalRole = "absent"
+)
+
+func (e *CoordinatorLocalRole) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = CoordinatorLocalRole(s)
+	case string:
+		*e = CoordinatorLocalRole(s)
+	default:
+		return fmt.Errorf("unsupported scan type for CoordinatorLocalRole: %T", src)
+	}
+	return nil
+}
+
+type NullCoordinatorLocalRole struct {
+	CoordinatorLocalRole CoordinatorLocalRole
+	Valid                bool // Valid is true if CoordinatorLocalRole is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullCoordinatorLocalRole) Scan(value interface{}) error {
+	if value == nil {
+		ns.CoordinatorLocalRole, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.CoordinatorLocalRole.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullCoordinatorLocalRole) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.CoordinatorLocalRole), nil
 }
 
 type DmcaStatus string
@@ -700,6 +829,21 @@ type BlobManifest struct {
 	CreatedAt     time.Time
 }
 
+type BlobStorageState struct {
+	Cid             string
+	CommitState     BlobCommitState
+	DurabilityClass string
+	LocalRole       CoordinatorLocalRole
+	LocalPresent    bool
+	LocalBytes      int64
+	CacheSegment    NullCacheSegment
+	CommittedAt     pgtype.Timestamptz
+	LastAccessedAt  pgtype.Timestamptz
+	PruneEligibleAt pgtype.Timestamptz
+	LastRefetchAt   pgtype.Timestamptz
+	UpdatedAt       time.Time
+}
+
 type Blocklist struct {
 	Cid       string
 	Reason    string
@@ -875,6 +1019,7 @@ type Node struct {
 	CertRotatedAt              pgtype.Timestamptz
 	LastFreeBytes              pgtype.Int8
 	LastStoredBytes            pgtype.Int8
+	SourceNebulaAddr           pgtype.Text
 }
 
 type PinAssignment struct {

@@ -19,6 +19,8 @@ type Querier interface {
 	// a donor never advances its cursor past a lower-sequence row that can still
 	// commit. Gaps from rolled-back txns are harmless (cursor uses sequence > N).
 	AcquireChangeLogLock(ctx context.Context) error
+	// Donor-fetched: set local_role='cache', cache_segment='probationary', record bytes.
+	AdmitToCache(ctx context.Context, arg AdmitToCacheParams) error
 	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
 	// Atomically mark the source version 'rotating' iff it is currently 'active'
 	// and no other version is already rotating. 0 rows => caller maps to 409/400.
@@ -39,6 +41,9 @@ type Querier interface {
 	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
 	CountModerationDecisions(ctx context.Context) (int64, error)
 	CountSigningKeysForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
+	// Sourceable-holder count: acked pin + reachable + trusted + fresh + has read-source/v1 cap + has nebula addr.
+	// Called by commit/prune/read tiers to determine if donor-backed reads are viable.
+	CountSourceableHolders(ctx context.Context, arg CountSourceableHoldersParams) (int64, error)
 	// Creates a collection (owner_id must reference an existing user; the
 	// public_archival CHECK requires visibility='public'). Backs
 	// `novactl collection create` so operators don't seed collections via raw SQL.
@@ -98,6 +103,8 @@ type Querier interface {
 	// pruned (which would otherwise loop a recovered donor back into snapshot_required).
 	GetChangeLogHead(ctx context.Context) (int64, error)
 	GetCollectionForWrite(ctx context.Context, id pgtype.UUID) (GetCollectionForWriteRow, error)
+	// Resolve visibility: is the blob committed (write-through to origin)?
+	GetCommitState(ctx context.Context, cid string) (BlobCommitState, error)
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
 	GetDMCACase(ctx context.Context, id pgtype.UUID) (GetDMCACaseRow, error)
 	GetDerivativeCID(ctx context.Context, arg GetDerivativeCIDParams) (string, error)
@@ -119,6 +126,8 @@ type Querier interface {
 	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)
 	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
 	GetSigningKeyByKID(ctx context.Context, kid string) (GetSigningKeyByKIDRow, error)
+	// Full row fetch for internal state inspection.
+	GetStorageState(ctx context.Context, cid string) (BlobStorageState, error)
 	GetUploadSession(ctx context.Context, id pgtype.UUID) (GetUploadSessionRow, error)
 	GetUploadTokenByID(ctx context.Context, id pgtype.UUID) (UploadToken, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
@@ -159,6 +168,9 @@ type Querier interface {
 	ListDerivativeCIDs(ctx context.Context, parentCid pgtype.Text) ([]string, error)
 	ListDesiredAssignmentsByCID(ctx context.Context, cid string) ([]ListDesiredAssignmentsByCIDRow, error)
 	ListDesiredAssignmentsByNode(ctx context.Context, nodeID pgtype.UUID) ([]ListDesiredAssignmentsByNodeRow, error)
+	// SLRU/2Q drain order: probationary oldest-first (false < true in Postgres boolean sort),
+	// then protected oldest-first. Limit provided by caller.
+	ListEvictionCandidates(ctx context.Context, lim int32) ([]ListEvictionCandidatesRow, error)
 	ListExpiredUploadSessions(ctx context.Context) ([]pgtype.UUID, error)
 	ListIntegrityAudits(ctx context.Context, arg ListIntegrityAuditsParams) ([]ListIntegrityAuditsRow, error)
 	ListMasterVersions(ctx context.Context) ([]ListMasterVersionsRow, error)
@@ -173,22 +185,32 @@ type Querier interface {
 	// no_shred_under_legal_hold CHECK is the hard backstop.
 	ListOverdueSoftDeletes(ctx context.Context, arg ListOverdueSoftDeletesParams) ([]string, error)
 	ListOverdueTombstones(ctx context.Context) ([]ListOverdueTombstonesRow, error)
+	// Committed + present + mode-eligible durability class; ordered by prune_eligible_at (oldest first).
+	ListPruneCandidates(ctx context.Context, arg ListPruneCandidatesParams) ([]ListPruneCandidatesRow, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)
 	// Deliberately re-wraps ALL non-shredded retired keys (not only within-grace):
 	// a retired-but-not-yet-shredded key still holds real wrapped bytes that would
 	// be orphaned if left under the retiring version.
 	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
+	// Best-link sourceable holders: reputation desc, then id for stable rotation.
+	ListSourceableHolders(ctx context.Context, arg ListSourceableHoldersParams) ([]ListSourceableHoldersRow, error)
 	ListUploadTokens(ctx context.Context) ([]ListUploadTokensRow, error)
 	// Owner resolution for `novactl collection create`: the sole operator user is
 	// the default collection owner when --owner is omitted.
 	ListUserIDsByRole(ctx context.Context, role UserRole) ([]pgtype.UUID, error)
 	ListVerifiedHoldersByCID(ctx context.Context, cid string) ([]ListVerifiedHoldersByCIDRow, error)
+	// Reconciler: staging → committed, set committed_at and local_bytes.
+	MarkCommitted(ctx context.Context, arg MarkCommittedParams) (int64, error)
+	// Reconciler: staging → failed (upload or remote-commit error).
+	MarkFailed(ctx context.Context, cid string) (int64, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
 	// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
 	// distinguishes 404 vs 409 via GetBlobMeta).
 	MarkSoftDeleted(ctx context.Context, cid string) (int64, error)
 	NodeHasChangesAfter(ctx context.Context, arg NodeHasChangesAfterParams) (bool, error)
+	// Cache hit on a probationary row: promote to protected segment (throttled like TouchLastAccessed).
+	PromoteToProtected(ctx context.Context, arg PromoteToProtectedParams) error
 	// Atomic delete + watermark advance in one statement (no tx needed).
 	PruneChangeLog(ctx context.Context, createdAt time.Time) (int64, error)
 	RegisterNode(ctx context.Context, arg RegisterNodeParams) (Node, error)
@@ -220,14 +242,22 @@ type Querier interface {
 	SetBlobState(ctx context.Context, arg SetBlobStateParams) error
 	SetDEKLegalHoldForBlobTree(ctx context.Context, arg SetDEKLegalHoldForBlobTreeParams) error
 	SetDMCACaseActioned(ctx context.Context, id pgtype.UUID) error
+	// Pruner/cache: update local_present, local_role, cache_segment, local_bytes, prune_eligible_at.
+	SetLocalPresence(ctx context.Context, arg SetLocalPresenceParams) error
 	SetUploadSessionToken(ctx context.Context, arg SetUploadSessionTokenParams) error
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	ShredDEKsForBlobTree(ctx context.Context, arg ShredDEKsForBlobTreeParams) error
 	ShredExpiredRetiredSigningKeys(ctx context.Context, wrappedKey []byte) error
+	// Per-segment byte totals for admission/eviction budgeting.
+	SumCacheBytes(ctx context.Context) (SumCacheBytesRow, error)
+	// Throttled by caller; only update when last_accessed_at is stale or NULL.
+	TouchLastAccessed(ctx context.Context, arg TouchLastAccessedParams) error
 	TouchUploadTokenUsed(ctx context.Context, id pgtype.UUID) error
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) (Node, error)
 	UpsertPinAssignmentAssign(ctx context.Context, arg UpsertPinAssignmentAssignParams) (UpsertPinAssignmentAssignRow, error)
 	UpsertRepeatInfringer(ctx context.Context, userID pgtype.UUID) error
+	// Gate-on Put: insert staging row; ON CONFLICT re-opens a previously failed row.
+	UpsertStorageStateStaging(ctx context.Context, arg UpsertStorageStateStagingParams) error
 }
 
 var _ Querier = (*Queries)(nil)
