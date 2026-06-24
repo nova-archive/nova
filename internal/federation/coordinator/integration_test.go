@@ -39,9 +39,10 @@ func (e *echoPinner) Unpin(_ context.Context, _ string) error { return nil }
 
 func (e *echoPinner) RepoStoredBytes(_ context.Context) (int64, error) { return 0, nil }
 
-// buildM4Server constructs a live mTLS coordinator server with M4 source deps
-// wired (signer, fakeBackend, RepairTokenTTL:time.Hour). Returns the server,
-// pool, caPEM/caKeyPEM, and a bound-address (after Listen+Run).
+// buildM4Server constructs a live mTLS coordinator server configured for M4
+// (RepairTokenTTL + RequiredCapabilities incl. blob-transfer/v1) and returns the
+// server, pool, caPEM/caKeyPEM, and a signer. It does NOT wire source deps — the
+// caller must call s.SetSourceDeps(signer, backend, bootTime) and then Listen+Run.
 func buildM4Server(t *testing.T) (*Server, *pgxpool.Pool, []byte, []byte, *tokens.Signer) {
 	t.Helper()
 	ctx := context.Background()
@@ -62,14 +63,15 @@ func buildM4Server(t *testing.T) (*Server, *pgxpool.Pool, []byte, []byte, *token
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The agent only advertises CapPinChangeLog+CapSnapshot; do NOT require
-	// CapBlobTransfer in RequiredCapabilities so registration succeeds without
-	// modifying the agent's registerReq.
+	// Require blob-transfer/v1 (production fidelity) — the real donor agent
+	// advertises CapPinChangeLog+CapSnapshot+CapBlobTransfer, so registration
+	// succeeds.
 	s := New(q, Config{
-		ListenAddr:     "127.0.0.1:0",
-		Timers:         wireTimers(),
-		TLS:            TLSMaterial{CAPEM: caPEM, CertPEM: srvPEM, KeyPEM: srvKeyPEM},
-		RepairTokenTTL: time.Hour,
+		ListenAddr:           "127.0.0.1:0",
+		RequiredCapabilities: []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer},
+		Timers:               wireTimers(),
+		TLS:                  TLSMaterial{CAPEM: caPEM, CertPEM: srvPEM, KeyPEM: srvKeyPEM},
+		RepairTokenTTL:       time.Hour,
 	})
 	return s, pool, caPEM, caKeyPEM, signer
 }
@@ -300,7 +302,7 @@ func TestEndToEndSnapshotRecovery(t *testing.T) {
 	// Register the node directly (no donor cursor involved yet).
 	if _, err := client.Register(ctx, wire.RegisterRequest{
 		SupportedProtocols: []string{wire.ProtocolV1},
-		Capabilities:       []string{wire.CapPinChangeLog, wire.CapSnapshot},
+		Capabilities:       []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +453,7 @@ func TestM4CrashBeforeAckRecovers(t *testing.T) {
 
 	if _, err := client.Register(ctx, wire.RegisterRequest{
 		SupportedProtocols: []string{wire.ProtocolV1},
-		Capabilities:       []string{wire.CapPinChangeLog, wire.CapSnapshot},
+		Capabilities:       []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer},
 	}); err != nil {
 		t.Fatal(err)
 	}

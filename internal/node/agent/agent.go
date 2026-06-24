@@ -79,7 +79,7 @@ func WithSource(a *Agent, fetcher transfer.SourceFetcher, pinner blockstore, pro
 func (a *Agent) registerReq() wire.RegisterRequest {
 	return wire.RegisterRequest{
 		SupportedProtocols:         []string{wire.ProtocolV1},
-		Capabilities:               []string{wire.CapPinChangeLog, wire.CapSnapshot},
+		Capabilities:               []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer},
 		BandwidthBudgetBytesPerDay: a.cfg.BandwidthBudgetBytesPerDay,
 	}
 }

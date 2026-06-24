@@ -71,6 +71,7 @@ import (
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	fedcoord "github.com/nova-archive/nova/internal/federation/coordinator"
+	"github.com/nova-archive/nova/internal/federation/tokens"
 	"github.com/nova-archive/nova/internal/federation/wire"
 	"github.com/nova-archive/nova/internal/ipfs"
 	"github.com/nova-archive/nova/internal/secret"
@@ -394,12 +395,29 @@ func run() error {
 		hb, poll, conc := fed.FederationTimers()
 		retention, prunePoll := fed.FederationRetention()
 		fedSrv := fedcoord.New(gen.New(pool), fedcoord.Config{
-			ListenAddr:         fed.ListenAddr,
-			Timers:             wire.ConfigUpdates{HeartbeatIntervalSeconds: hb, PinsPollIntervalSeconds: poll, MaxPinConcurrency: conc},
-			TLS:                fedcoord.TLSMaterial{CAPEM: caPEM, CertPEM: certPEM, KeyPEM: keyPEM},
-			ChangeLogRetention: retention,
-			PrunePollInterval:  prunePoll,
+			ListenAddr:           fed.ListenAddr,
+			RequiredCapabilities: []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer},
+			Timers:               wire.ConfigUpdates{HeartbeatIntervalSeconds: hb, PinsPollIntervalSeconds: poll, MaxPinConcurrency: conc},
+			TLS:                  fedcoord.TLSMaterial{CAPEM: caPEM, CertPEM: certPEM, KeyPEM: keyPEM},
+			ChangeLogRetention:   retention,
+			PrunePollInterval:    prunePoll,
+			RepairTokenTTL:       fed.RepairTokenTTL(),
+			MaxTransferBytes:     fed.MaxTransfer(),
+			SourceNebulaAddr:     fed.SourceNebulaAddr,
 		})
+		// Coordinator-as-source (P2-M4): load the Ed25519 repair-token signer and
+		// wire the origin backend. Graceful degradation — a federation upgraded
+		// from M3 may not have a key yet; without it the control plane (register/
+		// heartbeat/sync) still runs, the source endpoint returns 503, and no
+		// Source grants are minted until the operator provisions a key.
+		if signer, serr := tokens.LoadSigner(fed.RepairSigningKeyPath); serr != nil {
+			slog.Warn("federation repair-signing key not loaded; donor transfer disabled until provisioned",
+				"err", serr,
+				"hint", "set NOVA_FEDERATION_REPAIR_SIGNING_KEY[_FILE] or federation.repair_signing_key_path")
+		} else {
+			fedSrv.SetSourceDeps(signer, backend, time.Now())
+			slog.Info("federation repair-token signer loaded; coordinator-as-source enabled")
+		}
 		if err := fedSrv.Listen(); err != nil {
 			return fmt.Errorf("federation listen %s: %w", fed.ListenAddr, err)
 		}
