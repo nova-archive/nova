@@ -64,3 +64,46 @@ func TestIdentityFromCertWrongScheme(t *testing.T) {
 		t.Fatal("expected error for non-nova URI SAN")
 	}
 }
+
+// TestIdentityRole covers the three new role-parsing cases (P2-M4.1):
+//   - nova://coordinator/<uuid> → RoleCoordinator
+//   - nova://node/<uuid>        → RoleNode (existing behavior preserved)
+//   - missing/unknown SAN       → error
+func TestIdentityRole(t *testing.T) {
+	t.Run("coordinator SAN yields RoleCoordinator", func(t *testing.T) {
+		c := testLeaf(t, "nova://coordinator/aaaabbbb-cccc-dddd-eeee-ffffffffffff")
+		id, err := IdentityFromCert(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if id.Role != RoleCoordinator {
+			t.Fatalf("role = %q, want %q", id.Role, RoleCoordinator)
+		}
+		if id.NodeID != "aaaabbbb-cccc-dddd-eeee-ffffffffffff" {
+			t.Fatalf("node id = %q", id.NodeID)
+		}
+	})
+
+	t.Run("node SAN yields RoleNode", func(t *testing.T) {
+		c := testLeaf(t, "nova://node/550e8400-e29b-41d4-a716-446655440000")
+		id, err := IdentityFromCert(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if id.Role != RoleNode {
+			t.Fatalf("role = %q, want %q", id.Role, RoleNode)
+		}
+	})
+
+	t.Run("no SAN yields error", func(t *testing.T) {
+		if _, err := IdentityFromCert(testLeaf(t, "")); err == nil {
+			t.Fatal("expected error for cert without nova URI SAN")
+		}
+	})
+
+	t.Run("unknown nova host yields error", func(t *testing.T) {
+		if _, err := IdentityFromCert(testLeaf(t, "nova://unknown/abc")); err == nil {
+			t.Fatal("expected error for unknown nova URI host")
+		}
+	})
+}

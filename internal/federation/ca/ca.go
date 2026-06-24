@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	caValidity     = 10 * 365 * 24 * time.Hour
-	leafValidity   = 2 * 365 * 24 * time.Hour
-	uriSANTemplate = "nova://node/%s"
+	caValidity          = 10 * 365 * 24 * time.Hour
+	leafValidity        = 2 * 365 * 24 * time.Hour
+	uriSANTemplate      = "nova://node/%s"
+	uriSANCoordTemplate = "nova://coordinator/%s"
 )
 
 func serial() (*big.Int, error) {
@@ -144,6 +145,24 @@ func IssueClientCert(caCertPEM, caKeyPEM []byte, nodeID uuid.UUID, displayName s
 	}
 	tmpl := &x509.Certificate{
 		Subject:     pkix.Name{CommonName: displayName},
+		URIs:        []*url.URL{u},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	return issueLeaf(caCertPEM, caKeyPEM, tmpl)
+}
+
+// IssueCoordinatorClientCert issues a coordinator federation client cert with a
+// nova://coordinator/<uuid> URI SAN. This identity is used when the coordinator
+// acts as a federation client pulling blobs from donor read-source endpoints
+// (P2-M4.1). The coordinator UUID is freshly minted per issuance; it is not a
+// nodes row and must not be registered as a donor.
+func IssueCoordinatorClientCert(caCertPEM, caKeyPEM []byte, coordID uuid.UUID) (certPEM, keyPEM []byte, err error) {
+	u, err := url.Parse(fmt.Sprintf(uriSANCoordTemplate, coordID.String()))
+	if err != nil {
+		return nil, nil, err
+	}
+	tmpl := &x509.Certificate{
+		Subject:     pkix.Name{CommonName: "nova-coordinator-federation-client"},
 		URIs:        []*url.URL{u},
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}

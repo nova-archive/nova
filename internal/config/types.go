@@ -118,6 +118,15 @@ type Federation struct {
 	RepairSigningKeyPath  string `yaml:"repair_signing_key_path"`
 	MaxTransferBytes      int64  `yaml:"max_transfer_bytes"`
 	SourceNebulaAddr      string `yaml:"source_nebula_addr"`
+
+	// M4.1: coordinator-as-client mTLS identity for donor read-source endpoints.
+	// FederationClientCertPath is the path to the nova://coordinator/<uuid> client
+	// cert PEM. FederationClientKeyPath is the path to its private key (or empty
+	// to use NOVA_FEDERATION_CLIENT_KEY[_FILE] env chain). Omitting both causes
+	// graceful degradation: donor-fetch is disabled until the operator provisions
+	// the identity (Task 7 consumer).
+	FederationClientCertPath string `yaml:"federation_client_cert_path"`
+	FederationClientKeyPath  string `yaml:"federation_client_key_path"`
 }
 
 // Enabled reports whether the federation listener should run (operator set a

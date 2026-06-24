@@ -54,6 +54,26 @@ func ClientTLSConfig(caPEM, certPEM, keyPEM []byte) (*tls.Config, error) {
 	}, nil
 }
 
+// CoordinatorClientTLS builds the coordinator's mTLS client config for outbound
+// connections to donor read-source endpoints (P2-M4.1). It is structurally
+// identical to ClientTLSConfig but is named distinctly so call sites are clear
+// about which identity is being presented (nova://coordinator/<uuid> cert).
+func CoordinatorClientTLS(caPEM, certPEM, keyPEM []byte) (*tls.Config, error) {
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("transport: coordinator client keypair: %w", err)
+	}
+	pool, err := caPool(caPEM)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS12,
+	}, nil
+}
+
 // NewTLSListener wraps a net.Listener in a TLS listener using cfg. Used by both
 // the coordinator federation server and tests.
 func NewTLSListener(inner net.Listener, cfg *tls.Config) net.Listener {

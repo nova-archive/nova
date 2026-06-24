@@ -42,6 +42,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -72,6 +73,7 @@ import (
 	"github.com/nova-archive/nova/internal/envelope"
 	fedcoord "github.com/nova-archive/nova/internal/federation/coordinator"
 	"github.com/nova-archive/nova/internal/federation/tokens"
+	fedtransport "github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/federation/wire"
 	"github.com/nova-archive/nova/internal/ipfs"
 	"github.com/nova-archive/nova/internal/secret"
@@ -418,6 +420,19 @@ func run() error {
 			fedSrv.SetSourceDeps(signer, backend, time.Now())
 			slog.Info("federation repair-token signer loaded; coordinator-as-source enabled")
 		}
+		// Coordinator-as-client identity (P2-M4.1): load the nova://coordinator/<uuid>
+		// mTLS client cert for outbound donor read-source connections. Graceful
+		// degradation — if the operator has not yet provisioned a client cert (common
+		// on a fresh M4 deployment being upgraded to M4.1), log a hint and continue;
+		// the donor-fetch tier (Task 7) will degrade to 503 until the cert is present.
+		if clientTLS, cerr := loadCoordinatorClientTLS(caPEM, fed); cerr != nil {
+			slog.Warn("federation client identity not loaded; donor-fetch tier disabled until provisioned",
+				"err", cerr,
+				"hint", "run: novactl node issue-coordinator-client --dir <ca-dir> --out <out-dir>; set federation.federation_client_cert_path")
+		} else {
+			_ = clientTLS // stored for use by Task 7 donor-fetch client
+			slog.Info("federation client identity loaded; coordinator-as-client enabled")
+		}
 		if err := fedSrv.Listen(); err != nil {
 			return fmt.Errorf("federation listen %s: %w", fed.ListenAddr, err)
 		}
@@ -459,6 +474,50 @@ func isLoopback(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// coordinatorClientKeyEnv / coordinatorClientKeyFileEnv are the secret-chain
+// env vars for the coordinator federation client private key (P2-M4.1).
+// The mount-path fallback mirrors the repair-signing-key pattern.
+const (
+	coordinatorClientKeyEnv          = "NOVA_FEDERATION_CLIENT_KEY"
+	coordinatorClientKeyFileEnv      = "NOVA_FEDERATION_CLIENT_KEY_FILE"
+	coordinatorClientKeyDefaultMount = "/run/secrets/federation-client-key"
+)
+
+// loadCoordinatorClientTLS builds the *tls.Config for the coordinator acting
+// as an mTLS client towards donor read-source endpoints (P2-M4.1). It mirrors
+// the repair-signing-key graceful-load pattern: absent material is NOT a fatal
+// error; the caller logs a hint and the donor-fetch tier degrades to 503.
+//
+// Key precedence (secret chain):
+//  1. NOVA_FEDERATION_CLIENT_KEY (inline PEM or base64)
+//  2. NOVA_FEDERATION_CLIENT_KEY_FILE (path to PEM key file)
+//  3. federation.federation_client_key_path (operator.yaml field)
+//  4. /run/secrets/federation-client-key (default Docker-secret mount)
+//
+// The cert is read from federation.federation_client_cert_path. Both must be
+// present; if either is missing an error is returned for graceful degradation.
+func loadCoordinatorClientTLS(caPEM []byte, fed config.Federation) (*tls.Config, error) {
+	certPath := fed.FederationClientCertPath
+	if certPath == "" {
+		return nil, fmt.Errorf("federation.federation_client_cert_path not set")
+	}
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("federation client cert: %w", err)
+	}
+	// Key: try env chain first, then the explicit config path, then the default mount.
+	mountPath := fed.FederationClientKeyPath
+	if mountPath == "" {
+		mountPath = coordinatorClientKeyDefaultMount
+	}
+	keyVal, _, err := secret.ResolveSecret(coordinatorClientKeyEnv, coordinatorClientKeyFileEnv, mountPath)
+	if err != nil {
+		return nil, fmt.Errorf("federation client key: %w", err)
+	}
+	keyPEM := []byte(keyVal)
+	return fedtransport.CoordinatorClientTLS(caPEM, certPEM, keyPEM)
 }
 
 // buildAuthConfig assembles the coordinator's auth wiring from the environment.

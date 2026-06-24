@@ -22,13 +22,15 @@ var nodeTemplates embed.FS
 // (revoke/rotate-cert/list) are added in a later task.
 func cmdNode(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: novactl node <ca-init|issue|revoke|rotate-cert|list|nebula-template>")
+		return fmt.Errorf("usage: novactl node <ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|nebula-template>")
 	}
 	switch args[0] {
 	case "ca-init":
 		return cmdNodeCAInit(args[1:])
 	case "issue":
 		return cmdNodeIssue(args[1:])
+	case "issue-coordinator-client":
+		return cmdNodeIssueCoordinatorClient(args[1:])
 	case "revoke":
 		return cmdNodeRevoke(args[1:])
 	case "rotate-cert":
@@ -151,6 +153,58 @@ func cmdNodeIssue(args []string) error {
 	}
 	fmt.Printf("issued donor cert for %s\n  node_id:     %s\n  fingerprint: %s\n  bundle:      %s\n",
 		*name, nodeID.String(), leafFingerprint(certPEM), outDir)
+	return nil
+}
+
+// cmdNodeIssueCoordinatorClient issues a coordinator federation client cert
+// (nova://coordinator/<uuid> URI SAN) for use when the coordinator pulls blobs
+// from donor read-source endpoints (P2-M4.1). The UUID is fresh per issuance.
+// No nodes row is created — this identity is coordinator-only, not a donor.
+//
+// Usage: novactl node issue-coordinator-client [--dir CA_DIR] [--out OUT_DIR]
+func cmdNodeIssueCoordinatorClient(args []string) error {
+	fs := flag.NewFlagSet("node issue-coordinator-client", flag.ContinueOnError)
+	dir := fs.String("dir", ".", "directory holding federation-ca.crt + federation-ca.key")
+	out := fs.String("out", "", "output dir for the coordinator client bundle (default ./coordinator-client)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	outDir := *out
+	if outDir == "" {
+		outDir = filepath.Join(".", "coordinator-client")
+	}
+	caCertPEM, err := os.ReadFile(filepath.Join(*dir, "federation-ca.crt"))
+	if err != nil {
+		return err
+	}
+	caKeyPEM, err := os.ReadFile(filepath.Join(*dir, "federation-ca.key"))
+	if err != nil {
+		return err
+	}
+	coordID := uuid.New()
+	certPEM, keyPEM, err := ca.IssueCoordinatorClientCert(caCertPEM, caKeyPEM, coordID)
+	if err != nil {
+		return err
+	}
+	files := map[string][]byte{
+		"federation-client.crt": certPEM,
+		"federation-client.key": keyPEM,
+		"federation-ca.crt":     caCertPEM,
+		"coordinator-client-manifest.json": []byte(fmt.Sprintf(
+			"{\n  \"coordinator_id\": %q,\n  \"fingerprint\": %q\n}\n",
+			coordID.String(), leafFingerprint(certPEM))),
+	}
+	for fn, data := range files {
+		perm := os.FileMode(0o644)
+		if filepath.Ext(fn) == ".key" {
+			perm = 0o600
+		}
+		if err := writeNodeFile(filepath.Join(outDir, fn), data, perm); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("issued coordinator client cert\n  coordinator_id: %s\n  fingerprint:    %s\n  bundle:         %s\n",
+		coordID.String(), leafFingerprint(certPEM), outDir)
 	return nil
 }
 
