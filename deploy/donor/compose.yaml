@@ -17,17 +17,40 @@ services:
       - ./nebula:/etc/nebula:ro
     restart: unless-stopped
 
+  kubo:
+    # Hardened Kubo sidecar holding the replica-ciphertext blockstore (P2-M4).
+    # The donor pins through this over the loopback API (node.yaml kubo_api_addr:
+    # http://127.0.0.1:5001) — nova-node never embeds Kubo. Shares the Nebula
+    # network namespace so the API is reachable on 127.0.0.1 and is NOT published.
+    # MUST be hardened per docs/specs/KUBO_HARDENING.md: private swarm key
+    # (Routing=none / no public DHT / no public bootstrap), API/Gateway bound to
+    # loopback only. Pin a digest in production.
+    image: ipfs/kubo:latest
+    network_mode: "service:nebula"
+    depends_on:
+      - nebula
+    environment:
+      - IPFS_SWARM_KEY_FILE=/run/secrets/ipfs_swarm_key
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - kubo-data:/data/ipfs
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   nova-node:
     build:
       context: ../..
       dockerfile: docker/node.Dockerfile
     image: nova-node:dev
-    # Share the Nebula network namespace so the donor binds the overlay address.
+    # Share the Nebula network namespace so the donor binds the overlay address
+    # AND reaches the Kubo sidecar on loopback (kubo_api_addr).
     network_mode: "service:nebula"
     # Start-order only (no health gate yet — see the nebula service note). M2
     # adds a real Nebula readiness condition.
     depends_on:
       - nebula
+      - kubo
     read_only: true
     tmpfs:
       - /tmp
@@ -46,3 +69,4 @@ services:
 
 volumes:
   node-data:
+  kubo-data:

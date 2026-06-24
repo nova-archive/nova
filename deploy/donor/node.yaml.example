@@ -15,11 +15,27 @@ nebula_key_path:      /run/secrets/nebula_key
 # Private-IPFS swarm key (shared with the operator's swarm).
 swarm_key_path: /run/secrets/ipfs_swarm_key
 
-# Where replica ciphertext is stored (created if absent).
+# Where the donor's durable local state (registration / cursor / desired set /
+# verify-ack progress, all atomic-JSON under <storage_dir>/state/) is kept.
+# Created if absent. The replica ciphertext blockstore lives in the Kubo
+# sidecar's own repo (see kubo_api_addr), not here.
 storage_dir: /var/lib/nova-node/data
 
+# Kubo sidecar HTTP API (loopback). The donor NEVER embeds Kubo; it pins replica
+# ciphertext through a hardened Kubo sidecar over this loopback API, sharing
+# Nova's deterministic import parameters so root CIDs match the coordinator's
+# bit-for-bit (P2-M4). Run a hardened Kubo (private swarm key, no public ports)
+# reachable here.
+kubo_api_addr: http://127.0.0.1:5001
+
+# Maximum bytes of replica ciphertext this donor will pin (P2-M4). 0 = uncapped;
+# when set, a fetch that would exceed it is refused (fail reason out_of_space).
+# 500 GiB shown.
+storage_max_bytes: 536870912000
+
 # Authoritative daily egress budget (bytes/day). The donor refuses work beyond
-# this regardless of coordinator scheduling (D11). 50 GiB shown.
+# this regardless of coordinator scheduling (D11). First exercised when the donor
+# serves as a repair SOURCE in P2-M5. 50 GiB shown.
 bandwidth_budget_bytes_per_day: 53687091200
 
 # Operator-declared anti-affinity hints (informational until operator-verified

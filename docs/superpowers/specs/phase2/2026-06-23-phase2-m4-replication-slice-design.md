@@ -213,6 +213,21 @@ Concretely:
   parameters and therefore produce **bit-identical root CIDs**. (They live in
   `package ipfs` today, which also contains the Kubo-importing `embedded.go`;
   Go compiles the whole package, so the donor cannot import them in place.)
+- **Donor CID comparison is canonical-string equality, not go-cid semantic
+  equality** (decided 2026-06-23 from the boundary-gate output). `transfer.Verify`
+  compares the donor-computed root CID **string** to the assigned CID string
+  (`root != cid` ⇒ `cid_mismatch`); it does **not** import `go-cid`. Wiring
+  `go-cid` into the donor pulled ~15 third-party packages (the full `go-multihash`
+  registration tree — blake3/sha3/murmur3/blake2 — plus multibase, base32/36/58,
+  varint, cpuid, x/crypto, x/sys) into the `cmd/node` graph, contradicting the
+  donor's deliberately-minimal deny-by-default boundary. This is sound because
+  both sides compute roots from the **same shared `importspec`** (cid-version=1,
+  sha2-256, raw-leaves, size-262144) and Kubo emits canonical CIDv1 base32, so a
+  real match is byte-identical. Residual risk (a future heterogeneous importer or
+  alternate multibase emitting a different string for the same CID) is acceptable
+  for M4 and can be revisited behind a narrow normalization helper / conformance
+  test if a later milestone needs it. The only donor-boundary allowlist addition
+  is `internal/ipfs/importspec`.
 - Implement a donor-local Kubo HTTP client under **`internal/node/ipfsclient`**
   that mirrors `EmbeddedBackend` **exactly**: `AddDeterministic` branches on
   `importspec.ShouldUseRawCodec(len)` — `/api/v0/block/put?cid-codec=raw&mhtype=sha2-256&pin=true`

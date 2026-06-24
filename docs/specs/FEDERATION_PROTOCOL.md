@@ -279,6 +279,19 @@ Response `204 No Content`.
 
 ## Repair transport (Phase 2)
 
+> **P2-M4 status (2026-06-23).** P2-M4 implements **coordinator-as-source only**:
+> the coordinator serves `GET /fed/v1/blob/{cid}` from its origin and the donor is
+> a fetch-only client. The **donor-as-source inbound server** and **donor↔donor
+> repair** described below are **P2-M5** (the healing scheduler is their trigger).
+> The Ed25519 mint, source-side token verify (`source_node_id` = the reserved
+> coordinator source identity), `source_boot_time` + single-use `jti` replay
+> defense, and `max_bytes` enforcement all ship in M4 as reusable seams. In M4 the
+> destination donor verifies by deterministic re-import + **canonical CID-string
+> equality** (it is `go-cid`-free to keep the donor dependency boundary minimal);
+> both sides share Nova's deterministic import parameters, so a real match is
+> byte-identical. The D11 authoritative egress budget is first debited in M5 when
+> a donor serves as a source.
+
 The original Phase 0 spec said donors fetch via `ipfs pin add`,
 relying on Bitswap to choose a peer. That defeats the orchestrator's
 bandwidth-budget guarantee: Bitswap may pull from a residential
