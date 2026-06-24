@@ -24,10 +24,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nova-archive/nova/internal/federation/replay"
 	"github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/node/agent"
+	"github.com/nova-archive/nova/internal/node/bandwidth"
 	nodeconfig "github.com/nova-archive/nova/internal/node/config"
 	"github.com/nova-archive/nova/internal/node/ipfsclient"
+	"github.com/nova-archive/nova/internal/node/source"
 	"github.com/nova-archive/nova/internal/node/state"
 )
 
@@ -71,6 +74,62 @@ func run(args []string, stdout, stderr io.Writer) error {
 	default:
 		return serve(cfg, stdout)
 	}
+}
+
+// startReadSource builds the M4.1 inbound read-source mTLS server + listener
+// when configured. It returns ok=false (and nil error) when read-source is not
+// configured, or when the donor has not yet registered (node_id unknown) — in
+// both cases the donor stays replication-only this boot. It binds synchronously
+// (fail-fast) like the health listener. The listener reuses the donor's
+// EXISTING federation cert/key/CA, but here as the SERVER side
+// (RequireAndVerifyClientCert) so only the coordinator's federation cert is
+// accepted.
+func startReadSource(
+	cfg *nodeconfig.Config,
+	caPEM, certPEM, keyPEM []byte,
+	regStore state.RegistrationStore,
+	pinner source.Pinner,
+	progress source.ProgressLookup,
+	keyProvider source.PubKeyProvider,
+) (*http.Server, net.Listener, bool, error) {
+	if cfg.SourceReadListenAddr == "" {
+		return nil, nil, false, nil // read-source not configured: replication-only
+	}
+	reg, ok, err := regStore.LoadRegistration(context.Background())
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("read-source: load registration: %w", err)
+	}
+	if !ok || reg.NodeID == "" {
+		// Not yet registered: the source server would refuse every request
+		// (node_id binding can't match). Start it on the next boot instead.
+		slog.Info("node.source.deferred", "reason", "not_registered_yet")
+		return nil, nil, false, nil
+	}
+	tlsCfg, err := transport.ServerTLSConfig(caPEM, certPEM, keyPEM)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("read-source server tls: %w", err)
+	}
+	handler := source.NewServer(source.Deps{
+		Pinner:      pinner,
+		Budget:      bandwidth.NewDailyBucket(cfg.EgressBudgetBytesPerDay, time.Now()),
+		PubKey:      keyProvider,
+		Progress:    progress,
+		NodeID:      reg.NodeID,
+		BootTime:    time.Now(),
+		ReplayCache: replay.New(),
+	})
+	srv := &http.Server{
+		Handler:           handler,
+		TLSConfig:         tlsCfg,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	inner, err := net.Listen("tcp", cfg.SourceReadListenAddr)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("read-source listen %s: %w", cfg.SourceReadListenAddr, err)
+	}
+	ln := transport.NewTLSListener(inner, tlsCfg)
+	return srv, ln, true, nil
 }
 
 func probeHealth(addr string) error {
@@ -150,11 +209,37 @@ func serve(cfg *nodeconfig.Config, stdout io.Writer) error {
 		time.Duration(cfg.HeartbeatIntervalSeconds())*time.Second,
 		time.Duration(cfg.PinsPollIntervalSeconds())*time.Second)
 	ag = agent.WithSource(ag, client, pinner, progress, cfg.StorageMaxBytes)
+
+	// M4.1 read-source: the agent captures the coordinator's repair pubkey from
+	// each heartbeat into this provider; the inbound source server reads it.
+	keyProvider := &source.KeyProvider{}
+	ag = agent.WithPubKeySink(ag, keyProvider)
+
 	go func() {
 		if e := ag.Run(ctx); e != nil && ctx.Err() == nil {
 			slog.Error("nova-node agent stopped", "err", e)
 		}
 	}()
+
+	// M4.1 read-source server: a SEPARATE Nebula-bound mTLS listener distinct
+	// from the /health mux. Only started when configured AND this donor already
+	// knows its node_id (from a persisted registration) — the verify chain binds
+	// read-grants to the donor's node_id, so a not-yet-registered donor cannot
+	// serve until its next boot. Fail-closed by construction.
+	if srcSrv, srcLn, ok, serr := startReadSource(cfg, caPEM, certPEM, keyPEM, regStore, pinner, progress, keyProvider); serr != nil {
+		return serr
+	} else if ok {
+		defer srcSrv.Close()
+		fmt.Fprintf(stdout, "nova-node: read-source on %s\n", cfg.SourceReadListenAddr)
+		go func() {
+			if e := srcSrv.Serve(srcLn); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				select {
+				case srvErr <- e:
+				default:
+				}
+			}
+		}()
+	}
 
 	var runErr error
 	select {

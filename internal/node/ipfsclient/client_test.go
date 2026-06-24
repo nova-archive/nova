@@ -15,11 +15,16 @@ import (
 )
 
 // fakeKubo records the path + query of the last add-family call and serves
-// canned responses for block/put, add, pin/ls, pin/rm, repo/stat.
+// canned responses for block/put, add, pin/ls, pin/rm, repo/stat, cat.
 type fakeKubo struct {
 	addPath  string
 	addQuery url.Values
 	pinned   map[string]bool
+	// catPath/catQuery record the last read (cat) call; catBody is the canned
+	// envelope the fake serves back for any cat request.
+	catPath  string
+	catQuery url.Values
+	catBody  []byte
 }
 
 func newFakeKubo(t *testing.T) (*fakeKubo, *httptest.Server) {
@@ -34,6 +39,9 @@ func newFakeKubo(t *testing.T) (*fakeKubo, *httptest.Server) {
 			k.addPath, k.addQuery = r.URL.Path, r.URL.Query()
 			io.Copy(io.Discard, r.Body)
 			json.NewEncoder(w).Encode(map[string]string{"Hash": "bafyDAGPB"})
+		case "/api/v0/cat":
+			k.catPath, k.catQuery = r.URL.Path, r.URL.Query()
+			w.Write(k.catBody)
 		case "/api/v0/pin/ls":
 			if k.pinned[r.URL.Query().Get("arg")] {
 				json.NewEncoder(w).Encode(map[string]any{"Keys": map[string]any{r.URL.Query().Get("arg"): map[string]string{"Type": "recursive"}}})
@@ -133,5 +141,68 @@ func TestHasMeansPinnedAndUnpin(t *testing.T) {
 	}
 	if n != 4096 {
 		t.Fatalf("repo size %d", n)
+	}
+}
+
+// TestGetUsesCatAndPassesThrough confirms Get hits /api/v0/cat?arg=<cid> and
+// returns the served bytes verbatim, for BOTH a small (raw) and a >1 MiB
+// (dag-pb) envelope. The real-Kubo round-trip (AddDeterministic→Get→
+// AddDeterministic == same CID) is a deferred integration check, mirroring how
+// M4 deferred the block/put round-trip — here we assert endpoint+params+exact
+// byte passthrough against the mock API.
+func TestGetUsesCatAndPassesThrough(t *testing.T) {
+	cases := []struct {
+		name string
+		cid  string
+		body []byte
+	}{
+		{"small_raw", "bafyRAW", bytes.Repeat([]byte("r"), 1024)},
+		{"large_dagpb", "bafyDAGPB", bytes.Repeat([]byte("d"), (1<<20)+7)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			k, srv := newFakeKubo(t)
+			k.catBody = tc.body
+			c := ipfsclient.New(srv.URL)
+			rc, err := c.Get(context.Background(), tc.cid)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			defer rc.Close()
+			got, err := io.ReadAll(rc)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if !bytes.Equal(got, tc.body) {
+				t.Fatalf("body mismatch: got %d bytes want %d", len(got), len(tc.body))
+			}
+			if k.catPath != "/api/v0/cat" {
+				t.Fatalf("expected /api/v0/cat, got %q", k.catPath)
+			}
+			if k.catQuery.Get("arg") != tc.cid {
+				t.Fatalf("cat arg = %q, want %q", k.catQuery.Get("arg"), tc.cid)
+			}
+		})
+	}
+}
+
+// TestGetErrorsOnNon200 confirms a non-200 from the API surfaces as an error and
+// no body is returned (a missing/unpinned CID must not look like an empty blob).
+func TestGetErrorsOnNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		io.WriteString(w, `{"Message":"no link named"}`)
+	}))
+	t.Cleanup(srv.Close)
+	c := ipfsclient.New(srv.URL)
+	rc, err := c.Get(context.Background(), "bafyMISSING")
+	if err == nil {
+		if rc != nil {
+			rc.Close()
+		}
+		t.Fatal("expected error on non-200, got nil")
+	}
+	if rc != nil {
+		t.Fatal("expected nil ReadCloser on error")
 	}
 }

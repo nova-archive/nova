@@ -129,3 +129,50 @@ func TestKuboAPIAddrExplicit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "http://127.0.0.1:5099", cfg.KuboAPIAddr)
 }
+
+func TestEgressBudgetDefaultsToBandwidthBudget(t *testing.T) {
+	// When source_read_listen_addr is set but egress_budget_bytes_per_day is
+	// unset, the egress budget defaults to bandwidth_budget_bytes_per_day so a
+	// read-source donor never runs with a refuse-all (zero) bucket.
+	yaml, _ := writeValid(t)
+	yaml += "source_nebula_addr: 10.100.0.5:9200\n" +
+		"source_read_listen_addr: 0.0.0.0:9200\n"
+	cfg, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.NoError(t, err)
+	require.Equal(t, int64(53687091200), cfg.EgressBudgetBytesPerDay)
+	require.Equal(t, "0.0.0.0:9200", cfg.SourceReadListenAddr)
+}
+
+func TestExplicitEgressBudgetHonored(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml += "source_nebula_addr: 10.100.0.5:9200\n" +
+		"source_read_listen_addr: 0.0.0.0:9200\n" +
+		"egress_budget_bytes_per_day: 12345\n"
+	cfg, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.NoError(t, err)
+	require.Equal(t, int64(12345), cfg.EgressBudgetBytesPerDay)
+}
+
+func TestSourceNebulaAddrRequiresReadListenAddr(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml += "source_nebula_addr: 10.100.0.5:9200\n" // advertised but no listener bind
+	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.ErrorContains(t, err, "source_read_listen_addr")
+}
+
+func TestSourceReadListenAddrMustBeHostPort(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml += "source_nebula_addr: 10.100.0.5:9200\n" +
+		"source_read_listen_addr: not-a-host-port\n"
+	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.ErrorContains(t, err, "source_read_listen_addr")
+}
+
+func TestRejectsNegativeEgressBudget(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml += "source_nebula_addr: 10.100.0.5:9200\n" +
+		"source_read_listen_addr: 0.0.0.0:9200\n" +
+		"egress_budget_bytes_per_day: -1\n"
+	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.ErrorContains(t, err, "egress_budget_bytes_per_day")
+}

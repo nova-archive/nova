@@ -117,6 +117,34 @@ func (c *Client) unixfsAdd(ctx context.Context, envelope []byte) (string, error)
 	return out.Hash, nil
 }
 
+// Get returns the reassembled envelope bytes for a pinned CID via the Kubo
+// sidecar HTTP API. It uses /api/v0/cat?arg=<cid> for BOTH import paths:
+//
+//   - dag-pb/UnixFS roots (from unixfsAdd): cat walks the DAG and streams the
+//     reassembled file bytes — exactly the original envelope.
+//   - raw-codec single blocks (from blockPutRaw): the envelope IS the block's
+//     content, and cat on a raw-codec CID returns that content verbatim. (cat
+//     resolves the CID as a UnixFS path; a raw leaf's bytes are its file bytes,
+//     so no /api/v0/block/get branch is needed — confirmed by the round-trip
+//     test: Get(AddDeterministic(env)) re-AddDeterministic to the same CID for
+//     both the small-raw and >1 MiB dag-pb cases.)
+//
+// The returned ReadCloser streams the body; callers MUST Close it. A non-200
+// status is surfaced as an error with no body (a missing/unpinned CID must not
+// masquerade as an empty envelope).
+func (c *Client) Get(ctx context.Context, cidStr string) (io.ReadCloser, error) {
+	resp, err := c.post(ctx, "/api/v0/cat", url.Values{"arg": {cidStr}}, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("ipfsclient: cat status %d", resp.StatusCode)
+	}
+	return resp.Body, nil
+}
+
 // Has reports whether the CID is RECURSIVELY PINNED (not merely present),
 // mirroring EmbeddedBackend.Has (embedded.go:343). A non-200 from pin/ls means
 // not pinned.

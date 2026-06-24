@@ -15,6 +15,7 @@ ALLOWED=(
   "$MOD/internal/node"
   "$MOD/internal/federation/wire"
   "$MOD/internal/federation/transport"
+  "$MOD/internal/federation/replay"   # P2-M4.1: donor read-source single-use jti replay cache + boot-floor (pure stdlib sync+time)
   "$MOD/internal/ipfs/importspec"   # P2-M4: shared deterministic-import params (no Kubo, no go-cid)
   "gopkg.in/yaml.v3"   # donor config parsing — the only third-party runtime dep
 )

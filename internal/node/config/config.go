@@ -42,9 +42,11 @@ type Config struct {
 	BandwidthBudgetBytesPerDay int64         `yaml:"bandwidth_budget_bytes_per_day"`
 	FailureDomain              FailureDomain `yaml:"failure_domain"`
 	HealthListenAddr           string        `yaml:"health_listen_addr"`
-	StorageMaxBytes            int64         `yaml:"storage_max_bytes"`    // 0 ⇒ unlimited (M4 enforces out_of_space)
-	KuboAPIAddr                string        `yaml:"kubo_api_addr"`        // loopback Kubo sidecar HTTP API
-	SourceNebulaAddr           string        `yaml:"source_nebula_addr"`   // M4.1: address coordinator uses to reach this donor's read-source server; empty = not a read source
+	StorageMaxBytes            int64         `yaml:"storage_max_bytes"`           // 0 ⇒ unlimited (M4 enforces out_of_space)
+	KuboAPIAddr                string        `yaml:"kubo_api_addr"`               // loopback Kubo sidecar HTTP API
+	SourceNebulaAddr           string        `yaml:"source_nebula_addr"`          // M4.1: address coordinator uses to reach this donor's read-source server; empty = not a read source
+	SourceReadListenAddr       string        `yaml:"source_read_listen_addr"`     // M4.1: bind address for the read-source mTLS listener (DISTINCT from the advertised source_nebula_addr); required when source_nebula_addr is set
+	EgressBudgetBytesPerDay    int64         `yaml:"egress_budget_bytes_per_day"` // M4.1: authoritative D11 read-source egress budget; defaults to bandwidth_budget_bytes_per_day when unset
 }
 
 // LoadFromFile reads, parses, defaults, and validates a node.yaml.
@@ -68,8 +70,15 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	if c.KuboAPIAddr == "" {
 		c.KuboAPIAddr = "http://127.0.0.1:5001"
 	}
+	// M4.1: a read-source donor with no explicit egress budget inherits the
+	// general bandwidth budget. This is applied AFTER validate() rejects a
+	// negative explicit value, so an unset (0) egress budget never reaches a
+	// refuse-all bucket (NewDailyBucket(0) refuses all work).
 	if err := c.validate(); err != nil {
 		return nil, err
+	}
+	if c.SourceNebulaAddr != "" && c.EgressBudgetBytesPerDay == 0 {
+		c.EgressBudgetBytesPerDay = c.BandwidthBudgetBytesPerDay
 	}
 	return &c, nil
 }
@@ -111,6 +120,20 @@ func (c *Config) validate() error {
 	}
 	if err := checkWritableDir(c.StorageDir); err != nil {
 		return err
+	}
+	// M4.1 read-source: an advertised source address is meaningless without a
+	// listener to bind, and a negative egress budget is invalid. The two are
+	// DISTINCT (advertised overlay address vs local bind address) by design.
+	if c.SourceNebulaAddr != "" {
+		if c.SourceReadListenAddr == "" {
+			return fmt.Errorf("node config: source_read_listen_addr is required when source_nebula_addr is set")
+		}
+		if _, _, err := net.SplitHostPort(c.SourceReadListenAddr); err != nil {
+			return fmt.Errorf("node config: source_read_listen_addr %q is not host:port: %w", c.SourceReadListenAddr, err)
+		}
+	}
+	if c.EgressBudgetBytesPerDay < 0 {
+		return fmt.Errorf("node config: egress_budget_bytes_per_day must be >= 0")
 	}
 	return nil
 }

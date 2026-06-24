@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"log/slog"
 	"time"
@@ -15,6 +16,14 @@ import (
 	"github.com/nova-archive/nova/internal/node/state"
 	"github.com/nova-archive/nova/internal/node/transfer"
 )
+
+// PubKeySink receives the coordinator's repair-token public key as it is
+// delivered on each heartbeat (D-M4.1-18). Satisfied by *source.KeyProvider.
+// The agent does not import the source package; this tiny interface keeps the
+// donor dependency boundary clean and the wiring testable.
+type PubKeySink interface {
+	Set(pub ed25519.PublicKey)
+}
 
 // Client is the donor's view of the coordinator federation API. The real impl is
 // agent.HTTPClient (mTLS); tests inject a fake.
@@ -55,6 +64,10 @@ type Agent struct {
 
 	// sources caches the most-recent *wire.ChangeSource per CID, set by syncOnce.
 	sources map[string]*wire.ChangeSource
+
+	// pubkeySink, when set, receives the coordinator repair pubkey from each
+	// heartbeat (M4.1 read-source). nil when the donor is not a read source.
+	pubkeySink PubKeySink
 }
 
 // New constructs an Agent. hb/poll are the initial heartbeat + pins-poll cadences
@@ -73,6 +86,13 @@ func WithSource(a *Agent, fetcher transfer.SourceFetcher, pinner blockstore, pro
 	a.pinner = pinner
 	a.progress = progress
 	a.storageMax = storageMax
+	return a
+}
+
+// WithPubKeySink wires the M4.1 read-source pubkey sink onto an existing Agent
+// so each heartbeat's RepairTokenPublicKey is captured for the source server.
+func WithPubKeySink(a *Agent, sink PubKeySink) *Agent {
+	a.pubkeySink = sink
 	return a
 }
 
@@ -95,6 +115,22 @@ func (a *Agent) heartbeatReq(freeBytes, storedBytes int64) wire.HeartbeatRequest
 		StoredBytes:      storedBytes,
 		SourceNebulaAddr: a.cfg.SourceNebulaAddr,
 	}
+}
+
+// captureRepairPubKey decodes the coordinator's repair pubkey from a heartbeat
+// response and installs it in the sink (D-M4.1-18). It is a no-op when the donor
+// is not a read source (no sink) or the field is empty (pre-M4 coordinator). A
+// malformed key is logged and ignored, leaving the previous key in place.
+func (a *Agent) captureRepairPubKey(wireKey string) {
+	if a.pubkeySink == nil || wireKey == "" {
+		return
+	}
+	pub, err := wire.DecodePublicKey(wireKey)
+	if err != nil {
+		slog.Warn("node.source.bad_repair_pubkey", "err", err)
+		return
+	}
+	a.pubkeySink.Set(pub)
 }
 
 // Run blocks until ctx is cancelled.
@@ -140,6 +176,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				slog.Warn("nova-node heartbeat failed", "err", err)
 				continue
 			}
+			a.captureRepairPubKey(resp.RepairTokenPublicKey)
 			if u := resp.ConfigUpdates; u != nil {
 				if u.HeartbeatIntervalSeconds > 0 {
 					if d := time.Duration(u.HeartbeatIntervalSeconds) * time.Second; d != a.hbInterval {

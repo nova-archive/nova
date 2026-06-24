@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -79,5 +80,55 @@ func TestDonorAdvertisesReadSource(t *testing.T) {
 	}
 	if hbReq.SourceNebulaAddr != addr {
 		t.Fatalf("heartbeat SourceNebulaAddr = %q, want %q", hbReq.SourceNebulaAddr, addr)
+	}
+}
+
+// pubkeyClient serves a fixed RepairTokenPublicKey on every heartbeat.
+type pubkeyClient struct {
+	captureClient
+	wireKey string
+}
+
+func (c *pubkeyClient) Heartbeat(_ context.Context, req wire.HeartbeatRequest) (wire.HeartbeatResponse, error) {
+	c.lastHBReq.Store(&req)
+	return wire.HeartbeatResponse{RepairTokenPublicKey: c.wireKey}, nil
+}
+
+// fakeSink records the last pubkey the agent installed.
+type fakeSink struct {
+	last atomic.Pointer[ed25519.PublicKey]
+}
+
+func (s *fakeSink) Set(pub ed25519.PublicKey) { p := pub; s.last.Store(&p) }
+
+// TestAgentCapturesRepairPubKey verifies the heartbeat loop decodes
+// HeartbeatResponse.RepairTokenPublicKey and feeds it to the injected sink
+// (D-M4.1-18), so the source server learns the coordinator's verify key.
+func TestAgentCapturesRepairPubKey(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cc := &pubkeyClient{wireKey: wire.EncodePublicKey(pub)}
+	sink := &fakeSink{}
+	cfg := &nodeconfig.Config{BandwidthBudgetBytesPerDay: 1}
+	a := New(cfg,
+		state.NewFileRegistrationStore(t.TempDir()),
+		state.NewFileStore(t.TempDir()),
+		state.NewFileAssignmentStore(t.TempDir()),
+		cc, 20*time.Millisecond, time.Hour,
+	)
+	WithPubKeySink(a, sink)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = a.Run(ctx)
+
+	got := sink.last.Load()
+	if got == nil {
+		t.Fatal("sink never received a pubkey")
+	}
+	if !got.Equal(pub) {
+		t.Fatal("captured pubkey does not match the heartbeat key")
 	}
 }
