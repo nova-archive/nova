@@ -111,3 +111,26 @@ func (f Federation) MaxTransfer() int64 {
 	}
 	return 100 * 1024 * 1024
 }
+
+// SourceStaleSeconds is the donor-freshness window the coordinator's donor-fetch
+// tier (P2-M4.1) passes to ListSourceableHolders: a holder whose last_seen_at is
+// older than this is not considered sourceable. It is derived from the heartbeat
+// interval and the suspect threshold (a node missing this many heartbeats is
+// already suspect), with a small grace multiplier, clamped to a sane floor of
+// 10 minutes so a brief poll gap never empties the candidate set.
+func (f Federation) SourceStaleSeconds() float64 {
+	hb := f.HeartbeatIntervalSeconds
+	if hb <= 0 {
+		hb = DefaultHeartbeatIntervalSeconds
+	}
+	misses := f.SuspectAfterMissedHeartbeats
+	if misses <= 0 {
+		misses = 3
+	}
+	// One extra interval of grace beyond the suspect threshold.
+	secs := float64(hb) * float64(misses+1)
+	if secs < 600 {
+		secs = 600
+	}
+	return secs
+}

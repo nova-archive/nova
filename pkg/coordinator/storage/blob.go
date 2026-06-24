@@ -28,15 +28,22 @@ type Service struct {
 	assemblyLimit atomic.Int64 // <=0 ⇒ unbounded
 	maxUploadSize atomic.Int64 // <=0 ⇒ unbounded
 	hook          WriteHook
+
+	// donor is the P2-M4.1 donor-backed read tier. nil ⇒ a local cache miss
+	// returns ErrBlobNotFound (pre-M4.1 behavior); non-nil ⇒ a miss triggers a
+	// verified donor fetch. Installed via WithDonorReadSource or
+	// EnableDonorReadSource. Set once at construction/boot; read-only thereafter.
+	donor *donorReadSource
 }
 
 // Option configures a Service. Read-only callers pass none.
 type Option func(*svcOpts)
 
 type svcOpts struct {
-	maxUploadSize int64
-	assemblySize  int
-	hook          WriteHook
+	maxUploadSize   int64
+	assemblySize    int
+	hook            WriteHook
+	donorReadSource *donorReadSource
 }
 
 // WithWriteLimits sets the upload size ceiling (bytes) and the maximum number
@@ -74,6 +81,10 @@ func NewService(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore,
 		backend: backend,
 		ks:      ks,
 		hook:    o.hook,
+	}
+	if o.donorReadSource != nil {
+		o.donorReadSource.q = s.q
+		s.donor = o.donorReadSource
 	}
 	s.assemblyLimit.Store(int64(o.assemblySize))
 	s.maxUploadSize.Store(o.maxUploadSize)
@@ -206,6 +217,16 @@ func (s *Service) OpenBytes(ctx context.Context, v *BlobView) (io.ReadCloser, er
 	c, err := cid.Decode(v.CID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: decode cid: %w", err)
+	}
+	// P2-M4.1: guarantee the bytes are pinned locally before reading. On a local
+	// hit this is a cheap Has + LRU touch; on a miss it either fetches+verifies
+	// from a sourceable donor (and re-pins) or returns a sentinel
+	// (ErrBlobNotFound when no donor tier is configured, ErrNoSourceableHolder
+	// when configured but none can serve). The donor bytes are verified by
+	// AddDeterministic BEFORE the decrypt path below runs — unverified ciphertext
+	// is never unwrapped or served.
+	if err := s.ensureLocal(ctx, c, v); err != nil {
+		return nil, err
 	}
 	rc, err := s.backend.Get(ctx, c)
 	if err != nil {

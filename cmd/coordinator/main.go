@@ -411,27 +411,36 @@ func run() error {
 		// wire the origin backend. Graceful degradation — a federation upgraded
 		// from M3 may not have a key yet; without it the control plane (register/
 		// heartbeat/sync) still runs, the source endpoint returns 503, and no
-		// Source grants are minted until the operator provisions a key.
+		// Source grants are minted until the operator provisions a key. The same
+		// signer mints the read grants the donor-fetch tier (P2-M4.1) presents to
+		// donor read-source endpoints, so it is kept in scope for that wiring.
+		var repairSigner *tokens.Signer
 		if signer, serr := tokens.LoadSigner(fed.RepairSigningKeyPath); serr != nil {
 			slog.Warn("federation repair-signing key not loaded; donor transfer disabled until provisioned",
 				"err", serr,
 				"hint", "set NOVA_FEDERATION_REPAIR_SIGNING_KEY[_FILE] or federation.repair_signing_key_path")
 		} else {
+			repairSigner = signer
 			fedSrv.SetSourceDeps(signer, backend, time.Now())
 			slog.Info("federation repair-token signer loaded; coordinator-as-source enabled")
 		}
 		// Coordinator-as-client identity (P2-M4.1): load the nova://coordinator/<uuid>
-		// mTLS client cert for outbound donor read-source connections. Graceful
-		// degradation — if the operator has not yet provisioned a client cert (common
-		// on a fresh M4 deployment being upgraded to M4.1), log a hint and continue;
-		// the donor-fetch tier (Task 7) will degrade to 503 until the cert is present.
+		// mTLS client cert for outbound donor read-source connections, then enable
+		// the donor-backed read tier behind OpenBytes. Graceful degradation — the
+		// tier is enabled only when BOTH the client cert and the repair signer are
+		// present; otherwise a local cache miss returns 404 (today's behavior) and a
+		// hint is logged. Wired post-construction (the storage service is built in
+		// coordinator.New, before this material is loaded), mirroring SetSourceDeps.
 		if clientTLS, cerr := loadCoordinatorClientTLS(caPEM, fed); cerr != nil {
 			slog.Warn("federation client identity not loaded; donor-fetch tier disabled until provisioned",
 				"err", cerr,
 				"hint", "run: novactl node issue-coordinator-client --dir <ca-dir> --out <out-dir>; set federation.federation_client_cert_path")
+		} else if repairSigner == nil {
+			slog.Warn("donor-fetch tier disabled: client identity present but repair-signing key missing",
+				"hint", "provision the repair-signing key so the coordinator can mint read grants")
 		} else {
-			_ = clientTLS // stored for use by Task 7 donor-fetch client
-			slog.Info("federation client identity loaded; coordinator-as-client enabled")
+			c.Storage().EnableDonorReadSource(clientTLS, repairSigner, fed.RepairTokenTTL(), fed.SourceStaleSeconds())
+			slog.Info("federation client identity loaded; donor-backed read tier enabled")
 		}
 		if err := fedSrv.Listen(); err != nil {
 			return fmt.Errorf("federation listen %s: %w", fed.ListenAddr, err)
