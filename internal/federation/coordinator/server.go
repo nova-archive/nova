@@ -15,6 +15,7 @@ import (
 
 	gocid "github.com/ipfs/go-cid"
 	"github.com/nova-archive/nova/internal/db/gen"
+	"github.com/nova-archive/nova/internal/federation/replay"
 	"github.com/nova-archive/nova/internal/federation/tokens"
 	"github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/federation/wire"
@@ -59,7 +60,7 @@ type Server struct {
 	backend        blobSource
 	signer         *tokens.Signer
 	sourceBootTime time.Time
-	jti            *jtiCache
+	jti            *replay.Cache
 }
 
 // New constructs a federation Server.
@@ -72,7 +73,7 @@ func (s *Server) SetSourceDeps(signer *tokens.Signer, backend blobSource, bootTi
 	s.backend = backend
 	s.sourceBootTime = bootTime
 	if s.jti == nil {
-		s.jti = newJTICache()
+		s.jti = replay.New()
 	}
 }
 

@@ -63,3 +63,55 @@ func TestVerifyRejectsTamperAndExpiry(t *testing.T) {
 		t.Fatal("expected expiry error")
 	}
 }
+
+func TestMintReadGrantRoundTrip(t *testing.T) {
+	seed := make([]byte, 32)
+	for i := range seed {
+		seed[i] = byte(i + 1)
+	}
+	s, err := tokens.NewSignerFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		donorID      = "d1234567-0000-0000-0000-000000000001"
+		cid          = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+		assignmentID = "a-read-grant"
+	)
+	now := time.Now()
+	bootFloor := now.Add(-time.Minute)
+
+	tok, err := s.MintReadGrant(donorID, cid, assignmentID, 1, 1<<20, 5*time.Minute, now, bootFloor)
+	if err != nil {
+		t.Fatalf("MintReadGrant: %v", err)
+	}
+
+	pub, err := wire.DecodePublicKey(s.PublicKeyWire())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := wire.Verify(pub, tok, now)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	if claims.SourceNodeID != donorID {
+		t.Errorf("SourceNodeID = %q, want %q", claims.SourceNodeID, donorID)
+	}
+	if claims.DestNodeID != tokens.ReservedCoordinatorSourceID {
+		t.Errorf("DestNodeID = %q, want %q", claims.DestNodeID, tokens.ReservedCoordinatorSourceID)
+	}
+	if claims.CID != cid {
+		t.Errorf("CID = %q, want %q", claims.CID, cid)
+	}
+	if claims.AssignmentID != assignmentID {
+		t.Errorf("AssignmentID = %q, want %q", claims.AssignmentID, assignmentID)
+	}
+	if claims.JTI == "" {
+		t.Error("JTI must be non-empty")
+	}
+	if claims.ProtocolVersion != wire.ProtocolV1 {
+		t.Errorf("ProtocolVersion = %q, want %q", claims.ProtocolVersion, wire.ProtocolV1)
+	}
+}

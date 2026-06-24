@@ -5,41 +5,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sync"
 	"time"
 
 	gocid "github.com/ipfs/go-cid"
 	"github.com/jackc/pgx/v5"
+	"github.com/nova-archive/nova/internal/federation/replay"
 	"github.com/nova-archive/nova/internal/federation/tokens"
 	"github.com/nova-archive/nova/internal/federation/wire"
 )
-
-// jtiCache is an in-memory single-use replay cache for repair-token jti values
-// (D-M4-9). Entries expire at the token's not_after; combined with the
-// source_boot_time floor, restart leaves no usable replay window.
-type jtiCache struct {
-	mu   sync.Mutex
-	seen map[string]time.Time // jti -> expiry
-}
-
-func newJTICache() *jtiCache { return &jtiCache{seen: map[string]time.Time{}} }
-
-// useOnce returns false if jti was already seen (replay). It also opportunistically
-// sweeps expired entries.
-func (c *jtiCache) useOnce(jti string, exp time.Time, now time.Time) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for k, e := range c.seen {
-		if now.After(e) {
-			delete(c.seen, k)
-		}
-	}
-	if _, ok := c.seen[jti]; ok {
-		return false
-	}
-	c.seen[jti] = exp
-	return true
-}
 
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	node, ok := s.authNode(w, r)
@@ -77,12 +50,12 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Restart-safe replay defense (D-M4-9).
-	if claims.NotBefore < s.sourceBootTime.Unix() {
+	if !replay.BootFloorOK(claims.NotBefore, s.sourceBootTime) {
 		slog.Info("fed.token.rejected", "reason", "pre_boot")
 		writeError(w, http.StatusForbidden, wire.FailReasonSourceUnauthorized, "token predates source boot")
 		return
 	}
-	if !s.jti.useOnce(claims.JTI, time.Unix(claims.NotAfter, 0), now) {
+	if !s.jti.UseOnce(claims.JTI, time.Unix(claims.NotAfter, 0), now) {
 		slog.Info("fed.token.rejected", "reason", "replay", "jti", claims.JTI)
 		writeError(w, http.StatusForbidden, wire.FailReasonSourceUnauthorized, "token already used")
 		return
