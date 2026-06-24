@@ -81,6 +81,7 @@ import (
 	novaimage "github.com/nova-archive/nova/nova-image"
 	"github.com/nova-archive/nova/nova-image/imageproduct"
 	"github.com/nova-archive/nova/pkg/coordinator"
+	"github.com/nova-archive/nova/pkg/coordinator/storage"
 )
 
 // buildVersion is stamped at build time via -ldflags "-X main.buildVersion=..."
@@ -439,7 +440,16 @@ func run() error {
 			slog.Warn("donor-fetch tier disabled: client identity present but repair-signing key missing",
 				"hint", "provision the repair-signing key so the coordinator can mint read grants")
 		} else {
-			c.Storage().EnableDonorReadSource(clientTLS, repairSigner, fed.RepairTokenTTL(), fed.SourceStaleSeconds())
+			c.Storage().EnableDonorReadSource(clientTLS, repairSigner, storage.ReadSourceConfig{
+				TTL:              fed.RepairTokenTTL(),
+				StaleSecs:        fed.SourceStaleSeconds(),
+				Timeout:          fed.ReadSourceTimeout(),
+				Bulkhead:         int64(fed.ReadSourceBulkheadLimit()),
+				PerDonorLimit:    int64(fed.ReadSourcePerDonorFetchLimit()),
+				BreakerThreshold: fed.ReadSourceBreakerThresholdK(),
+				BreakerCooldown:  fed.ReadSourceBreakerCooldown(),
+				MaxFallbacks:     fed.ReadSourceMaxFallbacksPerRequest(),
+			})
 			slog.Info("federation client identity loaded; donor-backed read tier enabled")
 		}
 		if err := fedSrv.Listen(); err != nil {

@@ -134,3 +134,72 @@ func (f Federation) SourceStaleSeconds() float64 {
 	}
 	return secs
 }
+
+// Default donor read-path containment knobs (P2-M4.1 Task 8). These mirror the
+// defaults baked into storage.ReadSourceConfig.withDefaults; both must stay in
+// sync. The donor-backed read tier treats each fetch as a protected integration
+// point: a per-fetch timeout, a coordinator-wide bulkhead, a per-donor
+// concurrency cap, a per-donor circuit breaker, and bounded fallback.
+const (
+	DefaultReadSourceTimeoutSeconds      = 30
+	DefaultReadSourceBulkhead            = 16
+	DefaultReadSourcePerDonorLimit       = 4
+	DefaultReadSourceBreakerThreshold    = 5
+	DefaultReadSourceBreakerCooldownSecs = 30
+	DefaultReadSourceMaxFallbacks        = 3
+)
+
+// ReadSourceTimeout is the per-holder donor fetch+read timeout (default 30s).
+func (f Federation) ReadSourceTimeout() time.Duration {
+	s := f.ReadSourceTimeoutSeconds
+	if s <= 0 {
+		s = DefaultReadSourceTimeoutSeconds
+	}
+	return time.Duration(s) * time.Second
+}
+
+// ReadSourceBulkheadLimit is the coordinator-wide max concurrent donor fetches
+// (default 16).
+func (f Federation) ReadSourceBulkheadLimit() int {
+	if f.ReadSourceBulkhead <= 0 {
+		return DefaultReadSourceBulkhead
+	}
+	return f.ReadSourceBulkhead
+}
+
+// ReadSourcePerDonorFetchLimit is the max concurrent fetches to a single donor
+// (default 4).
+func (f Federation) ReadSourcePerDonorFetchLimit() int {
+	if f.ReadSourcePerDonorLimit <= 0 {
+		return DefaultReadSourcePerDonorLimit
+	}
+	return f.ReadSourcePerDonorLimit
+}
+
+// ReadSourceBreakerThresholdK is the consecutive-failure count that opens a
+// per-donor breaker (default 5).
+func (f Federation) ReadSourceBreakerThresholdK() int {
+	if f.ReadSourceBreakerThreshold <= 0 {
+		return DefaultReadSourceBreakerThreshold
+	}
+	return f.ReadSourceBreakerThreshold
+}
+
+// ReadSourceBreakerCooldown is the half-open delay after a breaker opens
+// (default 30s).
+func (f Federation) ReadSourceBreakerCooldown() time.Duration {
+	s := f.ReadSourceBreakerCooldownSecs
+	if s <= 0 {
+		s = DefaultReadSourceBreakerCooldownSecs
+	}
+	return time.Duration(s) * time.Second
+}
+
+// ReadSourceMaxFallbacksPerRequest is the max donor fetch ATTEMPTS per request
+// (default 3). A breaker SKIP does not consume a fallback.
+func (f Federation) ReadSourceMaxFallbacksPerRequest() int {
+	if f.ReadSourceMaxFallbacks <= 0 {
+		return DefaultReadSourceMaxFallbacks
+	}
+	return f.ReadSourceMaxFallbacks
+}

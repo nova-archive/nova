@@ -33,6 +33,14 @@ var (
 
 	// ErrKeyShredded: encrypted blob whose DEK has been crypto-shredded.
 	ErrKeyShredded = errors.New("storage: encryption key shredded")
+
+	// ErrStagingNotVisible is returned by Resolve when the commit gate hides a
+	// non-committed (still-staging) blob. It is mapped to 404 to avoid an
+	// existence leak — a caller must not be able to distinguish "no such blob"
+	// from "exists but not yet committed". The gate that returns it is Task 11
+	// (the async commit gate); Task 8 only defines the sentinel and wires its
+	// status mapping so the gate can be added without touching the handler.
+	ErrStagingNotVisible = errors.New("storage: blob not yet committed")
 )
 
 // Write-path domain errors (M4). The internal/api layer maps these to status

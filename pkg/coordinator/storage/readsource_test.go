@@ -95,11 +95,19 @@ func (b *echoBackend) Close(context.Context) error  { return nil }
 func (b *echoBackend) Health(context.Context) error { return nil }
 
 // fakeFetcher records its calls and returns canned bytes keyed by addr.
+//
+// gate, when non-nil, lets a test hold every Fetch call inside the fetcher until
+// the test signals (by closing the channel). It is the synchronization hook the
+// single-flight test uses to guarantee N callers are genuinely concurrent before
+// any one of them completes — without it, callers might serialize and the
+// collapse would be untestable.
 type fakeFetcher struct {
-	mu     sync.Mutex
-	byAddr map[string][]byte // addr -> bytes returned
-	err    error             // returned for any addr not in byAddr
-	calls  []fetchCall
+	mu      sync.Mutex
+	byAddr  map[string][]byte // addr -> bytes returned
+	err     error             // returned for any addr not in byAddr
+	calls   []fetchCall
+	gate    chan struct{} // if non-nil, Fetch blocks until this is closed
+	entered chan struct{} // if non-nil, Fetch sends once on entry (before gating)
 }
 
 type fetchCall struct {
@@ -110,7 +118,14 @@ func (f *fakeFetcher) Fetch(_ context.Context, addr, cid, grant string) (io.Read
 	f.mu.Lock()
 	f.calls = append(f.calls, fetchCall{addr: addr, cid: cid, grant: grant})
 	data, ok := f.byAddr[addr]
+	entered, gate := f.entered, f.gate
 	f.mu.Unlock()
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	if gate != nil {
+		<-gate
+	}
 	if !ok {
 		if f.err != nil {
 			return nil, f.err
@@ -124,6 +139,19 @@ func (f *fakeFetcher) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
+}
+
+// callsForAddr counts recorded Fetch calls targeting a specific donor addr.
+func (f *fakeFetcher) callsForAddr(addr string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c.addr == addr {
+			n++
+		}
+	}
+	return n
 }
 
 // fakeQuerier implements donorQuerier without a pool.
@@ -313,4 +341,167 @@ func TestOpenBytesDonorFetchNotConfiguredMissIsNotFound(t *testing.T) {
 	if !errors.Is(err, ErrBlobNotFound) {
 		t.Fatalf("err = %v, want ErrBlobNotFound (today's behavior)", err)
 	}
+}
+
+// testReadSourceCfg returns a permissive containment config for white-box tests:
+// generous timeout/bulkhead so the mechanism under test is the only constraint.
+func testReadSourceCfg() ReadSourceConfig {
+	return ReadSourceConfig{
+		TTL:              time.Minute,
+		StaleSecs:        86400,
+		Timeout:          5 * time.Second,
+		Bulkhead:         16,
+		PerDonorLimit:    4,
+		BreakerThreshold: 5,
+		BreakerCooldown:  30 * time.Second,
+		MaxFallbacks:     3,
+	}
+}
+
+// TestSingleFlightCollapsesMisses launches N concurrent OpenBytes calls for one
+// CID against a single holder. The donor fetch is gated so all N callers are
+// in-flight at the miss before any completes; single-flight must collapse them
+// into exactly one Fetch.
+func TestSingleFlightCollapsesMisses(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("one cid, many concurrent readers, one fetch")
+	cidStr := mkRawCID(t, data)
+
+	be := newEchoBackend() // local MISS
+
+	const n = 8
+	gate := make(chan struct{})
+	entered := make(chan struct{}, n)
+	fetch := &fakeFetcher{
+		byAddr:  map[string][]byte{"donor-a:4242": data},
+		gate:    gate,
+		entered: entered,
+	}
+	q := &fakeQuerier{envSize: int64(len(data)), holders: []gen.ListSourceableHoldersRow{holderRow("donor-a:4242", 0.9)}}
+	svc := &Service{backend: be}
+	svc.setDonorReadSourceCfgForTest(fetch, newTestSigner(t), q, testReadSourceCfg())
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rc, err := svc.OpenBytes(ctx, plaintextView(cidStr, int64(len(data))))
+			errs[i] = err
+			if err == nil {
+				_, _ = io.ReadAll(rc)
+				rc.Close()
+			}
+		}(i)
+	}
+
+	// Wait until at least one caller has entered Fetch, then give the others a
+	// brief moment to pile up on the same key, then release the gate.
+	<-entered
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("caller %d: OpenBytes: %v", i, err)
+		}
+	}
+	if fetch.callCount() != 1 {
+		t.Fatalf("single-flight must collapse %d concurrent misses into 1 fetch, got %d", n, fetch.callCount())
+	}
+}
+
+// TestCircuitBreakerSkipsHolder drives a holder to fail K times so its breaker
+// opens, then verifies a subsequent attempt SKIPS it (no further Fetch call for
+// that addr) and falls through to a healthy holder.
+func TestCircuitBreakerSkipsHolder(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("breaker test envelope bytes for this content id")
+	cidStr := mkRawCID(t, data)
+
+	const badAddr = "donor-bad:4242"
+	const goodAddr = "donor-good:4242"
+
+	// badAddr is never in byAddr (so Fetch errors); goodAddr serves good bytes.
+	fetch := &fakeFetcher{byAddr: map[string][]byte{goodAddr: data}, err: errors.New("connection refused")}
+	cfg := testReadSourceCfg()
+	cfg.BreakerThreshold = 3
+	cfg.MaxFallbacks = 10 // don't let fallback bound interfere with the breaker
+
+	svc := &Service{backend: newEchoBackend()}
+	svc.setDonorReadSourceCfgForTest(fetch, newTestSigner(t), q0(int64(len(data)), badAddr), cfg)
+
+	// Drive the bad holder to K failures. Each call has only the bad holder, so
+	// it returns ErrNoSourceableHolder and increments the breaker once.
+	for i := 0; i < cfg.BreakerThreshold; i++ {
+		_, err := svc.OpenBytes(ctx, plaintextView(cidStr, int64(len(data))))
+		if !errors.Is(err, ErrNoSourceableHolder) {
+			t.Fatalf("attempt %d: err = %v, want ErrNoSourceableHolder", i, err)
+		}
+	}
+	failsBeforeOpen := fetch.callsForAddr(badAddr)
+	if failsBeforeOpen != cfg.BreakerThreshold {
+		t.Fatalf("expected %d fetches to the bad holder before the breaker opens, got %d", cfg.BreakerThreshold, failsBeforeOpen)
+	}
+
+	// Now offer BOTH holders (bad first). The bad holder's breaker is open, so it
+	// must be SKIPPED (no new Fetch), and the good holder serves the bytes.
+	svc.donor.q = q2(int64(len(data)), badAddr, goodAddr)
+	rc, err := svc.OpenBytes(ctx, plaintextView(cidStr, int64(len(data))))
+	if err != nil {
+		t.Fatalf("OpenBytes should recover via the healthy holder: %v", err)
+	}
+	_, _ = io.ReadAll(rc)
+	rc.Close()
+
+	if got := fetch.callsForAddr(badAddr); got != failsBeforeOpen {
+		t.Fatalf("open breaker must skip the bad holder (no new fetch): had %d, now %d", failsBeforeOpen, got)
+	}
+	if got := fetch.callsForAddr(goodAddr); got != 1 {
+		t.Fatalf("healthy holder should be fetched exactly once, got %d", got)
+	}
+}
+
+// TestFallbackBounded offers more failing holders than max_fallbacks and asserts
+// only max_fallbacks fetch ATTEMPTS are made (the request gives up rather than
+// walking an unbounded candidate list).
+func TestFallbackBounded(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("nobody serves this; fallback must be bounded")
+	cidStr := mkRawCID(t, data)
+
+	addrs := []string{"d1:1", "d2:1", "d3:1", "d4:1", "d5:1", "d6:1"}
+	rows := make([]gen.ListSourceableHoldersRow, 0, len(addrs))
+	for i, a := range addrs {
+		rows = append(rows, holderRow(a, float32(1.0)-float32(i)*0.1))
+	}
+
+	// All holders fail (none in byAddr; err set so Fetch returns an error).
+	fetch := &fakeFetcher{byAddr: map[string][]byte{}, err: errors.New("unreachable")}
+	q := &fakeQuerier{envSize: int64(len(data)), holders: rows}
+	cfg := testReadSourceCfg()
+	cfg.MaxFallbacks = 3
+
+	svc := &Service{backend: newEchoBackend()}
+	svc.setDonorReadSourceCfgForTest(fetch, newTestSigner(t), q, cfg)
+
+	_, err := svc.OpenBytes(ctx, plaintextView(cidStr, int64(len(data))))
+	if !errors.Is(err, ErrNoSourceableHolder) {
+		t.Fatalf("err = %v, want ErrNoSourceableHolder", err)
+	}
+	if fetch.callCount() != cfg.MaxFallbacks {
+		t.Fatalf("fallback must be bounded at %d attempts, got %d", cfg.MaxFallbacks, fetch.callCount())
+	}
+}
+
+// q0 builds a fakeQuerier advertising exactly one holder at addr.
+func q0(envSize int64, addr string) *fakeQuerier {
+	return &fakeQuerier{envSize: envSize, holders: []gen.ListSourceableHoldersRow{holderRow(addr, 0.9)}}
+}
+
+// q2 builds a fakeQuerier advertising two holders (first then second).
+func q2(envSize int64, a, b string) *fakeQuerier {
+	return &fakeQuerier{envSize: envSize, holders: []gen.ListSourceableHoldersRow{holderRow(a, 0.99), holderRow(b, 0.5)}}
 }

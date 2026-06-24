@@ -9,11 +9,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	gocid "github.com/ipfs/go-cid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/singleflight"
+
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/federation/tokens"
 )
@@ -52,15 +56,161 @@ type donorQuerier interface {
 	TouchLastAccessed(ctx context.Context, arg gen.TouchLastAccessedParams) error
 }
 
+// ReadSourceConfig carries the donor read-tier tunables. It is passed once at
+// Enable/With time (not per-call) so the shared containment state — bulkhead,
+// per-donor limits, breaker map, single-flight group — is constructed exactly
+// once. Zero values are normalized to documented defaults by withDefaults so a
+// partially-filled struct (e.g. from a config block) is still safe.
+type ReadSourceConfig struct {
+	TTL              time.Duration // read-grant validity window
+	StaleSecs        float64       // donor-freshness bound for ListSourceableHolders
+	Timeout          time.Duration // per-holder fetch+read timeout
+	Bulkhead         int64         // coordinator-wide max concurrent donor fetches
+	PerDonorLimit    int64         // max concurrent fetches to a single donor addr
+	BreakerThreshold int           // consecutive failures before a donor breaker opens
+	BreakerCooldown  time.Duration // half-open delay after the breaker opens
+	MaxFallbacks     int           // max donor fetch ATTEMPTS per request
+}
+
+// Documented defaults for the containment knobs. These mirror the accessor
+// defaults on config.Federation; both must stay in sync.
+const (
+	defaultReadSourceTimeout          = 30 * time.Second
+	defaultReadSourceBulkhead         = 16
+	defaultReadSourcePerDonorLimit    = 4
+	defaultReadSourceBreakerThreshold = 5
+	defaultReadSourceBreakerCooldown  = 30 * time.Second
+	defaultReadSourceMaxFallbacks     = 3
+)
+
+// withDefaults normalizes non-positive fields to the documented defaults so a
+// caller may leave any knob zero. TTL/StaleSecs are passed through unchanged
+// (their own defaults are applied upstream in config.Federation accessors).
+func (c ReadSourceConfig) withDefaults() ReadSourceConfig {
+	if c.Timeout <= 0 {
+		c.Timeout = defaultReadSourceTimeout
+	}
+	if c.Bulkhead <= 0 {
+		c.Bulkhead = defaultReadSourceBulkhead
+	}
+	if c.PerDonorLimit <= 0 {
+		c.PerDonorLimit = defaultReadSourcePerDonorLimit
+	}
+	if c.BreakerThreshold <= 0 {
+		c.BreakerThreshold = defaultReadSourceBreakerThreshold
+	}
+	if c.BreakerCooldown <= 0 {
+		c.BreakerCooldown = defaultReadSourceBreakerCooldown
+	}
+	if c.MaxFallbacks <= 0 {
+		c.MaxFallbacks = defaultReadSourceMaxFallbacks
+	}
+	return c
+}
+
+// donorBreaker is a per-donor circuit breaker. After threshold consecutive
+// failures it opens; while open every attempt is SKIPPED (no Fetch) until
+// cooldown elapses, after which a single half-open trial is allowed — success
+// resets, failure reopens. It is keyed by the dialed donor addr.
+type donorBreaker struct {
+	failures int       // consecutive failures
+	openedAt time.Time // when the breaker last opened (zero ⇒ closed)
+}
+
 // donorReadSource is the coordinator's donor-backed read tier. It is nil unless
 // WithDonorReadSource (or the post-construction setter) installs it, in which
 // case a local cache miss triggers a verified donor fetch instead of a 404.
+//
+// The containment state (sf, bulkhead, perDonor, breakers + bmu) is SHARED
+// across all requests: it is constructed once when the tier is installed and is
+// safe for concurrent use. donorReadSource is otherwise read-only after install.
 type donorReadSource struct {
-	fetcher   donorFetcher
-	signer    *tokens.Signer
-	q         donorQuerier
-	ttl       time.Duration
-	staleSecs float64
+	fetcher donorFetcher
+	signer  *tokens.Signer
+	q       donorQuerier
+	cfg     ReadSourceConfig
+
+	sf       *singleflight.Group            // collapse concurrent misses by cid
+	bulkhead *semaphore.Weighted            // coordinator-wide donor-fetch bound
+	pdMu     sync.Mutex                     // guards perDonor
+	perDonor map[string]*semaphore.Weighted // addr -> per-donor concurrency bound
+	bmu      sync.Mutex                     // guards breakers
+	breakers map[string]*donorBreaker       // addr -> circuit breaker
+}
+
+// newDonorReadSource builds the tier with its shared containment state. cfg is
+// normalized via withDefaults so callers may leave knobs zero.
+func newDonorReadSource(fetcher donorFetcher, signer *tokens.Signer, q donorQuerier, cfg ReadSourceConfig) *donorReadSource {
+	cfg = cfg.withDefaults()
+	return &donorReadSource{
+		fetcher:  fetcher,
+		signer:   signer,
+		q:        q,
+		cfg:      cfg,
+		sf:       &singleflight.Group{},
+		bulkhead: semaphore.NewWeighted(cfg.Bulkhead),
+		perDonor: map[string]*semaphore.Weighted{},
+		breakers: map[string]*donorBreaker{},
+	}
+}
+
+// perDonorSem returns the shared per-donor semaphore for addr, creating it on
+// first use. Concurrent fetches to the same donor are bounded by PerDonorLimit.
+func (d *donorReadSource) perDonorSem(addr string) *semaphore.Weighted {
+	d.pdMu.Lock()
+	defer d.pdMu.Unlock()
+	s, ok := d.perDonor[addr]
+	if !ok {
+		s = semaphore.NewWeighted(d.cfg.PerDonorLimit)
+		d.perDonor[addr] = s
+	}
+	return s
+}
+
+// breakerOpen reports whether addr's breaker is currently open (and the holder
+// must be skipped). A breaker past its cooldown transitions to half-open and is
+// reported closed so exactly one trial fetch is allowed.
+func (d *donorReadSource) breakerOpen(addr string, now time.Time) bool {
+	d.bmu.Lock()
+	defer d.bmu.Unlock()
+	b := d.breakers[addr]
+	if b == nil || b.openedAt.IsZero() {
+		return false
+	}
+	if now.Sub(b.openedAt) >= d.cfg.BreakerCooldown {
+		// Half-open: allow a single trial. Keep openedAt zero so this trial is
+		// not itself skipped; recordFailure will reopen on failure.
+		b.openedAt = time.Time{}
+		return false
+	}
+	return true
+}
+
+// recordFailure bumps addr's consecutive-failure count and opens the breaker at
+// the threshold. Called for every failed attempt (fetch error, read error,
+// timeout, oversize, import error, cid mismatch).
+func (d *donorReadSource) recordFailure(addr string, now time.Time) {
+	d.bmu.Lock()
+	defer d.bmu.Unlock()
+	b := d.breakers[addr]
+	if b == nil {
+		b = &donorBreaker{}
+		d.breakers[addr] = b
+	}
+	b.failures++
+	if b.failures >= d.cfg.BreakerThreshold && b.openedAt.IsZero() {
+		b.openedAt = now
+	}
+}
+
+// recordSuccess clears addr's breaker after a verified fetch.
+func (d *donorReadSource) recordSuccess(addr string) {
+	d.bmu.Lock()
+	defer d.bmu.Unlock()
+	if b := d.breakers[addr]; b != nil {
+		b.failures = 0
+		b.openedAt = time.Time{}
+	}
 }
 
 // WithDonorReadSource enables the coordinator donor-backed read tier (P2-M4.1).
@@ -71,19 +221,15 @@ type donorReadSource struct {
 // non-nil; a nil/zero option is a no-op (donor-fetch stays disabled and a miss
 // returns ErrBlobNotFound — today's behavior).
 //
-// ttl is the read-grant validity window; staleSecs bounds donor freshness in
-// ListSourceableHolders (a holder unseen for longer is not considered).
-func WithDonorReadSource(clientTLS *tls.Config, signer *tokens.Signer, ttl time.Duration, staleSecs float64) Option {
+// cfg carries the read-grant TTL, donor-freshness window, and the read-path
+// containment knobs (per-fetch timeout, bulkhead, per-donor limit, breaker,
+// bounded fallback). The shared containment state is built once here.
+func WithDonorReadSource(clientTLS *tls.Config, signer *tokens.Signer, cfg ReadSourceConfig) Option {
 	return func(o *svcOpts) {
 		if clientTLS == nil || signer == nil {
 			return
 		}
-		o.donorReadSource = &donorReadSource{
-			fetcher:   newHTTPDonorFetcher(clientTLS),
-			signer:    signer,
-			ttl:       ttl,
-			staleSecs: staleSecs,
-		}
+		o.donorReadSource = newDonorReadSource(newHTTPDonorFetcher(clientTLS), signer, nil, cfg)
 	}
 }
 
@@ -93,24 +239,25 @@ func WithDonorReadSource(clientTLS *tls.Config, signer *tokens.Signer, ttl time.
 // the federation block), so the wiring is deferred to a setter that mirrors the
 // federation server's SetSourceDeps pattern. nil clientTLS or signer is a no-op
 // (graceful degradation: miss → ErrBlobNotFound).
-func (s *Service) EnableDonorReadSource(clientTLS *tls.Config, signer *tokens.Signer, ttl time.Duration, staleSecs float64) {
+func (s *Service) EnableDonorReadSource(clientTLS *tls.Config, signer *tokens.Signer, cfg ReadSourceConfig) {
 	if clientTLS == nil || signer == nil {
 		return
 	}
-	s.donor = &donorReadSource{
-		fetcher:   newHTTPDonorFetcher(clientTLS),
-		signer:    signer,
-		q:         s.q,
-		ttl:       ttl,
-		staleSecs: staleSecs,
-	}
+	s.donor = newDonorReadSource(newHTTPDonorFetcher(clientTLS), signer, s.q, cfg)
 }
 
 // setDonorReadSourceForTest installs a fully-faked donor tier (fetcher + signer
-// + querier) for white-box unit tests. Production callers use
+// + querier) for white-box unit tests, with permissive containment defaults so
+// existing single-holder tests are unaffected. Production callers use
 // WithDonorReadSource / EnableDonorReadSource.
 func (s *Service) setDonorReadSourceForTest(f donorFetcher, signer *tokens.Signer, q donorQuerier, ttl time.Duration, staleSecs float64) {
-	s.donor = &donorReadSource{fetcher: f, signer: signer, q: q, ttl: ttl, staleSecs: staleSecs}
+	s.donor = newDonorReadSource(f, signer, q, ReadSourceConfig{TTL: ttl, StaleSecs: staleSecs})
+}
+
+// setDonorReadSourceCfgForTest installs a faked donor tier with an explicit
+// containment config, for the single-flight / breaker / fallback-bound tests.
+func (s *Service) setDonorReadSourceCfgForTest(f donorFetcher, signer *tokens.Signer, q donorQuerier, cfg ReadSourceConfig) {
+	s.donor = newDonorReadSource(f, signer, q, cfg)
 }
 
 // ensureLocal guarantees the blob's bytes are pinned locally before the decrypt
@@ -137,7 +284,15 @@ func (s *Service) ensureLocal(ctx context.Context, c gocid.Cid, v *BlobView) err
 		// Donor-fetch not configured: preserve the pre-M4.1 not-found behavior.
 		return ErrBlobNotFound
 	}
-	return s.selectAndFetch(ctx, v)
+	// Single-flight the MISS path keyed by cid: N concurrent misses for one CID
+	// run selectAndFetch exactly once; the winner pins locally and verifies, and
+	// every caller shares that single result. OpenBytes then proceeds to
+	// backend.Get on the now-pinned bytes. Local hits above are NOT collapsed.
+	// (Shared callers share the winner's ctx for M4.1 — acceptable per the plan.)
+	_, err, _ = s.donor.sf.Do(v.CID, func() (any, error) {
+		return nil, s.selectAndFetch(ctx, v)
+	})
+	return err
 }
 
 // touchCache best-effort bumps last_accessed_at for the cached blob. A blob with
@@ -174,7 +329,7 @@ func (s *Service) selectAndFetch(ctx context.Context, v *BlobView) error {
 
 	holders, err := d.q.ListSourceableHolders(ctx, gen.ListSourceableHoldersParams{
 		Cid:       cidStr,
-		StaleSecs: d.staleSecs,
+		StaleSecs: d.cfg.StaleSecs,
 	})
 	if err != nil {
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "reason", "list_holders")
@@ -185,76 +340,130 @@ func (s *Service) selectAndFetch(ctx context.Context, v *BlobView) error {
 		return ErrNoSourceableHolder
 	}
 
-	now := time.Now()
+	// Bulkhead: bound coordinator-wide concurrent donor-fetch work. Only one
+	// goroutine per cid reaches here (single-flight), so a straight acquire/
+	// defer-release cannot deadlock against the per-donor semaphore below.
+	if err := d.bulkhead.Acquire(ctx, 1); err != nil {
+		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "reason", "bulkhead")
+		return ErrNoSourceableHolder
+	}
+	defer d.bulkhead.Release(1)
+
+	attempts := 0
 	for _, h := range holders {
 		addr := h.SourceNebulaAddr.String
 		if addr == "" {
 			continue
 		}
 		nodeID := uuid.UUID(h.NodeID.Bytes).String()
-		assignmentID := uuid.UUID(h.AssignmentID.Bytes).String()
 
-		grant, gerr := d.signer.MintReadGrant(nodeID, cidStr, assignmentID, h.Generation, envSize, d.ttl, now, now)
-		if gerr != nil {
-			slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "mint_grant")
-			continue
-		}
-
-		start := time.Now()
-		rc, ferr := d.fetcher.Fetch(ctx, addr, cidStr, grant)
-		if ferr != nil {
-			slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "fetch")
-			continue
-		}
-		// Bound the read at envelope_size+1 so an oversize body is detected
-		// (the extra byte makes len > envSize observable) and never buffered
-		// unbounded. The donor's preflight already caps at max_bytes=envSize,
-		// but the coordinator does not trust the donor — it bounds locally too.
-		body, rerr := io.ReadAll(io.LimitReader(rc, envSize+1))
-		rc.Close()
-		if rerr != nil {
-			slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "read")
-			continue
-		}
-		if int64(len(body)) > envSize {
-			slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "oversize")
+		// Circuit breaker: skip a holder whose breaker is open. A SKIP is cheap
+		// and does NOT consume a fallback — only real fetch ATTEMPTS are bounded.
+		if d.breakerOpen(addr, time.Now()) {
+			slog.Info("storage.read.donor_breaker_skip", "cid", cidStr, "holder", nodeID)
 			continue
 		}
 
-		// VERIFY-BEFORE-DECRYPT: deterministically re-import the bytes and
-		// require the root CID to equal the assignment cid. AddDeterministic
-		// also re-pins locally on success, so a verified blob is immediately
-		// readable by the decrypt path below. A mismatch discards the bytes
-		// and advances to the next holder; unverified bytes are never served.
-		add, aerr := s.backend.AddDeterministic(ctx, body)
-		if aerr != nil {
-			slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "import")
+		// Bound the number of actual fetch attempts per request.
+		if attempts >= d.cfg.MaxFallbacks {
+			slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "reason", "fallback_exhausted")
+			break
+		}
+		attempts++
+
+		if err := s.attemptHolder(ctx, d, v, envSize, h, addr, nodeID); err != nil {
+			d.recordFailure(addr, time.Now())
 			continue
 		}
-		if add.CID.String() != cidStr {
-			slog.Warn("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID,
-				"reason", "cid_mismatch", "got_cid", add.CID.String())
-			continue
-		}
-
-		// Verified + pinned. Best-effort re-admit to the local cache as a
-		// probationary cache entry (durability_class=cache). A failed admit
-		// does not fail the read — the bytes are already pinned and serveable.
-		if aerr := d.q.AdmitToCache(ctx, gen.AdmitToCacheParams{
-			Cid:             cidStr,
-			DurabilityClass: "cache",
-			LocalBytes:      envSize,
-		}); aerr != nil {
-			slog.Warn("storage.read.admit_failed", "cid", cidStr, "err", aerr)
-		}
-
-		slog.Info("storage.read.donor_fetch", "cid", cidStr, "holder", nodeID,
-			"bytes", len(body), "dur_ms", time.Since(start).Milliseconds())
+		d.recordSuccess(addr)
 		return nil
 	}
 
 	slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "reason", "all_holders_failed")
 	return ErrNoSourceableHolder
+}
+
+// attemptHolder runs a single bounded fetch+verify+admit against one holder. It
+// returns nil only when the holder served bytes that VERIFY (re-imported root
+// CID == assignment cid) and are now pinned locally; any failure (mint, fetch,
+// timeout, read, oversize, import, cid mismatch) returns a non-nil error so the
+// caller records the breaker and advances. The verify-before-decrypt gate is
+// unchanged. A per-fetch timeout derived from the request ctx caps the attempt;
+// a per-donor semaphore bounds concurrent fetches to the same addr.
+func (s *Service) attemptHolder(ctx context.Context, d *donorReadSource, v *BlobView, envSize int64, h gen.ListSourceableHoldersRow, addr, nodeID string) error {
+	cidStr := v.CID
+	assignmentID := uuid.UUID(h.AssignmentID.Bytes).String()
+	now := time.Now()
+
+	grant, gerr := d.signer.MintReadGrant(nodeID, cidStr, assignmentID, h.Generation, envSize, d.cfg.TTL, now, now)
+	if gerr != nil {
+		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "mint_grant")
+		return gerr
+	}
+
+	// Per-donor concurrency bound. Acquire under the per-fetch timeout so a
+	// saturated donor cannot stall the request indefinitely.
+	pdSem := d.perDonorSem(addr)
+	actx, cancel := context.WithTimeout(ctx, d.cfg.Timeout)
+	defer cancel()
+	if err := pdSem.Acquire(actx, 1); err != nil {
+		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "per_donor_limit")
+		return err
+	}
+	defer pdSem.Release(1)
+
+	start := time.Now()
+	rc, ferr := d.fetcher.Fetch(actx, addr, cidStr, grant)
+	if ferr != nil {
+		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "fetch")
+		return ferr
+	}
+	// Bound the read at envelope_size+1 so an oversize body is detected (the
+	// extra byte makes len > envSize observable) and never buffered unbounded.
+	// The donor's preflight already caps at max_bytes=envSize, but the
+	// coordinator does not trust the donor — it bounds locally too.
+	body, rerr := io.ReadAll(io.LimitReader(rc, envSize+1))
+	rc.Close()
+	if rerr != nil {
+		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "read")
+		return rerr
+	}
+	if int64(len(body)) > envSize {
+		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "oversize")
+		return errors.New("donor body oversize")
+	}
+
+	// VERIFY-BEFORE-DECRYPT: deterministically re-import the bytes and require
+	// the root CID to equal the assignment cid. AddDeterministic also re-pins
+	// locally on success, so a verified blob is immediately readable by the
+	// decrypt path. A mismatch discards the bytes; unverified bytes are never
+	// served. (Use the parent ctx for the import so a slow fetch's timeout does
+	// not abort the pin of bytes already in hand.)
+	add, aerr := s.backend.AddDeterministic(ctx, body)
+	if aerr != nil {
+		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "import")
+		return aerr
+	}
+	if add.CID.String() != cidStr {
+		slog.Warn("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID,
+			"reason", "cid_mismatch", "got_cid", add.CID.String())
+		return errors.New("donor cid mismatch")
+	}
+
+	// Verified + pinned. Best-effort re-admit to the local cache as a
+	// probationary cache entry (durability_class=cache). A failed admit does
+	// not fail the read — the bytes are already pinned and serveable.
+	if aerr := d.q.AdmitToCache(ctx, gen.AdmitToCacheParams{
+		Cid:             cidStr,
+		DurabilityClass: "cache",
+		LocalBytes:      envSize,
+	}); aerr != nil {
+		slog.Warn("storage.read.admit_failed", "cid", cidStr, "err", aerr)
+	}
+
+	slog.Info("storage.read.donor_fetch", "cid", cidStr, "holder", nodeID,
+		"bytes", len(body), "dur_ms", time.Since(start).Milliseconds())
+	return nil
 }
 
 // httpDonorFetcher is the production donorFetcher: an mTLS GET to the donor's

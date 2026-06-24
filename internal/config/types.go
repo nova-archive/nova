@@ -127,6 +127,17 @@ type Federation struct {
 	// the identity (Task 7 consumer).
 	FederationClientCertPath string `yaml:"federation_client_cert_path"`
 	FederationClientKeyPath  string `yaml:"federation_client_key_path"`
+
+	// M4.1: donor read-path containment knobs (Task 8). The donor-backed read
+	// tier treats each fetch as a protected integration point. All are
+	// zero-defaulted by the accessor methods below; an operator rarely needs to
+	// touch them. /settings wiring is Task 14.
+	ReadSourceTimeoutSeconds      int `yaml:"read_source_timeout_seconds"`           // per-holder fetch+read timeout (default 30)
+	ReadSourceBulkhead            int `yaml:"read_source_bulkhead"`                  // coordinator-wide max concurrent donor fetches (default 16)
+	ReadSourcePerDonorLimit       int `yaml:"read_source_per_donor_fetch_limit"`     // max concurrent fetches to one donor (default 4)
+	ReadSourceBreakerThreshold    int `yaml:"read_source_breaker_threshold"`         // consecutive failures before a donor breaker opens (default 5)
+	ReadSourceBreakerCooldownSecs int `yaml:"read_source_breaker_cooldown_seconds"`  // breaker half-open delay (default 30)
+	ReadSourceMaxFallbacks        int `yaml:"read_source_max_fallbacks_per_request"` // max donor fetch ATTEMPTS per request (default 3)
 }
 
 // Enabled reports whether the federation listener should run (operator set a

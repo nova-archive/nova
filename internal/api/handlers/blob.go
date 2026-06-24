@@ -50,6 +50,16 @@ func mapBytesError(err error) (int, string, string) {
 		errors.Is(err, storage.ErrBlobTombstoned),
 		errors.Is(err, storage.ErrKeyShredded):
 		return 410, "gone", "content no longer available"
+	case errors.Is(err, storage.ErrStagingNotVisible):
+		// Committed gate hides a still-staging blob. 404 (not 202/409) so a
+		// caller cannot distinguish "no such blob" from "exists but not yet
+		// committed" — no existence leak. The gate is Task 11.
+		return 404, "not_found", "blob not found"
+	case errors.Is(err, storage.ErrNoSourceableHolder):
+		// The blob is committed but momentarily unsourceable (no donor could
+		// serve verified bytes right now). 503 invites a retry; it is NOT a 404
+		// (the blob exists) and NOT a 500 (this is an expected, transient state).
+		return 503, "unavailable", "content temporarily unavailable"
 	default:
 		return 500, "internal", "internal server error"
 	}
@@ -108,7 +118,12 @@ func (h *BlobHandler) serveBytes(w http.ResponseWriter, r *http.Request, cidStr 
 
 	body, err := h.r.OpenBytes(r.Context(), v)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "internal", "internal server error", rid)
+		// Route OpenBytes errors through the same mapping as Resolve so the
+		// donor read-path sentinels (ErrNoSourceableHolder → 503,
+		// ErrStagingNotVisible → 404) get correct status codes; other wrapped
+		// errors still fall through to 500.
+		status, code, msg := mapBytesError(err)
+		httputil.WriteError(w, status, code, msg, rid)
 		return
 	}
 	defer body.Close()

@@ -15,15 +15,19 @@ import (
 )
 
 type fakeReader struct {
-	view *storage.BlobView
-	err  error
-	body string
+	view    *storage.BlobView
+	err     error
+	body    string
+	openErr error // if non-nil, OpenBytes returns it (Resolve still succeeds)
 }
 
 func (f fakeReader) Resolve(_ context.Context, _ string) (*storage.BlobView, error) {
 	return f.view, f.err
 }
 func (f fakeReader) OpenBytes(_ context.Context, _ *storage.BlobView) (io.ReadCloser, error) {
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
 	return io.NopCloser(strings.NewReader(f.body)), nil
 }
 
@@ -113,6 +117,20 @@ func TestBlobStatusMapping(t *testing.T) {
 			require.Equal(t, c.jsonCode, rj.Code)
 		})
 	}
+}
+
+// TestServeBytesUnavailable503 exercises the OpenBytes (post-Resolve) error
+// path: Resolve succeeds (the blob is committed) but OpenBytes returns
+// ErrNoSourceableHolder because no donor can momentarily serve it. The handler
+// must route that through mapBytesError to a 503, not a hard-coded 500.
+func TestServeBytesUnavailable503(t *testing.T) {
+	t.Parallel()
+	view := &storage.BlobView{CID: "bafyN", MIME: "text/plain", PlaintextSize: 5,
+		EnvelopeVersion: 1, Visibility: storage.VisibilityPublic, Encrypted: false, UploadedAt: time.Now()}
+	h := handlers.NewBlobHandler(fakeReader{view: view, openErr: storage.ErrNoSourceableHolder})
+	rec := httptest.NewRecorder()
+	route(h).ServeHTTP(rec, httptest.NewRequest("GET", "/blob/bafyN", nil))
+	require.Equal(t, 503, rec.Code)
 }
 
 func TestBlobPlaintextRange206(t *testing.T) {
