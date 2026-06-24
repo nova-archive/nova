@@ -17,6 +17,18 @@ func seedBlob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cid string,
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every committed blob has a manifest row (written in the same tx as the blob
+	// in production). GetBlobSize and GetPinSnapshotPage now select from
+	// blob_manifests, so fixtures must match. Use size as both plaintext and
+	// envelope size (the distinction only matters for encrypted blobs; for test
+	// blobs without encryption overhead, equality is acceptable).
+	_, err = pool.Exec(ctx,
+		`INSERT INTO blob_manifests (cid, hash_alg, codec, chunker, plaintext_size, envelope_size, block_count)
+		 VALUES ($1,'sha2-256','raw','size-262144',$2,$2,1)`,
+		cid, size)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func seedNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool) uuid.UUID {

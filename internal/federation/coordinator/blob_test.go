@@ -48,11 +48,20 @@ func mkCID(t *testing.T, data []byte) string {
 	return gocid.NewCidV1(gocid.Raw, mh).String()
 }
 
-// insertBlobRow inserts an active blob row so GetBlobByteSize returns a size.
+// insertBlobRow inserts a blob row and a matching blob_manifests row (with
+// envelope_size = size) so GetEnvelopeSize and GetBlobSize both return a size.
+// In production every committed blob has a manifest; tests should too.
 func insertBlobRow(t *testing.T, pool *pgxpool.Pool, cidStr string, size int64) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),
 		`INSERT INTO blobs (cid, mime_type, byte_size) VALUES ($1,'application/octet-stream',$2)`,
+		cidStr, size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(context.Background(),
+		`INSERT INTO blob_manifests (cid, hash_alg, codec, chunker, plaintext_size, envelope_size, block_count)
+		 VALUES ($1,'sha2-256','raw','size-262144',$2,$2,1)`,
 		cidStr, size)
 	if err != nil {
 		t.Fatal(err)
@@ -279,5 +288,70 @@ func TestBlobOversizeRejected(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &er)
 	if er.Code != "blob_too_large" {
 		t.Fatalf("oversize: code %q, want %q", er.Code, "blob_too_large")
+	}
+}
+
+// insertManifestRow seeds a blob_manifests row for tests that exercise the
+// envelope-size path (GetEnvelopeSize / GetBlobSize / GetPinSnapshotPage).
+func insertManifestRow(t *testing.T, pool *pgxpool.Pool, cidStr string, plaintextSize, envelopeSize int64) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO blob_manifests (cid, hash_alg, codec, chunker, plaintext_size, envelope_size, block_count)
+		 VALUES ($1, 'sha2-256', 'raw', 'size-262144', $2, $3, 1)`,
+		cidStr, plaintextSize, envelopeSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSourcePreflightUsesEnvelopeSize verifies that the source preflight
+// consults blob_manifests.envelope_size (not blobs.byte_size), so a grant
+// whose max_bytes sits strictly between plaintext byte_size and envelope_size
+// causes a 413 blob_too_large rejection before any body is written.
+func TestSourcePreflightUsesEnvelopeSize(t *testing.T) {
+	bs := newBlobSetup(t)
+	signer, err := tokens.NewSignerFromSeed(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("ciphertext-envelope-larger-than-plaintext")
+	cidStr := mkCID(t, body)
+
+	// plaintextSize < max_bytes < envelopeSize:
+	// if the preflight uses byte_size (plaintext) it will ALLOW the transfer;
+	// if it uses envelope_size it MUST REFUSE with 413.
+	var (
+		plaintextSize = int64(50)
+		envelopeSize  = int64(200) // ciphertext overhead makes it larger
+		maxBytes      = int64(100) // sits between plaintext and envelope
+	)
+
+	// Insert the blob row directly (without using insertBlobRow, which would
+	// add a manifest with envelopeSize == plaintextSize, defeating the test).
+	_, err = bs.pool.Exec(context.Background(),
+		`INSERT INTO blobs (cid, mime_type, byte_size) VALUES ($1,'application/octet-stream',$2)`,
+		cidStr, plaintextSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertManifestRow(t, bs.pool, cidStr, plaintextSize, envelopeSize)
+	bs.s.SetSourceDeps(signer, fakeBackendFor(cidStr, body), time.Now().Add(-time.Minute))
+
+	now := time.Now()
+	tok := mintTok(t, signer, "j-envelope-size", bs.id.String(), cidStr,
+		now.Add(-10*time.Second).Unix(), now.Add(5*time.Minute).Unix(), maxBytes)
+
+	w := bs.fire(t, cidStr, tok)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("envelope preflight: status %d body %q (want 413 blob_too_large)", w.Code, w.Body)
+	}
+	var er wire.ErrorResponse
+	json.Unmarshal(w.Body.Bytes(), &er)
+	if er.Code != "blob_too_large" {
+		t.Fatalf("envelope preflight: code %q, want \"blob_too_large\"", er.Code)
+	}
+	// The response body must have the error JSON only — no ciphertext bytes.
+	if len(body) > 0 && bytes.Contains(w.Body.Bytes(), body) {
+		t.Fatal("envelope preflight: ciphertext bytes written to response (must not write body on rejection)")
 	}
 }

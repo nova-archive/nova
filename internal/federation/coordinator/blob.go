@@ -89,7 +89,12 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Preflight size (D-M4-3): reject before writing any body byte.
-	size, err := s.q.GetBlobByteSize(r.Context(), cidStr)
+	// GetEnvelopeSize selects blob_manifests.envelope_size (the ciphertext
+	// envelope; always >= plaintext) with the active-state guard so
+	// quarantined/tombstoned blobs are refused with 404. Using the envelope
+	// size is correct: the donor receives the ciphertext, so max_bytes must
+	// be compared against the envelope size, not the plaintext size.
+	size, err := s.q.GetEnvelopeSize(r.Context(), cidStr)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, wire.FailReasonBlobUnavailable, "")
 		return

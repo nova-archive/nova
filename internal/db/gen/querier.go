@@ -87,6 +87,10 @@ type Querier interface {
 	// soft_deleted / quarantined / tombstoned blob. owner_id coalesced to '' (the
 	// GetBlobForModeration precedent) so a NULL owner never crashes the scan.
 	GetBlobMeta(ctx context.Context, cid string) (GetBlobMetaRow, error)
+	// Feeds AssignPin → pin_changes.byte_size. Selects blob_manifests.envelope_size
+	// (the actual on-disk ciphertext size) so the change-log byte_size always
+	// reflects what the donor will receive. No state filter, as before: unknown CID
+	// → no row → AssignPin rolls back (correct; every committed blob has a manifest).
 	GetBlobSize(ctx context.Context, cid string) (int64, error)
 	// Monotonic change-log head: the greatest sequence ever issued that a donor
 	// cursor should reach = max(retained max sequence, highest pruned sequence). Using
@@ -97,12 +101,19 @@ type Querier interface {
 	GetDEKByBlob(ctx context.Context, cid string) (GetDEKByBlobRow, error)
 	GetDMCACase(ctx context.Context, id pgtype.UUID) (GetDMCACaseRow, error)
 	GetDerivativeCID(ctx context.Context, arg GetDerivativeCIDParams) (string, error)
+	// Source preflight + read tier: the on-disk ciphertext envelope size for
+	// max_bytes enforcement before streaming (D-M4-3). Preserves the active-state
+	// filter from the old GetBlobByteSize — quarantined / tombstoned / soft_deleted
+	// blobs MUST NOT be served to donors (no row → 404 blob_unavailable).
+	GetEnvelopeSize(ctx context.Context, cid string) (int64, error)
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
 	GetMasterVersionByLabel(ctx context.Context, versionLabel string) (MasterKeyVersion, error)
 	GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
 	GetPinAssignment(ctx context.Context, arg GetPinAssignmentParams) (GetPinAssignmentRow, error)
 	GetPinAssignmentForUpdate(ctx context.Context, arg GetPinAssignmentForUpdateParams) (GetPinAssignmentForUpdateRow, error)
 	GetPinChangesSince(ctx context.Context, arg GetPinChangesSinceParams) ([]GetPinChangesSinceRow, error)
+	// Donor desired-assignment snapshot page: selects envelope_size (the actual
+	// on-disk ciphertext size) aliased as byte_size for wire compatibility.
 	GetPinSnapshotPage(ctx context.Context, arg GetPinSnapshotPageParams) ([]GetPinSnapshotPageRow, error)
 	GetPruneWatermark(ctx context.Context) (int64, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)

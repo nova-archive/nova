@@ -68,7 +68,20 @@ SELECT pruned_through_seq FROM federation_change_log_state WHERE id = true;
 SELECT pg_advisory_xact_lock(8030600000000000001);
 
 -- name: GetBlobSize :one
-SELECT byte_size FROM blobs WHERE cid = $1;
+-- Feeds AssignPin → pin_changes.byte_size. Selects blob_manifests.envelope_size
+-- (the actual on-disk ciphertext size) so the change-log byte_size always
+-- reflects what the donor will receive. No state filter, as before: unknown CID
+-- → no row → AssignPin rolls back (correct; every committed blob has a manifest).
+SELECT m.envelope_size FROM blob_manifests m WHERE m.cid = $1;
+
+-- name: GetEnvelopeSize :one
+-- Source preflight + read tier: the on-disk ciphertext envelope size for
+-- max_bytes enforcement before streaming (D-M4-3). Preserves the active-state
+-- filter from the old GetBlobByteSize — quarantined / tombstoned / soft_deleted
+-- blobs MUST NOT be served to donors (no row → 404 blob_unavailable).
+SELECT m.envelope_size
+FROM blob_manifests m JOIN blobs b ON b.cid = m.cid
+WHERE m.cid = $1 AND b.state = 'active';
 
 -- name: UpsertPinAssignmentAssign :one
 INSERT INTO pin_assignments (cid, node_id, state, generation)
@@ -106,9 +119,11 @@ SELECT EXISTS (
 ) AS changed;
 
 -- name: GetPinSnapshotPage :many
-SELECT pa.cid, pa.assignment_id, pa.generation, b.byte_size, pa.assigned_at
+-- Donor desired-assignment snapshot page: selects envelope_size (the actual
+-- on-disk ciphertext size) aliased as byte_size for wire compatibility.
+SELECT pa.cid, pa.assignment_id, pa.generation, m.envelope_size AS byte_size, pa.assigned_at
 FROM pin_assignments pa
-JOIN blobs b ON b.cid = pa.cid
+JOIN blob_manifests m ON m.cid = pa.cid
 WHERE pa.node_id = $1 AND pa.cid > $2
 ORDER BY pa.cid
 LIMIT $3;
