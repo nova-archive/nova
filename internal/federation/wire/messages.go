@@ -13,8 +13,9 @@ const ProtocolV1 = "fed/v1"
 const (
 	CapPinChangeLog   = "pin-change-log/v1"
 	CapSnapshot       = "snapshot/v1"
-	CapBlobTransfer   = "blob-transfer/v1" // M4: donor can fetch source-bearing assignments, verify, pin, ack
-	CapRepairStream   = "repair-stream/v1" // RESERVED for M5 donor-as-source; not advertised in M4
+	CapBlobTransfer   = "blob-transfer/v1"  // M4: donor can fetch source-bearing assignments, verify, pin, ack
+	CapRepairStream   = "repair-stream/v1"  // RESERVED for M5 donor-as-source; not advertised in M4
+	CapReadSource     = "read-source/v1"   // M4.1: donor serves blobs to coordinator for donor-backed reads
 	CapAuditBlockHash = "audit-block-hash/v1"
 )
 
@@ -88,6 +89,7 @@ type RegisterRequest struct {
 	CapacityBytes              int64          `json:"capacity_bytes,omitempty"`
 	BandwidthBudgetBytesPerDay int64          `json:"bandwidth_budget_bytes_per_day,omitempty"`
 	PolicyFilters              map[string]any `json:"policy_filters,omitempty"`
+	SourceNebulaAddr           string         `json:"source_nebula_addr,omitempty"` // M4.1: donor's read-source server address
 }
 
 // RegisterResponse confirms the selected protocol + required capabilities.
@@ -100,8 +102,9 @@ type RegisterResponse struct {
 // The remaining fed/v1 message shapes the M2–M4 handlers consume. Snapshot
 // recovery (snapshot/epoch) gets its own types when M3 implements it.
 type HeartbeatRequest struct {
-	FreeBytes   int64 `json:"free_bytes"`
-	StoredBytes int64 `json:"stored_bytes"`
+	FreeBytes        int64  `json:"free_bytes"`
+	StoredBytes      int64  `json:"stored_bytes"`
+	SourceNebulaAddr string `json:"source_nebula_addr,omitempty"` // M4.1: donor's read-source server address
 }
 
 // ConfigUpdates carries operator-tunable federation timers back to a donor on

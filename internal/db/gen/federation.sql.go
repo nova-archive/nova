@@ -555,10 +555,10 @@ INSERT INTO nodes (
     id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name,
     geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters,
     status, trust_state, selected_protocol, advertised_capabilities,
-    required_capabilities, client_version
+    required_capabilities, client_version, source_nebula_addr
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    'active', 'probationary', $9, $10, $11, $12
+    'active', 'probationary', $9, $10, $11, $12, $13
 )
 ON CONFLICT (id) DO UPDATE SET
     nebula_cert_fingerprint        = EXCLUDED.nebula_cert_fingerprint,
@@ -570,7 +570,8 @@ ON CONFLICT (id) DO UPDATE SET
     selected_protocol              = EXCLUDED.selected_protocol,
     advertised_capabilities        = EXCLUDED.advertised_capabilities,
     required_capabilities          = EXCLUDED.required_capabilities,
-    client_version                 = EXCLUDED.client_version
+    client_version                 = EXCLUDED.client_version,
+    source_nebula_addr             = EXCLUDED.source_nebula_addr
 RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr
 `
 
@@ -587,6 +588,7 @@ type RegisterNodeParams struct {
 	AdvertisedCapabilities     []string
 	RequiredCapabilities       []string
 	ClientVersion              pgtype.Text
+	SourceNebulaAddr           pgtype.Text
 }
 
 func (q *Queries) RegisterNode(ctx context.Context, arg RegisterNodeParams) (Node, error) {
@@ -603,6 +605,7 @@ func (q *Queries) RegisterNode(ctx context.Context, arg RegisterNodeParams) (Nod
 		arg.AdvertisedCapabilities,
 		arg.RequiredCapabilities,
 		arg.ClientVersion,
+		arg.SourceNebulaAddr,
 	)
 	var i Node
 	err := row.Scan(
@@ -671,19 +674,28 @@ func (q *Queries) RotateNodeCert(ctx context.Context, arg RotateNodeCertParams) 
 
 const updateNodeHeartbeat = `-- name: UpdateNodeHeartbeat :one
 UPDATE nodes
-SET last_seen_at = now(), last_free_bytes = $2, last_stored_bytes = $3
+SET last_seen_at      = now(),
+    last_free_bytes   = $2,
+    last_stored_bytes = $3,
+    source_nebula_addr = COALESCE(NULLIF($4::text, ''), nodes.source_nebula_addr)
 WHERE id = $1
 RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr
 `
 
 type UpdateNodeHeartbeatParams struct {
-	ID              pgtype.UUID
-	LastFreeBytes   pgtype.Int8
-	LastStoredBytes pgtype.Int8
+	ID               pgtype.UUID
+	LastFreeBytes    pgtype.Int8
+	LastStoredBytes  pgtype.Int8
+	SourceNebulaAddr string
 }
 
 func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) (Node, error) {
-	row := q.db.QueryRow(ctx, updateNodeHeartbeat, arg.ID, arg.LastFreeBytes, arg.LastStoredBytes)
+	row := q.db.QueryRow(ctx, updateNodeHeartbeat,
+		arg.ID,
+		arg.LastFreeBytes,
+		arg.LastStoredBytes,
+		arg.SourceNebulaAddr,
+	)
 	var i Node
 	err := row.Scan(
 		&i.ID,

@@ -6,10 +6,10 @@ INSERT INTO nodes (
     id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name,
     geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters,
     status, trust_state, selected_protocol, advertised_capabilities,
-    required_capabilities, client_version
+    required_capabilities, client_version, source_nebula_addr
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    'active', 'probationary', $9, $10, $11, $12
+    'active', 'probationary', $9, $10, $11, $12, $13
 )
 ON CONFLICT (id) DO UPDATE SET
     nebula_cert_fingerprint        = EXCLUDED.nebula_cert_fingerprint,
@@ -21,12 +21,16 @@ ON CONFLICT (id) DO UPDATE SET
     selected_protocol              = EXCLUDED.selected_protocol,
     advertised_capabilities        = EXCLUDED.advertised_capabilities,
     required_capabilities          = EXCLUDED.required_capabilities,
-    client_version                 = EXCLUDED.client_version
+    client_version                 = EXCLUDED.client_version,
+    source_nebula_addr             = EXCLUDED.source_nebula_addr
 RETURNING *;
 
 -- name: UpdateNodeHeartbeat :one
 UPDATE nodes
-SET last_seen_at = now(), last_free_bytes = $2, last_stored_bytes = $3
+SET last_seen_at      = now(),
+    last_free_bytes   = $2,
+    last_stored_bytes = $3,
+    source_nebula_addr = COALESCE(NULLIF(sqlc.arg(source_nebula_addr)::text, ''), nodes.source_nebula_addr)
 WHERE id = $1
 RETURNING *;
 

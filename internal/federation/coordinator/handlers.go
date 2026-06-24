@@ -110,6 +110,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		AdvertisedCapabilities:     caps,
 		RequiredCapabilities:       required,
 		ClientVersion:              pgText(req.ClientVersion),
+		SourceNebulaAddr:           pgText(req.SourceNebulaAddr),
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "register failed")
 		return
@@ -160,9 +161,10 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req) // tolerant: empty body ok
 
 	if _, err := s.q.UpdateNodeHeartbeat(ctx, gen.UpdateNodeHeartbeatParams{
-		ID:              pgUUIDFrom(nodeUUID),
-		LastFreeBytes:   pgInt8(req.FreeBytes),
-		LastStoredBytes: pgInt8(req.StoredBytes),
+		ID:               pgUUIDFrom(nodeUUID),
+		LastFreeBytes:    pgInt8(req.FreeBytes),
+		LastStoredBytes:  pgInt8(req.StoredBytes),
+		SourceNebulaAddr: req.SourceNebulaAddr,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "heartbeat failed")
 		return

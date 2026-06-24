@@ -42,8 +42,9 @@ type Config struct {
 	BandwidthBudgetBytesPerDay int64         `yaml:"bandwidth_budget_bytes_per_day"`
 	FailureDomain              FailureDomain `yaml:"failure_domain"`
 	HealthListenAddr           string        `yaml:"health_listen_addr"`
-	StorageMaxBytes            int64         `yaml:"storage_max_bytes"` // 0 ⇒ unlimited (M4 enforces out_of_space)
-	KuboAPIAddr                string        `yaml:"kubo_api_addr"`     // loopback Kubo sidecar HTTP API
+	StorageMaxBytes            int64         `yaml:"storage_max_bytes"`    // 0 ⇒ unlimited (M4 enforces out_of_space)
+	KuboAPIAddr                string        `yaml:"kubo_api_addr"`        // loopback Kubo sidecar HTTP API
+	SourceNebulaAddr           string        `yaml:"source_nebula_addr"`   // M4.1: address coordinator uses to reach this donor's read-source server; empty = not a read source
 }
 
 // LoadFromFile reads, parses, defaults, and validates a node.yaml.

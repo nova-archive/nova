@@ -77,10 +77,23 @@ func WithSource(a *Agent, fetcher transfer.SourceFetcher, pinner blockstore, pro
 }
 
 func (a *Agent) registerReq() wire.RegisterRequest {
+	caps := []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer}
+	if a.cfg.SourceNebulaAddr != "" {
+		caps = append(caps, wire.CapReadSource)
+	}
 	return wire.RegisterRequest{
 		SupportedProtocols:         []string{wire.ProtocolV1},
-		Capabilities:               []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer},
+		Capabilities:               caps,
 		BandwidthBudgetBytesPerDay: a.cfg.BandwidthBudgetBytesPerDay,
+		SourceNebulaAddr:           a.cfg.SourceNebulaAddr,
+	}
+}
+
+func (a *Agent) heartbeatReq(freeBytes, storedBytes int64) wire.HeartbeatRequest {
+	return wire.HeartbeatRequest{
+		FreeBytes:        freeBytes,
+		StoredBytes:      storedBytes,
+		SourceNebulaAddr: a.cfg.SourceNebulaAddr,
 	}
 }
 
@@ -122,7 +135,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-hb.C:
-			resp, err := a.client.Heartbeat(ctx, wire.HeartbeatRequest{})
+			resp, err := a.client.Heartbeat(ctx, a.heartbeatReq(0, 0))
 			if err != nil {
 				slog.Warn("nova-node heartbeat failed", "err", err)
 				continue
