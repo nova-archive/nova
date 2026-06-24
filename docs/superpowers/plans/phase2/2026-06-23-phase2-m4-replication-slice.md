@@ -46,6 +46,15 @@ config), `testify` (tests).
 - **Identity from the verified mTLS cert only** (D-cap) — never self-asserted JSON.
 - **Naming:** the operator is **Bug** in prose/docs.
 
+> **As-built correction (2026-06-23, supersedes the go-cid passages below).** During
+> execution the operator chose to keep the donor **`go-cid`-free**: Task 9's
+> `transfer.Verify` compares the computed root CID to the assigned CID by
+> **canonical string equality** (`root != cid ⇒ cid_mismatch`), and Task 14's
+> `donor-deps-boundary` allowlist gains **only** `internal/ipfs/importspec` (NOT
+> `go-cid` + the multiformats tree). Sound because both sides share `importspec`
+> and Kubo emits canonical CIDv1. See design § D-M4-10. The Task 9/14 code blocks
+> below that still show `go-cid`/`.Equals` are the pre-decision draft.
+
 ## Preconditions (exist from M0–M3; do not re-create)
 
 - `internal/federation/wire`: `Claims`, `SigningInput`, `AssembleToken`, `Verify`
