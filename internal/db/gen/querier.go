@@ -153,6 +153,11 @@ type Querier interface {
 	InsertRevocation(ctx context.Context, arg InsertRevocationParams) error
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	IsBlocklisted(ctx context.Context, cid string) (bool, error)
+	// Admission targets: live, non-suspended, read-source-capable, addressed nodes,
+	// preferring those with known free space >= the blob's envelope size (unknown
+	// free space is treated as OK; the donor's own storage_max_bytes is the real
+	// safety gate). Ordered for best-link selection: free-OK first, then reputation.
+	ListAdmissionCandidates(ctx context.Context, arg ListAdmissionCandidatesParams) ([]ListAdmissionCandidatesRow, error)
 	// actor_id is nullable — system actions (e.g. the scheduled-tombstone sweep)
 	// record actor_id=NULL; coalesce so the listing never crashes on a NULL actor.
 	// '' renders as a null actor in the handler.

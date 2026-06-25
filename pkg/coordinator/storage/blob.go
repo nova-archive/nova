@@ -18,6 +18,14 @@ import (
 	"github.com/nova-archive/nova/internal/ipfs"
 )
 
+// Assigner is the seam the storage Service calls after a successful Put commit
+// to trigger pin-assignment creation. Keeping it as an interface here avoids a
+// storage→admission import cycle: the concrete *admission.Assigner satisfies it
+// and is injected via WithAssigner.
+type Assigner interface {
+	Assign(ctx context.Context, cid, class string) (int, error)
+}
+
 // Service is the storage core (read + write). It is safe for concurrent use.
 type Service struct {
 	q             *gen.Queries
@@ -28,6 +36,13 @@ type Service struct {
 	assemblyLimit atomic.Int64 // <=0 ⇒ unbounded
 	maxUploadSize atomic.Int64 // <=0 ⇒ unbounded
 	hook          WriteHook
+
+	// assigner is the P2-M4.1 admission assigner. nil ⇒ no auto-assign on
+	// Put (current behavior before Task 10); non-nil ⇒ best-effort assign
+	// after a successful commit. Installed via WithAssigner. The gate-on path
+	// (Task 11 require_replication_quorum_before_commit) will call Assign
+	// before returning to the caller; that logic is NOT here yet.
+	assigner Assigner
 
 	// donor is the P2-M4.1 donor-backed read tier. nil ⇒ a local cache miss
 	// returns ErrBlobNotFound (pre-M4.1 behavior); non-nil ⇒ a miss triggers a
@@ -52,6 +67,7 @@ type svcOpts struct {
 	hook            WriteHook
 	donorReadSource *donorReadSource
 	storageMode     *StorageModeConfig
+	assigner        Assigner
 }
 
 // WithWriteLimits sets the upload size ceiling (bytes) and the maximum number
@@ -88,6 +104,15 @@ func WithStorageMode(cfg StorageModeConfig) Option {
 	}
 }
 
+// WithAssigner injects the P2-M4.1 admission assigner. When non-nil, Put calls
+// assigner.Assign best-effort after a successful commit (gate-off path). A nil
+// assigner (the default) means no auto-assign; the reconciler handles it later.
+// The concrete *admission.Assigner is injected from pkg/coordinator to avoid an
+// import cycle (storage does NOT import the admission package).
+func WithAssigner(a Assigner) Option {
+	return func(o *svcOpts) { o.assigner = a }
+}
+
 // NewService builds a storage service over the given pool, IPFS backend, and
 // keystore. backend and ks may be nil in tests that exercise Resolve only.
 // Write limits default to 100 MiB / 8 concurrent assemblies; override via
@@ -110,6 +135,9 @@ func NewService(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore,
 	}
 	if o.storageMode != nil {
 		s.cache = newCachePolicyFor(s.q, backend, *o.storageMode)
+	}
+	if o.assigner != nil {
+		s.assigner = o.assigner
 	}
 	s.assemblyLimit.Store(int64(o.assemblySize))
 	s.maxUploadSize.Store(o.maxUploadSize)

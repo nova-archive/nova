@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -164,11 +165,27 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 		s.hook.OnCommitted(ctx, CommittedRef{CID: add.CID.String(), Product: pc.Product})
 	}
 
+	// Gate-off best-effort admission assign (P2-M4.1, Task 10). The blob is
+	// already durable on the coordinator; a failed assign MUST NOT fail the
+	// upload. The gate-on path (Task 11: require_replication_quorum_before_commit)
+	// will call Assign before returning — that logic is not implemented here yet.
+	if s.assigner != nil {
+		cidStr := add.CID.String()
+		if _, aerr := s.assigner.Assign(ctx, cidStr, classFor(pc)); aerr != nil {
+			slog.Warn("admission.assign_failed", "cid", cidStr, "err", aerr)
+		}
+	}
+
 	return &PutResult{
 		CID: add.CID.String(), ByteSize: int64(len(buf)),
 		MIME: mime, Product: pc.Product, Encrypted: encrypt,
 	}, nil
 }
+
+// classFor returns the durability class string for a given PutContext.
+// All user-uploaded originals are "important" (high durability default);
+// refinement by product type is a later-task concern.
+func classFor(_ PutContext) string { return "important" }
 
 func (s *Service) commit(ctx context.Context, add ipfs.AddResult, buf []byte, mime string, pc PutContext, encrypt bool, wrapped []byte, mkvID uuid.UUID, persist func(context.Context, pgx.Tx, string) error) error {
 	tx, err := s.pool.Begin(ctx)

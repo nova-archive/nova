@@ -168,3 +168,18 @@ SELECT node_id, generation FROM pin_assignments WHERE cid = $1 AND state = 'acke
 
 -- name: ListDesiredAssignmentsByNode :many
 SELECT cid, generation, state FROM pin_assignments WHERE node_id = $1 ORDER BY cid;
+
+-- name: ListAdmissionCandidates :many
+-- Admission targets: live, non-suspended, read-source-capable, addressed nodes,
+-- preferring those with known free space >= the blob's envelope size (unknown
+-- free space is treated as OK; the donor's own storage_max_bytes is the real
+-- safety gate). Ordered for best-link selection: free-OK first, then reputation.
+SELECT n.id AS node_id, n.reputation_score, n.last_free_bytes
+FROM nodes n
+WHERE n.status IN ('active','suspect')
+  AND n.trust_state <> 'suspended'
+  AND n.advertised_capabilities @> ARRAY['read-source/v1']
+  AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
+ORDER BY (n.last_free_bytes IS NULL OR n.last_free_bytes >= sqlc.arg(min_free_bytes)) DESC,
+         n.reputation_score DESC, n.id
+LIMIT sqlc.arg(lim);

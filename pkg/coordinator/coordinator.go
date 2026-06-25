@@ -42,6 +42,7 @@ import (
 	"github.com/nova-archive/nova/internal/ratelimit"
 	"github.com/nova-archive/nova/internal/setup"
 	"github.com/nova-archive/nova/internal/upload"
+	"github.com/nova-archive/nova/pkg/coordinator/admission"
 	"github.com/nova-archive/nova/pkg/coordinator/product"
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 )
@@ -97,6 +98,13 @@ type Config struct {
 	// origin_copy (full-copy, never evict — today's behavior). Installed on the
 	// storage service via storage.WithStorageMode in New.
 	StorageMode storage.StorageModeConfig
+
+	// ReplicationFactor carries the P2-M4.1 admission replication-factor
+	// configuration (important/normal/cache). Sourced from
+	// opCfg.Orchestrator.Replication.Factor in cmd/coordinator/main.go; zero values
+	// take the config package defaults (5/3/2). Used to build the admission.Assigner
+	// injected via storage.WithAssigner when pool is present.
+	ReplicationFactor config.ReplicationFactor
 
 	// Auth carries the M6 auth dependencies. Zero value means no auth
 	// (verifiers nil, no local issuer, PublicUploads false).
@@ -296,7 +304,8 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		svc := storage.NewService(pool, backend, ks,
 			storage.WithWriteLimits(cfg.MaxUploadSizeBytes, cfg.MaxConcurrentAssembly),
 			storage.WithProductHook(hook),
-			storage.WithStorageMode(cfg.StorageMode))
+			storage.WithStorageMode(cfg.StorageMode),
+			storage.WithAssigner(admission.New(pool, cfg.ReplicationFactor)))
 		c.svc = svc
 		sc.Blob = handlers.NewBlobHandler(svc)
 

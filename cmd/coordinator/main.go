@@ -337,6 +337,16 @@ func run() error {
 				MaxFilesPerSession:      config.DefaultMaxFilesPerSession,
 			}
 		}(),
+		ReplicationFactor: func() config.ReplicationFactor {
+			if opCfg != nil {
+				return opCfg.Orchestrator.Replication.Factor
+			}
+			return config.ReplicationFactor{
+				Important: config.DefaultReplicationImportant,
+				Normal:    config.DefaultReplicationNormal,
+				Cache:     config.DefaultReplicationCache,
+			}
+		}(),
 		ConfigStore:    cfgStore,
 		ConfigFilePath: cfgPath,
 	})

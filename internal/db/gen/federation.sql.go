@@ -380,6 +380,53 @@ func (q *Queries) InsertPinChange(ctx context.Context, arg InsertPinChangeParams
 	return sequence, err
 }
 
+const listAdmissionCandidates = `-- name: ListAdmissionCandidates :many
+SELECT n.id AS node_id, n.reputation_score, n.last_free_bytes
+FROM nodes n
+WHERE n.status IN ('active','suspect')
+  AND n.trust_state <> 'suspended'
+  AND n.advertised_capabilities @> ARRAY['read-source/v1']
+  AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
+ORDER BY (n.last_free_bytes IS NULL OR n.last_free_bytes >= $1) DESC,
+         n.reputation_score DESC, n.id
+LIMIT $2
+`
+
+type ListAdmissionCandidatesParams struct {
+	MinFreeBytes pgtype.Int8
+	Lim          int32
+}
+
+type ListAdmissionCandidatesRow struct {
+	NodeID          pgtype.UUID
+	ReputationScore float32
+	LastFreeBytes   pgtype.Int8
+}
+
+// Admission targets: live, non-suspended, read-source-capable, addressed nodes,
+// preferring those with known free space >= the blob's envelope size (unknown
+// free space is treated as OK; the donor's own storage_max_bytes is the real
+// safety gate). Ordered for best-link selection: free-OK first, then reputation.
+func (q *Queries) ListAdmissionCandidates(ctx context.Context, arg ListAdmissionCandidatesParams) ([]ListAdmissionCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listAdmissionCandidates, arg.MinFreeBytes, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAdmissionCandidatesRow
+	for rows.Next() {
+		var i ListAdmissionCandidatesRow
+		if err := rows.Scan(&i.NodeID, &i.ReputationScore, &i.LastFreeBytes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDesiredAssignmentsByCID = `-- name: ListDesiredAssignmentsByCID :many
 SELECT node_id, generation, state FROM pin_assignments WHERE cid = $1 ORDER BY node_id
 `
