@@ -85,8 +85,24 @@ func (b *echoBackend) Has(_ context.Context, c gocid.Cid) (bool, error) {
 	return ok, nil
 }
 
-func (b *echoBackend) Pin(context.Context, gocid.Cid) error                   { return nil }
-func (b *echoBackend) Unpin(context.Context, gocid.Cid) error                 { return nil }
+// has is a string-keyed convenience for cache tests asserting (un)pin state.
+func (b *echoBackend) has(cidStr string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	_, ok := b.store[cidStr]
+	return ok
+}
+
+func (b *echoBackend) Pin(context.Context, gocid.Cid) error { return nil }
+
+// Unpin removes the pin (and the bytes) from the in-memory store so Has/has
+// reflect the unpin — the transient-mode and eviction tests observe this.
+func (b *echoBackend) Unpin(_ context.Context, c gocid.Cid) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.store, c.String())
+	return nil
+}
 func (b *echoBackend) BlockstoreHas(context.Context, gocid.Cid) (bool, error) { return false, nil }
 func (b *echoBackend) BlockGet(context.Context, gocid.Cid) ([]byte, error) {
 	return nil, errors.New("unused")

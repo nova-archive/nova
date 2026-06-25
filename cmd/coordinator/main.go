@@ -287,6 +287,7 @@ func run() error {
 		UploadGCInterval:      time.Hour,
 		RecordSourceIP:        recordIP,
 		TrustedProxies:        trustedProxies,
+		StorageMode:           resolveStorageMode(opCfg),
 		Auth:                  authCfg,
 		SignedURLs: coordinator.SignedURLConfig{
 			Grace:             time.Duration(envInt("NOVA_SIGNED_URL_GRACE_SECONDS", 86400)) * time.Second,
@@ -708,6 +709,25 @@ func resolveOperatorConfig(cfg *config.Config, getenv func(string) string) resol
 		}
 	}
 	return rc
+}
+
+// resolveStorageMode builds the P2-M4.1 coordinator_storage_mode policy from
+// operator.yaml (cfg may be nil). The accessors on config.Coordinator normalize
+// mode/ratio/touch to their documented defaults, so a config that omits the
+// section yields origin_copy (full-copy, never evict — today's behavior). Deep
+// validation of the bounded_cache budgets is Task 14; here we only translate.
+func resolveStorageMode(cfg *config.Config) storage.StorageModeConfig {
+	if cfg == nil {
+		return storage.StorageModeConfig{Mode: storage.StorageModeOriginCopy}
+	}
+	co := cfg.Coordinator
+	return storage.StorageModeConfig{
+		Mode:           storage.StorageMode(co.StorageMode()),
+		MaxBytes:       co.BoundedCacheMaxBytes,
+		ProtectedRatio: co.BoundedCacheProtectedRatioOrDefault(),
+		MaxObjectBytes: co.BoundedCacheMaxObjectBytes,
+		TouchInterval:  co.LruTouchInterval(),
+	}
 }
 
 // lookupBool reports the bool value of key and whether it was set (non-empty).

@@ -176,6 +176,83 @@ type Coordinator struct {
 	// paranoid preset fills it false). An explicit value always wins over the
 	// preset — see ApplyPrivacyPreset and docs/PRIVACY_AUDIT.md.
 	RecordSourceIP *bool `yaml:"record_source_ip,omitempty"`
+
+	// CoordinatorStorageMode (P2-M4.1, D-M4.1-9) selects how the coordinator
+	// treats donor-fetched blobs on the read path:
+	//   - "origin_copy" (default): keep every donor-fetched blob pinned; the
+	//     coordinator is a full origin copy and never cache-evicts.
+	//   - "bounded_cache": cap locally-cached donor-fetched bytes at
+	//     BoundedCacheMaxBytes via a size-aware SLRU/2Q policy (probationary →
+	//     protected on a second access), so a scan over Nova's large immutable
+	//     blobs cannot pollute the hot set.
+	//   - "transient": hold nothing beyond the in-flight read; unpin after each
+	//     read so the next committed read is donor-backed again.
+	// An empty/unknown value normalizes to "origin_copy".
+	CoordinatorStorageMode string `yaml:"coordinator_storage_mode,omitempty"`
+
+	// BoundedCacheMaxBytes is the bounded_cache total byte budget (probationary +
+	// protected). Honored only when coordinator_storage_mode="bounded_cache"; a
+	// non-positive value disables eviction (treated as unbounded — operator
+	// misconfiguration). All byte accounting is by envelope_size (D-M4.1-16).
+	BoundedCacheMaxBytes int64 `yaml:"bounded_cache_max_bytes,omitempty"`
+
+	// BoundedCacheProtectedRatio caps the protected segment at
+	// ProtectedRatio × BoundedCacheMaxBytes so the probationary tier always
+	// retains admission headroom. Default 0.80; values ≤0 or >1 normalize to the
+	// default.
+	BoundedCacheProtectedRatio float64 `yaml:"bounded_cache_protected_ratio,omitempty"`
+
+	// BoundedCacheMaxObjectBytes refuses cache admission of any single object
+	// larger than this (the bytes are still served, just not cached). 0 = no
+	// per-object ceiling.
+	BoundedCacheMaxObjectBytes int64 `yaml:"bounded_cache_max_object_bytes,omitempty"`
+
+	// LruTouchIntervalSeconds throttles last_accessed_at bumps and protected
+	// promotions: a second access within this window is a no-op so hot reads do
+	// not churn the DB. Default 60s; non-positive normalizes to the default.
+	LruTouchIntervalSeconds int `yaml:"lru_touch_interval_seconds,omitempty"`
+}
+
+// Default coordinator_storage_mode tunables (P2-M4.1). Mirror the storage-layer
+// defaults in pkg/coordinator/storage/cache.go; both must stay in sync.
+const (
+	// DefaultCoordinatorStorageMode is the full-origin-copy posture (never evict).
+	DefaultCoordinatorStorageMode = "origin_copy"
+	// DefaultBoundedCacheProtectedRatio caps the protected segment at 80% of the
+	// bounded-cache budget.
+	DefaultBoundedCacheProtectedRatio = 0.80
+	// DefaultLruTouchIntervalSeconds throttles cache touch/promote DB writes.
+	DefaultLruTouchIntervalSeconds = 60
+)
+
+// StorageMode returns the configured coordinator_storage_mode, normalized to
+// DefaultCoordinatorStorageMode when empty/unknown.
+func (c Coordinator) StorageMode() string {
+	switch c.CoordinatorStorageMode {
+	case "origin_copy", "bounded_cache", "transient":
+		return c.CoordinatorStorageMode
+	default:
+		return DefaultCoordinatorStorageMode
+	}
+}
+
+// BoundedCacheProtectedRatioOrDefault returns the protected-segment ratio,
+// normalized to DefaultBoundedCacheProtectedRatio when ≤0 or >1.
+func (c Coordinator) BoundedCacheProtectedRatioOrDefault() float64 {
+	if c.BoundedCacheProtectedRatio <= 0 || c.BoundedCacheProtectedRatio > 1 {
+		return DefaultBoundedCacheProtectedRatio
+	}
+	return c.BoundedCacheProtectedRatio
+}
+
+// LruTouchInterval returns the cache touch/promote throttle window, defaulting
+// to DefaultLruTouchIntervalSeconds when non-positive.
+func (c Coordinator) LruTouchInterval() time.Duration {
+	s := c.LruTouchIntervalSeconds
+	if s <= 0 {
+		s = DefaultLruTouchIntervalSeconds
+	}
+	return time.Duration(s) * time.Second
 }
 
 type WebhookDestination struct {

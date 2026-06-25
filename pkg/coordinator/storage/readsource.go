@@ -276,7 +276,14 @@ func (s *Service) ensureLocal(ctx context.Context, c gocid.Cid, v *BlobView) err
 	}
 	if has {
 		slog.Info("storage.read.cache_hit", "cid", v.CID)
-		s.touchCache(ctx, v.CID)
+		// When the coordinator_storage_mode policy is installed, a hit drives the
+		// SLRU promote-on-second-access (throttled touch + throttled promote);
+		// otherwise fall back to the legacy throttled LRU touch.
+		if s.cache != nil {
+			s.cache.onHit(ctx, v.CID)
+		} else {
+			s.touchCache(ctx, v.CID)
+		}
 		return nil
 	}
 	slog.Info("storage.read.cache_miss", "cid", v.CID)
@@ -450,10 +457,16 @@ func (s *Service) attemptHolder(ctx context.Context, d *donorReadSource, v *Blob
 		return errors.New("donor cid mismatch")
 	}
 
-	// Verified + pinned. Best-effort re-admit to the local cache as a
-	// probationary cache entry (durability_class=cache). A failed admit does
-	// not fail the read — the bytes are already pinned and serveable.
-	if aerr := d.q.AdmitToCache(ctx, gen.AdmitToCacheParams{
+	// Verified + pinned. Hand off to the coordinator_storage_mode policy when
+	// installed: bounded_cache admits to probationary and enforces the SLRU byte
+	// budget; origin_copy admits without eviction; transient holds nothing. When
+	// no cache policy is installed (legacy / DB-free donor unit tests), fall back
+	// to the donor tier's direct AdmitToCache so behavior is unchanged. A failed
+	// admit/evict does not fail the read — the bytes are already pinned and
+	// serveable.
+	if s.cache != nil {
+		s.cache.admit(ctx, cidStr, envSize)
+	} else if aerr := d.q.AdmitToCache(ctx, gen.AdmitToCacheParams{
 		Cid:             cidStr,
 		DurabilityClass: "cache",
 		LocalBytes:      envSize,

@@ -91,6 +91,13 @@ type Config struct {
 	UploadGCInterval      time.Duration
 	RecordSourceIP        bool
 
+	// StorageMode carries the P2-M4.1 coordinator_storage_mode policy (the
+	// size-aware SLRU/2Q bounded cache + transient unpin-on-read). Sourced from
+	// config.Coordinator in cmd/coordinator/main.go; the zero value normalizes to
+	// origin_copy (full-copy, never evict — today's behavior). Installed on the
+	// storage service via storage.WithStorageMode in New.
+	StorageMode storage.StorageModeConfig
+
 	// Auth carries the M6 auth dependencies. Zero value means no auth
 	// (verifiers nil, no local issuer, PublicUploads false).
 	Auth AuthConfig
@@ -288,7 +295,8 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 	if pool != nil && backend != nil && ks != nil {
 		svc := storage.NewService(pool, backend, ks,
 			storage.WithWriteLimits(cfg.MaxUploadSizeBytes, cfg.MaxConcurrentAssembly),
-			storage.WithProductHook(hook))
+			storage.WithProductHook(hook),
+			storage.WithStorageMode(cfg.StorageMode))
 		c.svc = svc
 		sc.Blob = handlers.NewBlobHandler(svc)
 

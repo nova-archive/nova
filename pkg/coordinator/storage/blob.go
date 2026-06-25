@@ -34,6 +34,13 @@ type Service struct {
 	// verified donor fetch. Installed via WithDonorReadSource or
 	// EnableDonorReadSource. Set once at construction/boot; read-only thereafter.
 	donor *donorReadSource
+
+	// cache is the P2-M4.1 coordinator_storage_mode policy (size-aware SLRU/2Q
+	// bounded cache + transient unpin-on-close). nil ⇒ legacy behavior:
+	// donor-fetched bytes are admitted via the donor tier's AdmitToCache and
+	// kept forever (origin_copy semantics), and reads do not unpin. Installed
+	// via WithStorageMode. Set once at construction; read-only thereafter.
+	cache *cachePolicy
 }
 
 // Option configures a Service. Read-only callers pass none.
@@ -44,6 +51,7 @@ type svcOpts struct {
 	assemblySize    int
 	hook            WriteHook
 	donorReadSource *donorReadSource
+	storageMode     *StorageModeConfig
 }
 
 // WithWriteLimits sets the upload size ceiling (bytes) and the maximum number
@@ -66,6 +74,20 @@ func WithProductHook(h WriteHook) Option {
 	return func(o *svcOpts) { o.hook = h }
 }
 
+// WithStorageMode installs the P2-M4.1 coordinator_storage_mode policy: a
+// size-aware SLRU/2Q bounded cache (bounded_cache), an unbounded full-copy
+// (origin_copy, the default), or transient unpin-on-read. Unlike the donor tier
+// (whose mTLS material is loaded post-construction), the mode config is known at
+// construction, so an Option is the right seam. The cache policy uses the real
+// SQL projection (*gen.Queries) for SLRU correctness. A zero/empty mode
+// normalizes to origin_copy.
+func WithStorageMode(cfg StorageModeConfig) Option {
+	return func(o *svcOpts) {
+		c := cfg
+		o.storageMode = &c
+	}
+}
+
 // NewService builds a storage service over the given pool, IPFS backend, and
 // keystore. backend and ks may be nil in tests that exercise Resolve only.
 // Write limits default to 100 MiB / 8 concurrent assemblies; override via
@@ -85,6 +107,9 @@ func NewService(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore,
 	if o.donorReadSource != nil {
 		o.donorReadSource.q = s.q
 		s.donor = o.donorReadSource
+	}
+	if o.storageMode != nil {
+		s.cache = newCachePolicyFor(s.q, backend, *o.storageMode)
 	}
 	s.assemblyLimit.Store(int64(o.assemblySize))
 	s.maxUploadSize.Store(o.maxUploadSize)
@@ -232,10 +257,25 @@ func (s *Service) OpenBytes(ctx context.Context, v *BlobView) (io.ReadCloser, er
 	if err != nil {
 		return nil, fmt.Errorf("storage: backend get: %w", err)
 	}
+	// P2-M4.1 transient mode: hold nothing beyond the in-flight read. The blob
+	// was never marked present (admit is a no-op in transient), so we only need
+	// to release the backend pin once the read is served, so the next committed
+	// read is donor-backed again.
+	transient := s.cache != nil && s.cache.mode() == StorageModeTransient
 	if !v.Encrypted {
+		// public_archival streams directly from the backend; defer the unpin to
+		// the consumer's Close via the wrapper.
+		if transient {
+			return unpinOnClose{ReadCloser: rc, unpin: func() { s.cache.unpinBlob(context.WithoutCancel(ctx), c) }}, nil
+		}
 		return rc, nil
 	}
 	defer rc.Close()
+	// Encrypted v1 buffers+decrypts fully before returning, so the backend pin is
+	// no longer needed once the plaintext is in hand; unpin immediately.
+	if transient {
+		defer s.cache.unpinBlob(context.WithoutCancel(ctx), c)
+	}
 
 	env, err := io.ReadAll(rc)
 	if err != nil {
