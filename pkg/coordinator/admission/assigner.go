@@ -26,7 +26,18 @@ type Assigner struct {
 }
 
 // New returns an Assigner backed by the given pool and replication factor.
+// Any non-positive factor field is normalized to the corresponding config.Default*
+// constant (defense-in-depth; the config loader already defaults them in production).
 func New(pool *pgxpool.Pool, factor config.ReplicationFactor) *Assigner {
+	if factor.Important <= 0 {
+		factor.Important = config.DefaultReplicationImportant
+	}
+	if factor.Normal <= 0 {
+		factor.Normal = config.DefaultReplicationNormal
+	}
+	if factor.Cache <= 0 {
+		factor.Cache = config.DefaultReplicationCache
+	}
 	return &Assigner{pool: pool, factor: factor}
 }
 
