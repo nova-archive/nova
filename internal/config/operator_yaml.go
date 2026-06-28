@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/google/uuid"
@@ -172,6 +173,122 @@ func validate(cfg *Config) error {
 	// T1.20: public uploads require operator to publish terms of service.
 	if cfg.Uploads.PublicUploads && cfg.TosURL == "" {
 		return fmt.Errorf("config: uploads.public_uploads requires tos_url (T1.20)")
+	}
+
+	if err := validateStorageRead(cfg); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateStorageRead enforces the M4.1 storage/read redirect safety rules.
+// Hard errors (refuse to start) are returned as errors; advisory violations
+// are emitted as slog.Warn and do not prevent startup.
+func validateStorageRead(cfg *Config) error {
+	mode := cfg.Coordinator.CoordinatorStorageMode
+	gate := cfg.Coordinator.RequireReplicationQuorumBeforeCommit
+
+	// --- REFUSE: unknown coordinator_storage_mode (explicit non-empty, non-valid value) ---
+	switch mode {
+	case "", "origin_copy", "bounded_cache", "transient":
+		// ok (empty normalises to origin_copy)
+	default:
+		return fmt.Errorf("config: coordinator_storage_mode unknown: %q (want origin_copy|bounded_cache|transient)", mode)
+	}
+
+	// --- REFUSE: transient without a commit quorum gate ---
+	if mode == "transient" && !gate {
+		return fmt.Errorf("config: coordinator_storage_mode=transient requires require_replication_quorum_before_commit=true (no local copy; committing without a donor quorum risks data with no durable copy)")
+	}
+
+	// --- REFUSE: bounded_cache_protected_ratio explicitly out of (0,1) ---
+	if r := cfg.Coordinator.BoundedCacheProtectedRatio; r != 0 && (r <= 0 || r >= 1) {
+		return fmt.Errorf("config: bounded_cache_protected_ratio must be in (0,1); got %g", r)
+	}
+
+	// --- REFUSE: per-object ceiling above whole-cache budget ---
+	if cfg.Coordinator.BoundedCacheMaxObjectBytes > 0 &&
+		cfg.Coordinator.BoundedCacheMaxBytes > 0 &&
+		cfg.Coordinator.BoundedCacheMaxObjectBytes > cfg.Coordinator.BoundedCacheMaxBytes {
+		return fmt.Errorf("config: bounded_cache_max_object_bytes (%d) > bounded_cache_max_bytes (%d); per-object ceiling cannot exceed whole-cache budget",
+			cfg.Coordinator.BoundedCacheMaxObjectBytes, cfg.Coordinator.BoundedCacheMaxBytes)
+	}
+
+	// Gate/quorum range checks are always applied (even when gate=false) so
+	// operators catch nonsensical quorum values at load time rather than
+	// discovering them silently when they enable the gate later.
+	rf := cfg.Orchestrator.Replication.Factor
+	cq := cfg.Coordinator.CommitQuorum
+	floor := cfg.Coordinator.PruneSafetyFloorOrDefault()
+
+	type classRow struct {
+		name   string
+		factor int
+		quorum int
+	}
+	classes := []classRow{
+		{"important", rf.Important, cq.Important},
+		{"normal", rf.Normal, cq.Normal},
+		{"cache", rf.Cache, cq.Cache},
+	}
+
+	for _, class := range classes {
+		q := class.quorum
+		f := class.factor
+		// REFUSE: quorum out of [1, factor]
+		if q < 1 || q > f {
+			return fmt.Errorf("config: commit_quorum.%s=%d is out of range [1,%d] (replication.factor.%s=%d)",
+				class.name, q, f, class.name, f)
+		}
+
+		// Prunable classes only: important and normal
+		if class.name == "cache" {
+			continue
+		}
+
+		// REFUSE: floor < quorum (pruning below the commit quorum is unsafe)
+		if floor < q {
+			return fmt.Errorf("config: prune_safety_floor=%d is below commit_quorum.%s=%d; pruning below the quorum that made a blob committable is unsafe",
+				floor, class.name, q)
+		}
+		// WARN: floor > factor (the floor can never be reached; pruning will never happen)
+		if floor > f {
+			slog.Warn("config: prune_safety_floor exceeds replication factor; origin pruning will never trigger",
+				"prune_safety_floor", floor,
+				"replication_factor_"+class.name, f,
+				"class", class.name,
+			)
+		}
+	}
+
+	// --- WARN: bounded_cache mode without the commit gate ---
+	if mode == "bounded_cache" && !gate {
+		slog.Warn("config: coordinator_storage_mode=bounded_cache without require_replication_quorum_before_commit; origin pruning will run without a durability gate — consider enabling the gate")
+	}
+
+	// --- WARN: bounded_cache budget smaller than the max single-transfer size ---
+	if mode == "bounded_cache" && cfg.Coordinator.BoundedCacheMaxBytes > 0 {
+		maxXfer := cfg.Federation.MaxTransfer()
+		if cfg.Coordinator.BoundedCacheMaxBytes < maxXfer {
+			slog.Warn("config: bounded_cache_max_bytes is smaller than federation.max_transfer_bytes; objects at the transfer size limit cannot be cached and the cache will thrash or refuse them",
+				"bounded_cache_max_bytes", cfg.Coordinator.BoundedCacheMaxBytes,
+				"max_transfer_bytes", maxXfer,
+			)
+		}
+	}
+
+	// --- WARN: donor freshness window too tight relative to heartbeat cadence ---
+	hb := cfg.Federation.HeartbeatIntervalSeconds
+	if hb <= 0 {
+		hb = DefaultHeartbeatIntervalSeconds
+	}
+	stale := cfg.Federation.SourceStaleSeconds()
+	if stale < 2*float64(hb) {
+		slog.Warn("config: federation.source_stale_seconds is less than 2× heartbeat_interval_seconds; transient poll gaps may empty the sourceable donor set",
+			"source_stale_seconds", stale,
+			"heartbeat_interval_seconds", hb,
+		)
 	}
 
 	return nil

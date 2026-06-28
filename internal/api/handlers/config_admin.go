@@ -30,6 +30,14 @@ const (
 
 // fieldEffect maps a dotted operator.yaml path (or a "section" prefix) to its
 // effect. Longest-prefix match wins; unmatched defaults to restart (safe).
+//
+// M4.1 coordinator storage/read knobs: all are read once at coordinator
+// construction (WithStorageMode, WithCommitGate, NewPruner) and require a
+// restart to take effect. The four first-class knobs are listed explicitly so
+// the /settings UI can surface them prominently; the remaining advanced tuning
+// knobs inherit the "coordinator" prefix (also restart) and appear in the
+// advanced section. The effect structure has no formal first-class vs. advanced
+// distinction — prominence is conveyed by the presence of an explicit entry.
 var fieldEffect = map[string]effect{
 	"uploads.cors":                    effectLive,
 	"uploads.limits":                  effectLive,
@@ -52,6 +60,14 @@ var fieldEffect = map[string]effect{
 	"integrity_audit":                 effectInert,
 	"signed_urls":                     effectInert,
 	"master_key_rotation":             effectInert,
+
+	// M4.1 first-class storage/read knobs (explicit entries = first-class;
+	// advanced tuning knobs fall through the "coordinator" prefix above).
+	// All are restart-effect: captured at coordinator construction, no hot reload.
+	"coordinator.coordinator_storage_mode":                 effectRestart,
+	"coordinator.bounded_cache_max_bytes":                  effectRestart,
+	"coordinator.require_replication_quorum_before_commit": effectRestart,
+	"coordinator.prune_safety_floor":                       effectRestart,
 }
 
 func effectFor(dotted string) effect {
