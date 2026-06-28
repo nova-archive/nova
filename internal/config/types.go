@@ -238,6 +238,24 @@ type Coordinator struct {
 	// — the upload never reached durability). Default 3600s (1h); non-positive
 	// normalizes to the default via the accessor.
 	CommitFailAfterSeconds int `yaml:"commit_fail_after_seconds,omitempty"`
+
+	// PruneSafetyFloor is the minimum live acked DONOR holder count required
+	// before an origin blob (important/normal) may be pruned (unpinned + marked
+	// absent) from the coordinator. If the live holder count is < Floor, the
+	// local copy is retained. Default 2. Honored only in bounded_cache and
+	// transient storage modes (origin_copy never prunes).
+	PruneSafetyFloor int `yaml:"prune_safety_floor,omitempty"`
+
+	// PrunerIntervalSeconds is how often the origin pruner scans for prune-
+	// eligible blobs. Default 60s; non-positive normalizes to the default via
+	// the accessor.
+	PrunerIntervalSeconds int `yaml:"pruner_interval_seconds,omitempty"`
+
+	// PruneStaleSeconds is the donor freshness window for CountSourceableHolders
+	// in the pruner: donors last-seen older than this are excluded (treated as
+	// not live). Default 3600s; mirrors the federation donor-freshness window.
+	// Non-positive normalizes to the default via the accessor.
+	PruneStaleSeconds float64 `yaml:"prune_stale_seconds,omitempty"`
 }
 
 // Default coordinator_storage_mode tunables (P2-M4.1). Mirror the storage-layer
@@ -320,6 +338,46 @@ func (c Coordinator) CommitFailAfter() time.Duration {
 		s = DefaultCommitFailAfterSeconds
 	}
 	return time.Duration(s) * time.Second
+}
+
+// Pruner defaults (P2-M4.1, D-M4.1-12). Applied lazily by the accessors below.
+const (
+	// DefaultPruneSafetyFloor is the minimum live acked DONOR holder count
+	// required before an origin blob may be pruned. Conservative default.
+	DefaultPruneSafetyFloor = 2
+	// DefaultPrunerIntervalSeconds is the pruner scan cadence.
+	DefaultPrunerIntervalSeconds = 60
+	// DefaultPruneStaleSeconds is the donor freshness window for the pruner's
+	// CountSourceableHolders call; mirrors the federation staleness default.
+	DefaultPruneStaleSeconds = 3600.0
+)
+
+// PruneSafetyFloorOrDefault returns the prune_safety_floor, defaulting to
+// DefaultPruneSafetyFloor when non-positive.
+func (c Coordinator) PruneSafetyFloorOrDefault() int {
+	if c.PruneSafetyFloor <= 0 {
+		return DefaultPruneSafetyFloor
+	}
+	return c.PruneSafetyFloor
+}
+
+// PrunerInterval returns the pruner scan cadence, defaulting to
+// DefaultPrunerIntervalSeconds when non-positive.
+func (c Coordinator) PrunerInterval() time.Duration {
+	s := c.PrunerIntervalSeconds
+	if s <= 0 {
+		s = DefaultPrunerIntervalSeconds
+	}
+	return time.Duration(s) * time.Second
+}
+
+// PruneStale returns the donor freshness window for the pruner, defaulting to
+// DefaultPruneStaleSeconds when non-positive.
+func (c Coordinator) PruneStale() float64 {
+	if c.PruneStaleSeconds <= 0 {
+		return DefaultPruneStaleSeconds
+	}
+	return c.PruneStaleSeconds
 }
 
 type WebhookDestination struct {

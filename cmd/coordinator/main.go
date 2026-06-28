@@ -348,6 +348,7 @@ func run() error {
 			}
 		}(),
 		CommitGate:     resolveCommitGate(opCfg),
+		Pruner:         resolvePrunerConfig(opCfg),
 		ConfigStore:    cfgStore,
 		ConfigFilePath: cfgPath,
 	})
@@ -762,6 +763,23 @@ func resolveCommitGate(cfg *config.Config) storage.CommitGateConfig {
 		ReconcilerInterval: co.CommitReconcilerInterval(),
 		FailAfter:          co.CommitFailAfter(),
 		StaleSeconds:       cfg.Federation.SourceStaleSeconds(),
+	}
+}
+
+// resolvePrunerConfig builds the P2-M4.1 origin-pruner config from
+// operator.yaml (cfg may be nil). The zero value (nil cfg) is safe: defaults
+// apply in storage.PrunerConfig.withPrunerDefaults(), and NewPruner returns nil
+// in origin_copy mode anyway. The floor/interval/stale accessors on
+// config.Coordinator normalize their own defaults when non-positive.
+func resolvePrunerConfig(cfg *config.Config) storage.PrunerConfig {
+	if cfg == nil {
+		return storage.PrunerConfig{}
+	}
+	co := cfg.Coordinator
+	return storage.PrunerConfig{
+		Floor:        co.PruneSafetyFloorOrDefault(),
+		StaleSeconds: co.PruneStale(),
+		Interval:     co.PrunerInterval(),
 	}
 }
 

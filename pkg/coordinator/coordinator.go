@@ -114,6 +114,12 @@ type Config struct {
 	// durability reconciler goroutine started in Run.
 	CommitGate storage.CommitGateConfig
 
+	// Pruner carries the P2-M4.1 origin-pruner config (prune_safety_floor +
+	// pruner_interval). The zero value is safe (defaults apply). NewPruner
+	// returns nil in origin_copy mode, so the pruner goroutine is only started
+	// in bounded_cache and transient modes.
+	Pruner storage.PrunerConfig
+
 	// Auth carries the M6 auth dependencies. Zero value means no auth
 	// (verifiers nil, no local issuer, PublicUploads false).
 	Auth AuthConfig
@@ -279,6 +285,12 @@ type Coordinator struct {
 	// loop; it flips staging blobs to committed once an acked-holder quorum exists
 	// and fires the deferred product OnCommitted hook.
 	reconciler *storage.Reconciler
+
+	// Origin pruner wiring (P2-M4.1, D-M4.1-12). nil in origin_copy mode or
+	// when the storage mode is not configured. When non-nil, Run starts its loop;
+	// it unpins origin blobs once >= prune_safety_floor live acked DONOR holders
+	// exist and handles crash-window reconcile.
+	pruner *storage.Pruner
 }
 
 // New constructs a coordinator from injected dependencies. pool/backend/ks may
@@ -326,6 +338,9 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		// P2-M4.1 durability reconciler: built only when the gate is on (a nil
 		// Reconciler means gate-off — there is nothing to reconcile). Started in Run.
 		c.reconciler = storage.NewReconciler(svc)
+		// P2-M4.1 origin pruner (D-M4.1-12): built only in bounded_cache /
+		// transient modes (nil in origin_copy). Started in Run via a nil-guard.
+		c.pruner = storage.NewPruner(svc, cfg.Pruner)
 
 		// Mount the write path only when a chunk tmp dir is configured.
 		if cfg.UploadTmpDir != "" {
@@ -706,6 +721,11 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	// non-nil reconciler implies require_replication_quorum_before_commit=true.
 	if c.reconciler != nil {
 		go c.reconciler.Run(ctx)
+	}
+	// Origin pruner (P2-M4.1, D-M4.1-12): nil in origin_copy mode or when the
+	// storage mode policy is not installed. Only runs in bounded_cache/transient.
+	if c.pruner != nil {
+		go c.pruner.Run(ctx)
 	}
 	c.srv = &http.Server{Handler: c.mux, ReadHeaderTimeout: 10 * time.Second}
 
