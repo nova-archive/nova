@@ -123,6 +123,12 @@ func (p *Pruner) Run(ctx context.Context) {
 	}
 }
 
+// PruneOnce runs exactly one pruning pass and returns. It is a thin delegation
+// to the unexported pruneOnce, exposed as a test/ops seam so an operator runbook
+// or an end-to-end test can drive a single deterministic pass without standing
+// up the Run ticker goroutine. Production uses Run.
+func (p *Pruner) PruneOnce(ctx context.Context) { p.pruneOnce(ctx) }
+
 // pruneOnce performs a single origin-pruning pass over both origin durability
 // classes ('important', 'normal'), then (in bounded_cache mode) triggers
 // Task-9 cache size eviction so the two mechanisms compose cleanly.

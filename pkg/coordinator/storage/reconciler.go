@@ -70,6 +70,12 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}
 }
 
+// ReconcileOnce runs exactly one reconciliation pass and returns. It is a thin
+// delegation to the unexported reconcileOnce, exposed as a test/ops seam so an
+// operator runbook or an end-to-end test can drive a single deterministic pass
+// without standing up the Run ticker goroutine. Production uses Run.
+func (r *Reconciler) ReconcileOnce(ctx context.Context) { r.reconcileOnce(ctx) }
+
 // reconcileOnce performs a single reconciliation pass over the staging backlog.
 // It is safe to call concurrently with itself only in the trivial sense that the
 // MarkCommitted/MarkFailed guards make double-processing a no-op; the intended
