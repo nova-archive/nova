@@ -309,6 +309,23 @@ in P2-M2.1 — this section records the **direction**; each milestone carries th
 normative spec edits with its version bump, exactly as P2-M0 did for the
 federation reconciliation.
 
+**As-built (P2-M4.1, implemented — tag `p2-m4.1-storage-read-redirect`).** The
+direction below is now realized: the coordinator's local Kubo is a bounded,
+prunable cache, not the canonical origin. Donor-backed reads run behind
+`storage.Service.OpenBytes` (cache miss → reputation-ordered sourceable-holder
+select → mTLS fetch of the ciphertext envelope under a coordinator-minted,
+reversed-direction read grant → **deterministic re-import root-CID verify BEFORE
+decrypt** → decrypt → serve → bounded re-cache). `coordinator_storage_mode`
+(`origin_copy` default / `bounded_cache` / `transient`) + a size-aware SLRU/2Q
+hot cache, the async commit gate `require_replication_quorum_before_commit`
+(staging until a live `acked` sourceable quorum, via a crash-safe reconciler),
+and the origin pruner with `prune_safety_floor` (unpin only at/above N live
+donor holders, counted donor-only so the local cache never inflates the floor)
+are all shipped. The coordinator remains the **sole decrypt/serve point**
+(`T1.26`); donors serve **ciphertext only, to the authenticated coordinator
+only**. P2-M5 may assume the coordinator origin copy is not guaranteed. See
+`docs/superpowers/specs/phase2/2026-06-23-phase2-m4.1-storage-read-redirect-design.md`.
+
 **Why.** Nova's target is not a single host that happens to have backups — it is
 media infrastructure for **tens of thousands of DAU served cheaply with S3-grade
 reliability**. An operator forced to store the **entire corpus locally**

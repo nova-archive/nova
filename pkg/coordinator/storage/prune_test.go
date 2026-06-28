@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/dbtest"
@@ -441,9 +440,4 @@ func TestPrunerSkipsCacheClass(t *testing.T) {
 	require.NoError(t, serr)
 	require.True(t, st.LocalPresent, "cache-class row must NOT be pruned by the origin pruner")
 	require.True(t, be.has(cidStr), "cache-class blob must remain in backend")
-}
-
-// pgTimestamptz is a helper to convert pgtype.Timestamptz for assertions.
-func pgTimestamptz(ts pgtype.Timestamptz) (time.Time, bool) {
-	return ts.Time, ts.Valid
 }

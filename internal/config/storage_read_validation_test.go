@@ -41,7 +41,6 @@ func TestStorageModeUnknownIsRefused(t *testing.T) {
 func TestStorageModeKnownValuesAreAccepted(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"origin_copy", "bounded_cache", "transient"} {
-		mode := mode
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			var extra string
