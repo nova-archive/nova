@@ -199,6 +199,8 @@ type Querier interface {
 	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
 	// Best-link sourceable holders: reputation desc, then id for stable rotation.
 	ListSourceableHolders(ctx context.Context, arg ListSourceableHoldersParams) ([]ListSourceableHoldersRow, error)
+	// Reconciler input: staging rows + the blob's product, ordered oldest-first.
+	ListStagingBlobs(ctx context.Context, lim int32) ([]ListStagingBlobsRow, error)
 	ListUploadTokens(ctx context.Context) ([]ListUploadTokensRow, error)
 	// Owner resolution for `novactl collection create`: the sole operator user is
 	// the default collection owner when --owner is omitted.

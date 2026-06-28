@@ -154,21 +154,32 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 		return nil, ErrBlobBlocklisted
 	}
 
-	if err := s.commit(ctx, add, buf, mime, pc, encrypt, wrapped, mkvID, persist); err != nil {
+	// gateOn ⇒ the async durability gate (P2-M4.1,
+	// require_replication_quorum_before_commit) is enabled: the blob is committed
+	// to the DB but held 'staging' (not publicly readable, OnCommitted deferred)
+	// until the reconciler observes an acked-holder quorum. gate-off is today's
+	// immediate-commit behavior.
+	gateOn := s.commitGate != nil && s.commitGate.RequireQuorum
+
+	if err := s.commit(ctx, add, buf, mime, pc, encrypt, wrapped, mkvID, persist, gateOn); err != nil {
 		if uerr := s.backend.Unpin(ctx, add.CID); uerr != nil {
 			err = fmt.Errorf("%w (unpin also failed: %v)", err, uerr)
 		}
 		return nil, fmt.Errorf("storage: commit: %w", err)
 	}
 
-	if s.hook != nil {
+	// OnCommitted relocation (P2-M4.1, Bug #5): a staging-write is NOT a durable
+	// commit, so the product hook must not fire yet. gate-off fires it here as
+	// today; gate-on defers it to the reconciler, which fires it exactly once
+	// after MarkCommitted succeeds.
+	if !gateOn && s.hook != nil {
 		s.hook.OnCommitted(ctx, CommittedRef{CID: add.CID.String(), Product: pc.Product})
 	}
 
-	// Gate-off best-effort admission assign (P2-M4.1, Task 10). The blob is
-	// already durable on the coordinator; a failed assign MUST NOT fail the
-	// upload. The gate-on path (Task 11: require_replication_quorum_before_commit)
-	// will call Assign before returning — that logic is not implemented here yet.
+	// Best-effort admission assign (P2-M4.1, Task 10). The assign MUST NOT fail
+	// the upload, and it fires in BOTH modes: gate-on needs donors assigned so
+	// they can replicate → ack → reach quorum (otherwise the staging blob never
+	// commits). Do not move or gate this call.
 	if s.assigner != nil {
 		cidStr := add.CID.String()
 		if _, aerr := s.assigner.Assign(ctx, cidStr, classFor(pc)); aerr != nil {
@@ -176,9 +187,14 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 		}
 	}
 
+	ds := "committed"
+	if gateOn {
+		ds = "staging"
+	}
 	return &PutResult{
 		CID: add.CID.String(), ByteSize: int64(len(buf)),
 		MIME: mime, Product: pc.Product, Encrypted: encrypt,
+		DurabilityState: ds,
 	}, nil
 }
 
@@ -187,7 +203,7 @@ func (s *Service) Put(ctx context.Context, r io.Reader, declaredSize int64, pc P
 // refinement by product type is a later-task concern.
 func classFor(_ PutContext) string { return "important" }
 
-func (s *Service) commit(ctx context.Context, add ipfs.AddResult, buf []byte, mime string, pc PutContext, encrypt bool, wrapped []byte, mkvID uuid.UUID, persist func(context.Context, pgx.Tx, string) error) error {
+func (s *Service) commit(ctx context.Context, add ipfs.AddResult, buf []byte, mime string, pc PutContext, encrypt bool, wrapped []byte, mkvID uuid.UUID, persist func(context.Context, pgx.Tx, string) error, gateOn bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -252,6 +268,21 @@ func (s *Service) commit(ctx context.Context, add ipfs.AddResult, buf []byte, mi
 	}
 	if persist != nil {
 		if err := persist(ctx, tx, cidStr); err != nil {
+			return err
+		}
+	}
+
+	// Gate-on (P2-M4.1, require_replication_quorum_before_commit): write the
+	// 'staging' projection row atomically with the blob so a crash between the
+	// blob insert and the projection write cannot leave a committed-but-invisible
+	// blob (or vice-versa). The reconciler flips this row to 'committed' once a
+	// live acked-holder quorum exists. ON CONFLICT re-opens a previously failed
+	// row. Gate-off skips this: no projection row ⇒ GetCommitState returns
+	// pgx.ErrNoRows ⇒ the read path treats the blob as committed (today's path).
+	if gateOn {
+		if err := qtx.UpsertStorageStateStaging(ctx, gen.UpsertStorageStateStagingParams{
+			Cid: cidStr, DurabilityClass: classFor(pc),
+		}); err != nil {
 			return err
 		}
 	}

@@ -452,7 +452,13 @@ func (h *UploadHandler) multipart(w http.ResponseWriter, r *http.Request, forceP
 	if product == "image" && h.imagePresetURLs != nil {
 		presets = h.imagePresetURLs(res.CID)
 	}
-	writeUploadResult(w, http.StatusCreated, res, presets)
+	// P2-M4.1 commit gate: a staging upload returns 202 Accepted (durably
+	// committed only once the reconciler observes quorum); gate-off keeps 201.
+	status := http.StatusCreated
+	if res.DurabilityState == "staging" {
+		status = http.StatusAccepted
+	}
+	writeUploadResult(w, status, res, presets)
 }
 
 func (h *UploadHandler) writePutError(w http.ResponseWriter, err error, rid string) {
@@ -489,12 +495,19 @@ func writeUploadResult(w http.ResponseWriter, status int, res *storage.PutResult
 	if len(presets) > 0 {
 		urls["presets"] = presets
 	}
+	// P2-M4.1: surface the commit-gate state. Empty ⇒ "committed" for back-compat
+	// with PutResults that predate the gate.
+	ds := res.DurabilityState
+	if ds == "" {
+		ds = "committed"
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"cid":       res.CID,
-		"byte_size": res.ByteSize,
-		"mime_type": res.MIME,
-		"product":   res.Product,
-		"urls":      urls,
+		"cid":              res.CID,
+		"byte_size":        res.ByteSize,
+		"mime_type":        res.MIME,
+		"product":          res.Product,
+		"durability_state": ds,
+		"urls":             urls,
 	})
 }
 

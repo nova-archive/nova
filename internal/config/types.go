@@ -211,6 +211,33 @@ type Coordinator struct {
 	// promotions: a second access within this window is a no-op so hot reads do
 	// not churn the DB. Default 60s; non-positive normalizes to the default.
 	LruTouchIntervalSeconds int `yaml:"lru_touch_interval_seconds,omitempty"`
+
+	// RequireReplicationQuorumBeforeCommit (P2-M4.1, D-M4.1-11) is the opt-in
+	// async durability gate. false (default): an upload commits immediately and
+	// is publicly readable at once (today's behavior). true: an upload returns
+	// 202 with the blob in 'staging' (not publicly readable); a background
+	// reconciler flips it to 'committed' once a live acked-holder quorum exists,
+	// and only then fires the product OnCommitted hook. Staging-write is NOT a
+	// durable commit; see docs and pkg/coordinator/storage/reconciler.go.
+	RequireReplicationQuorumBeforeCommit bool `yaml:"require_replication_quorum_before_commit,omitempty"`
+
+	// CommitQuorum is the live-acked sourceable-holder count needed to commit a
+	// staging blob, per durability class. Honored only when
+	// RequireReplicationQuorumBeforeCommit=true. Zero-valued fields take the
+	// DefaultCommitQuorum* constants (Important=2, Normal=2, Cache=1) via
+	// applyCommitGateDefaults.
+	CommitQuorum ReplicationFactor `yaml:"commit_quorum,omitempty"`
+
+	// CommitReconcilerIntervalSeconds is how often the durability reconciler
+	// scans for staging blobs whose quorum may now be met. Default 30s;
+	// non-positive normalizes to the default via the accessor.
+	CommitReconcilerIntervalSeconds int `yaml:"commit_reconciler_interval_seconds,omitempty"`
+
+	// CommitFailAfterSeconds is the staging-age ceiling: a staging blob older
+	// than this whose quorum is still unmet is marked 'failed' (a permanent miss
+	// — the upload never reached durability). Default 3600s (1h); non-positive
+	// normalizes to the default via the accessor.
+	CommitFailAfterSeconds int `yaml:"commit_fail_after_seconds,omitempty"`
 }
 
 // Default coordinator_storage_mode tunables (P2-M4.1). Mirror the storage-layer
@@ -251,6 +278,46 @@ func (c Coordinator) LruTouchInterval() time.Duration {
 	s := c.LruTouchIntervalSeconds
 	if s <= 0 {
 		s = DefaultLruTouchIntervalSeconds
+	}
+	return time.Duration(s) * time.Second
+}
+
+// Commit-gate defaults (P2-M4.1, D-M4.1-11). The CommitQuorum defaults are the
+// minimum live acked sourceable-holder count per class; they are intentionally
+// modest (a coordinator-as-source deployment reaches them quickly) and are
+// applied by applyCommitGateDefaults before validation. The interval/fail-after
+// defaults are applied lazily by the accessors below.
+const (
+	// DefaultCommitQuorumImportant is the live-acked-holder count needed to
+	// commit a user-uploaded original under the gate.
+	DefaultCommitQuorumImportant = 2
+	// DefaultCommitQuorumNormal is the quorum for regenerable derivatives.
+	DefaultCommitQuorumNormal = 2
+	// DefaultCommitQuorumCache is the quorum for transient artifacts.
+	DefaultCommitQuorumCache = 1
+	// DefaultCommitReconcilerIntervalSeconds is the reconciler scan cadence.
+	DefaultCommitReconcilerIntervalSeconds = 30
+	// DefaultCommitFailAfterSeconds is the staging-age ceiling before a
+	// quorum-starved blob is marked failed (1 hour).
+	DefaultCommitFailAfterSeconds = 3600
+)
+
+// CommitReconcilerInterval returns the reconciler scan cadence, defaulting to
+// DefaultCommitReconcilerIntervalSeconds when non-positive.
+func (c Coordinator) CommitReconcilerInterval() time.Duration {
+	s := c.CommitReconcilerIntervalSeconds
+	if s <= 0 {
+		s = DefaultCommitReconcilerIntervalSeconds
+	}
+	return time.Duration(s) * time.Second
+}
+
+// CommitFailAfter returns the staging-age ceiling, defaulting to
+// DefaultCommitFailAfterSeconds when non-positive.
+func (c Coordinator) CommitFailAfter() time.Duration {
+	s := c.CommitFailAfterSeconds
+	if s <= 0 {
+		s = DefaultCommitFailAfterSeconds
 	}
 	return time.Duration(s) * time.Second
 }

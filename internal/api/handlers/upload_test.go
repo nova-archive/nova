@@ -352,6 +352,77 @@ func TestMultipartRejectsBodyExceedingMaxBytesReader(t *testing.T) {
 	require.Equal(t, "", mp.gotPC.Product, "Put must not be called when the body exceeds MaxBytesReader")
 }
 
+// TestGateOnUploadStaging confirms the P2-M4.1 async commit gate's handler
+// semantics: a multipart upload whose PutResult reports DurabilityState=="staging"
+// returns 202 Accepted with body durability_state:"staging". (The storage-layer
+// Put/Resolve behavior — no OnCommitted at staging write, public read 404 — is
+// covered by DB-backed tests in pkg/coordinator/storage.)
+func TestGateOnUploadStaging(t *testing.T) {
+	t.Parallel()
+	mp := &fakeMP{res: &storage.PutResult{
+		CID: "bafystaging", ByteSize: 3, MIME: "image/png", Product: "raw",
+		DurabilityState: "staging",
+	}}
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false, nil)
+	body, ctype := multipartFileBody(t, "abc", "image/png")
+	rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
+	require.Equal(t, http.StatusAccepted, rec.Code, "staging upload must return 202, body: %s", rec.Body.String())
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Equal(t, "staging", out["durability_state"])
+	require.Equal(t, "bafystaging", out["cid"])
+}
+
+// TestGateOffUnchanged confirms the gate-off path is unchanged at the handler:
+// a PutResult with DurabilityState=="committed" (or empty) returns 201 with body
+// durability_state:"committed".
+func TestGateOffUnchanged(t *testing.T) {
+	t.Parallel()
+	mp := &fakeMP{res: &storage.PutResult{
+		CID: "bafycommitted", ByteSize: 3, MIME: "image/png", Product: "raw",
+		DurabilityState: "committed",
+	}}
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false, nil)
+	body, ctype := multipartFileBody(t, "abc", "image/png")
+	rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
+	require.Equal(t, http.StatusCreated, rec.Code, "committed upload must return 201, body: %s", rec.Body.String())
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Equal(t, "committed", out["durability_state"])
+}
+
+// TestGateOffEmptyDurabilityState confirms back-compat: a PutResult that predates
+// the gate (DurabilityState empty) returns 201 with durability_state:"committed".
+func TestGateOffEmptyDurabilityState(t *testing.T) {
+	t.Parallel()
+	mp := &fakeMP{res: &storage.PutResult{CID: "bafyempty", ByteSize: 3, MIME: "image/png", Product: "raw"}}
+	h := NewUploadHandler(&fakeStore{}, mp, 100, false, nil)
+	body, ctype := multipartFileBody(t, "abc", "image/png")
+	rec := do(t, uploadRouter(h), http.MethodPost, "/api/v1/blobs", body, map[string]string{"Content-Type": ctype})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Equal(t, "committed", out["durability_state"], "empty durability_state must back-compat to committed")
+}
+
+// TestTusFinalizeCarriesDurabilityState confirms tus finalize keeps 200 (tus
+// clients expect 2xx) but now carries durability_state in the JSON body.
+func TestTusFinalizeCarriesDurabilityState(t *testing.T) {
+	t.Parallel()
+	id := uuid.New()
+	url := "/api/v1/uploads/" + id.String() + "/finalize"
+	h := NewUploadHandler(&fakeStore{finRes: &storage.PutResult{
+		CID: "bafytus", ByteSize: 5, MIME: "image/png", Product: "raw",
+		DurabilityState: "staging",
+	}}, &fakeMP{}, 100, false, nil)
+	rec := do(t, uploadRouter(h), http.MethodPost, url, nil, nil)
+	require.Equal(t, http.StatusOK, rec.Code, "tus finalize keeps 200")
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Equal(t, "staging", out["durability_state"])
+	require.Equal(t, "bafytus", out["cid"])
+}
+
 // ---------------------------------------------------------------------------
 // Admission cap + token scope tests (Part C / Part E of Task 8)
 // ---------------------------------------------------------------------------

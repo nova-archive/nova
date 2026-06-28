@@ -347,6 +347,7 @@ func run() error {
 				Cache:     config.DefaultReplicationCache,
 			}
 		}(),
+		CommitGate:     resolveCommitGate(opCfg),
 		ConfigStore:    cfgStore,
 		ConfigFilePath: cfgPath,
 	})
@@ -737,6 +738,30 @@ func resolveStorageMode(cfg *config.Config) storage.StorageModeConfig {
 		ProtectedRatio: co.BoundedCacheProtectedRatioOrDefault(),
 		MaxObjectBytes: co.BoundedCacheMaxObjectBytes,
 		TouchInterval:  co.LruTouchInterval(),
+	}
+}
+
+// resolveCommitGate builds the P2-M4.1 async durability gate
+// (require_replication_quorum_before_commit) from operator.yaml (cfg may be
+// nil). When cfg is nil or the flag is off, the returned zero/RequireQuorum=false
+// config is gate-off (today's immediate-commit behavior). The quorum factors are
+// already defaulted by applyCommitGateDefaults; the interval/fail-after accessors
+// normalize their own defaults. StaleSeconds reuses the federation donor-freshness
+// window so the commit gate and the donor-read tier agree on "live holder".
+func resolveCommitGate(cfg *config.Config) storage.CommitGateConfig {
+	if cfg == nil {
+		return storage.CommitGateConfig{}
+	}
+	co := cfg.Coordinator
+	if !co.RequireReplicationQuorumBeforeCommit {
+		return storage.CommitGateConfig{}
+	}
+	return storage.CommitGateConfig{
+		RequireQuorum:      true,
+		Quorum:             co.CommitQuorum,
+		ReconcilerInterval: co.CommitReconcilerInterval(),
+		FailAfter:          co.CommitFailAfter(),
+		StaleSeconds:       cfg.Federation.SourceStaleSeconds(),
 	}
 }
 

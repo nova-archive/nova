@@ -129,3 +129,11 @@ LIMIT sqlc.arg(lim);
 -- name: GetCommitState :one
 -- Resolve visibility: is the blob committed (write-through to origin)?
 SELECT commit_state FROM blob_storage_state WHERE cid = $1;
+
+-- name: ListStagingBlobs :many
+-- Reconciler input: staging rows + the blob's product, ordered oldest-first.
+SELECT s.cid, s.durability_class, s.updated_at, b.product
+FROM blob_storage_state s JOIN blobs b ON b.cid = s.cid
+WHERE s.commit_state = 'staging'
+ORDER BY s.updated_at
+LIMIT sqlc.arg(lim);

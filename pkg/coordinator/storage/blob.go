@@ -8,11 +8,13 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/ipfs/go-cid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/envelope"
 	"github.com/nova-archive/nova/internal/ipfs"
@@ -56,6 +58,46 @@ type Service struct {
 	// kept forever (origin_copy semantics), and reads do not unpin. Installed
 	// via WithStorageMode. Set once at construction; read-only thereafter.
 	cache *cachePolicy
+
+	// commitGate is the P2-M4.1 async durability gate
+	// (require_replication_quorum_before_commit). nil ⇒ gate off (the default):
+	// Put commits immediately, fires OnCommitted, and the blob is publicly
+	// readable at once. Non-nil with RequireQuorum=true ⇒ Put writes a 'staging'
+	// projection row in the commit tx, does NOT fire OnCommitted, and the read
+	// path hides the blob until the reconciler observes quorum. Installed via
+	// WithCommitGate. Set once at construction; read-only thereafter.
+	commitGate *CommitGateConfig
+}
+
+// CommitGateConfig is the P2-M4.1 async commit gate's configuration. The zero
+// value (RequireQuorum=false) is gate-off — today's immediate-commit behavior.
+type CommitGateConfig struct {
+	// RequireQuorum turns the gate on. When false the rest of the fields are
+	// ignored and Put commits immediately.
+	RequireQuorum bool
+	// Quorum is the live-acked sourceable-holder count needed to commit, by
+	// durability class ("important"/"normal"/"cache").
+	Quorum config.ReplicationFactor
+	// ReconcilerInterval is how often the durability reconciler scans staging rows.
+	ReconcilerInterval time.Duration
+	// FailAfter is the staging-age ceiling: a staging blob older than this whose
+	// quorum is still unmet is marked failed.
+	FailAfter time.Duration
+	// StaleSeconds is the donor-freshness window passed to CountSourceableHolders.
+	StaleSeconds float64
+}
+
+// QuorumFor returns the commit quorum for a durability class, defaulting to the
+// important-class quorum for an unknown class (the conservative choice).
+func (c *CommitGateConfig) QuorumFor(class string) int {
+	switch class {
+	case "cache":
+		return c.Quorum.Cache
+	case "normal":
+		return c.Quorum.Normal
+	default: // "important" and any unknown class
+		return c.Quorum.Important
+	}
 }
 
 // Option configures a Service. Read-only callers pass none.
@@ -68,6 +110,7 @@ type svcOpts struct {
 	donorReadSource *donorReadSource
 	storageMode     *StorageModeConfig
 	assigner        Assigner
+	commitGate      *CommitGateConfig
 }
 
 // WithWriteLimits sets the upload size ceiling (bytes) and the maximum number
@@ -113,6 +156,21 @@ func WithAssigner(a Assigner) Option {
 	return func(o *svcOpts) { o.assigner = a }
 }
 
+// WithCommitGate installs the P2-M4.1 async durability gate
+// (require_replication_quorum_before_commit). A nil/zero-RequireQuorum config
+// (the default) is gate-off: Put commits immediately, fires OnCommitted, and the
+// read path serves the blob at once. With RequireQuorum=true, Put writes a
+// 'staging' projection row atomically in the commit tx, defers OnCommitted to the
+// reconciler, and the read path hides the blob until quorum is observed. The cfg
+// is known at construction (sourced from config.Coordinator), so an Option is the
+// right seam.
+func WithCommitGate(cfg CommitGateConfig) Option {
+	return func(o *svcOpts) {
+		c := cfg
+		o.commitGate = &c
+	}
+}
+
 // NewService builds a storage service over the given pool, IPFS backend, and
 // keystore. backend and ks may be nil in tests that exercise Resolve only.
 // Write limits default to 100 MiB / 8 concurrent assemblies; override via
@@ -138,6 +196,9 @@ func NewService(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore,
 	}
 	if o.assigner != nil {
 		s.assigner = o.assigner
+	}
+	if o.commitGate != nil {
+		s.commitGate = o.commitGate
 	}
 	s.assemblyLimit.Store(int64(o.assemblySize))
 	s.maxUploadSize.Store(o.maxUploadSize)
@@ -201,6 +262,20 @@ func (s *Service) Resolve(ctx context.Context, cidStr string) (*BlobView, error)
 		return nil, ErrBlobTombstoned
 	default:
 		return nil, fmt.Errorf("storage: unexpected blob state %q", core.State)
+	}
+
+	// P2-M4.1 commit gate: a staging (not-yet-durably-committed) blob is not
+	// publicly visible. A blob with NO projection row (gate-off / legacy /
+	// backfilled-committed) is visible — GetCommitState returns pgx.ErrNoRows,
+	// which we treat as committed. NOTE: an owner/admin "may surface staging in
+	// metadata" per the spec, but that needs caller identity Resolve does not
+	// have; DEFERRED — the gate is applied uniformly on the read path for M4.1.
+	if cs, err := s.q.GetCommitState(ctx, cidStr); err == nil {
+		if cs != "committed" { // 'staging' or 'failed'
+			return nil, ErrStagingNotVisible
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("storage: get commit state: %w", err)
 	}
 
 	vis, err := s.q.ResolveEffectiveVisibility(ctx, cidStr)

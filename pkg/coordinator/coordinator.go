@@ -106,6 +106,14 @@ type Config struct {
 	// injected via storage.WithAssigner when pool is present.
 	ReplicationFactor config.ReplicationFactor
 
+	// CommitGate carries the P2-M4.1 async durability gate
+	// (require_replication_quorum_before_commit). The zero value is gate-off
+	// (RequireQuorum=false) — today's immediate-commit behavior. Sourced from
+	// config.Coordinator in cmd/coordinator/main.go; installed on the storage
+	// service via storage.WithCommitGate, and (when RequireQuorum) drives the
+	// durability reconciler goroutine started in Run.
+	CommitGate storage.CommitGateConfig
+
 	// Auth carries the M6 auth dependencies. Zero value means no auth
 	// (verifiers nil, no local issuer, PublicUploads false).
 	Auth AuthConfig
@@ -265,6 +273,12 @@ type Coordinator struct {
 	// Master-key rotation wiring (M10). Built when pool + keystore are present;
 	// the Rotator re-wraps DEKs and signing keys to the active master-key version.
 	masterKeyRotator *masterkey.Rotator
+
+	// Durability reconciler wiring (P2-M4.1). nil unless the commit gate is on
+	// (require_replication_quorum_before_commit). When non-nil, Run starts its
+	// loop; it flips staging blobs to committed once an acked-holder quorum exists
+	// and fires the deferred product OnCommitted hook.
+	reconciler *storage.Reconciler
 }
 
 // New constructs a coordinator from injected dependencies. pool/backend/ks may
@@ -305,9 +319,13 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 			storage.WithWriteLimits(cfg.MaxUploadSizeBytes, cfg.MaxConcurrentAssembly),
 			storage.WithProductHook(hook),
 			storage.WithStorageMode(cfg.StorageMode),
-			storage.WithAssigner(admission.New(pool, cfg.ReplicationFactor)))
+			storage.WithAssigner(admission.New(pool, cfg.ReplicationFactor)),
+			storage.WithCommitGate(cfg.CommitGate))
 		c.svc = svc
 		sc.Blob = handlers.NewBlobHandler(svc)
+		// P2-M4.1 durability reconciler: built only when the gate is on (a nil
+		// Reconciler means gate-off — there is nothing to reconcile). Started in Run.
+		c.reconciler = storage.NewReconciler(svc)
 
 		// Mount the write path only when a chunk tmp dir is configured.
 		if cfg.UploadTmpDir != "" {
@@ -683,6 +701,11 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	// then drains on each operator-triggered Start call.
 	if c.masterKeyRotator != nil {
 		go c.masterKeyRotator.Run(ctx)
+	}
+	// Durability reconciler (P2-M4.1): only built when the commit gate is on, so a
+	// non-nil reconciler implies require_replication_quorum_before_commit=true.
+	if c.reconciler != nil {
+		go c.reconciler.Run(ctx)
 	}
 	c.srv = &http.Server{Handler: c.mux, ReadHeaderTimeout: 10 * time.Second}
 

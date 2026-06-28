@@ -27,6 +27,7 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	// the important factor, so an omitted section must be defaulted first (durable
 	// R by default rather than a hard "out of range" error).
 	applyReplicationDefaults(&cfg)
+	applyCommitGateDefaults(&cfg)
 	if err := validate(&cfg); err != nil {
 		return nil, err
 	}
@@ -51,6 +52,24 @@ func applyReplicationDefaults(cfg *Config) {
 	}
 	if cfg.Orchestrator.Replication.Factor.Cache <= 0 {
 		cfg.Orchestrator.Replication.Factor.Cache = DefaultReplicationCache
+	}
+}
+
+// applyCommitGateDefaults fills zero-valued coordinator commit-quorum factors
+// with the DefaultCommitQuorum* constants so the gate (when enabled) always has
+// a usable per-class quorum. The gate itself stays off unless
+// require_replication_quorum_before_commit is set; defaulting the quorum
+// unconditionally keeps the consumed config self-consistent regardless. The
+// interval/fail-after knobs default lazily in their accessors. P2-M4.1.
+func applyCommitGateDefaults(cfg *Config) {
+	if cfg.Coordinator.CommitQuorum.Important <= 0 {
+		cfg.Coordinator.CommitQuorum.Important = DefaultCommitQuorumImportant
+	}
+	if cfg.Coordinator.CommitQuorum.Normal <= 0 {
+		cfg.Coordinator.CommitQuorum.Normal = DefaultCommitQuorumNormal
+	}
+	if cfg.Coordinator.CommitQuorum.Cache <= 0 {
+		cfg.Coordinator.CommitQuorum.Cache = DefaultCommitQuorumCache
 	}
 }
 

@@ -79,4 +79,11 @@ type PutResult struct {
 	MIME      string
 	Product   string
 	Encrypted bool
+
+	// DurabilityState is the P2-M4.1 commit-gate state of the blob at the time
+	// Put returns: "committed" (gate-off, or backfilled — immediately readable)
+	// or "staging" (gate-on — durably committed only once the reconciler observes
+	// a live acked-holder quorum). The empty value is treated as "committed" by
+	// the API layer for back-compat with callers that predate the gate.
+	DurabilityState string
 }

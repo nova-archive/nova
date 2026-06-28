@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -223,6 +224,47 @@ func (q *Queries) ListSourceableHolders(ctx context.Context, arg ListSourceableH
 			&i.Generation,
 			&i.SourceNebulaAddr,
 			&i.ReputationScore,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStagingBlobs = `-- name: ListStagingBlobs :many
+SELECT s.cid, s.durability_class, s.updated_at, b.product
+FROM blob_storage_state s JOIN blobs b ON b.cid = s.cid
+WHERE s.commit_state = 'staging'
+ORDER BY s.updated_at
+LIMIT $1
+`
+
+type ListStagingBlobsRow struct {
+	Cid             string
+	DurabilityClass string
+	UpdatedAt       time.Time
+	Product         BlobProduct
+}
+
+// Reconciler input: staging rows + the blob's product, ordered oldest-first.
+func (q *Queries) ListStagingBlobs(ctx context.Context, lim int32) ([]ListStagingBlobsRow, error) {
+	rows, err := q.db.Query(ctx, listStagingBlobs, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStagingBlobsRow
+	for rows.Next() {
+		var i ListStagingBlobsRow
+		if err := rows.Scan(
+			&i.Cid,
+			&i.DurabilityClass,
+			&i.UpdatedAt,
+			&i.Product,
 		); err != nil {
 			return nil, err
 		}
