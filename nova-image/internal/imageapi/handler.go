@@ -75,6 +75,11 @@ func mapResolveErr(err error) int {
 	switch {
 	case errors.Is(err, storage.ErrBlobNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, storage.ErrStagingNotVisible):
+		// Staging blobs must not leak their existence on the public
+		// read/transform surface — same no-existence-leak rationale as
+		// the blob route's Task-8 mapping.
+		return http.StatusNotFound
 	case errors.Is(err, storage.ErrBlobAuthRequired):
 		return http.StatusUnauthorized
 	case errors.Is(err, storage.ErrBlobQuarantined):
