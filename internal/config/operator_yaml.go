@@ -141,9 +141,30 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("config: tls.mode=static requires cert_path and key_path")
 	}
 
-	if cfg.Orchestrator.Replication.Factor.Important < 1 ||
-		cfg.Orchestrator.Replication.Factor.Important > 20 {
-		return fmt.Errorf("config: orchestrator.replication.factor.important out of range")
+	// Replication factors: all three in [1,20] (D-M5-7a). important is irreplaceable
+	// user-uploaded originals — R=1 makes "one failure from permanent loss" the
+	// steady state and defeats Tier-1, so important<2 is REFUSED. normal/cache are
+	// regenerable (derivatives / transient artifacts), so R=1 is warn-not-force.
+	rf := cfg.Orchestrator.Replication.Factor
+	for _, c := range []struct {
+		name string
+		v    int
+	}{{"important", rf.Important}, {"normal", rf.Normal}, {"cache", rf.Cache}} {
+		if c.v < 1 || c.v > 20 {
+			return fmt.Errorf("config: orchestrator.replication.factor.%s=%d out of range [1,20]", c.name, c.v)
+		}
+	}
+	if rf.Important < 2 {
+		return fmt.Errorf("config: orchestrator.replication.factor.important must be >= 2 " +
+			"(R=1 means one failure from permanent loss of irreplaceable originals)")
+	}
+	if rf.Normal < 2 {
+		slog.Warn("config: orchestrator.replication.factor.normal < 2; a single failure loses the only copy of a derivative until it is regenerated",
+			"normal", rf.Normal)
+	}
+	if rf.Cache < 2 {
+		slog.Warn("config: orchestrator.replication.factor.cache < 2; transient artifacts have no redundancy",
+			"cache", rf.Cache)
 	}
 
 	if s := cfg.Uploads.DefaultCollectionID; s != "" {

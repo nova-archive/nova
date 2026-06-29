@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/nova-archive/nova/internal/config"
@@ -106,6 +107,24 @@ func TestUploadLimitDefaults(t *testing.T) {
 	require.Equal(t, 4, cfg.Uploads.Limits.MaxConcurrentPerSession)
 	require.Equal(t, 100, cfg.Uploads.Limits.MaxFilesPerSession)
 	require.False(t, cfg.Uploads.CORS.Enabled) // default off
+}
+
+func TestReplicationFactorValidation(t *testing.T) {
+	t.Parallel()
+
+	// important R=1 is refused: irreplaceable originals must not be one failure
+	// from permanent loss (D-M5-7a).
+	_, err := config.LoadFromBytes([]byte(strings.Replace(minimalYAML, "important: 3", "important: 1", 1)))
+	require.Error(t, err, "important R=1 must be rejected")
+
+	// cache R=1 is accepted (warn-not-force; transient artifacts regenerate, and
+	// the default commit_quorum.cache=1 keeps quorum ≤ R).
+	_, err = config.LoadFromBytes([]byte(strings.Replace(minimalYAML, "cache: 2", "cache: 1", 1)))
+	require.NoError(t, err, "cache R=1 is warn-not-force, not an error")
+
+	// out-of-range is refused for any class.
+	_, err = config.LoadFromBytes([]byte(strings.Replace(minimalYAML, "normal: 3", "normal: 21", 1)))
+	require.Error(t, err, "factor > 20 must be rejected")
 }
 
 func TestPublicUploadsRequiresTosURL(t *testing.T) {
