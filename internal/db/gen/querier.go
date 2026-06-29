@@ -59,12 +59,17 @@ type Querier interface {
 	// cleaned up by DeleteRevokedRefreshTokensOlderThan below.
 	DeleteExpiredRefreshTokens(ctx context.Context) (int64, error)
 	DeletePinAssignment(ctx context.Context, arg DeletePinAssignmentParams) (int64, error)
+	DeleteReconciled(ctx context.Context, cid string) error
 	// Drops refresh_tokens rows that were explicitly revoked more than $1 ago
 	// (typically 30 days, giving operators a window to forensically inspect
 	// revoke events). Uses the refresh_tokens_revoked_gc_idx partial index
 	// added in migration 0007.
 	DeleteRevokedRefreshTokensOlderThan(ctx context.Context, revokedAt pgtype.Timestamptz) (int64, error)
 	DeleteUploadSession(ctx context.Context, id pgtype.UUID) error
+	EnqueueReconcile(ctx context.Context, arg EnqueueReconcileParams) error
+	// Companion to RecomputeTargetsForClass: enqueue the class's CIDs for bounded
+	// recompute of their new safety_tier.
+	EnqueueReconcileByClass(ctx context.Context, durabilityClass string) error
 	FailPinAssignment(ctx context.Context, arg FailPinAssignmentParams) (int64, error)
 	FinalizeUploadSession(ctx context.Context, arg FinalizeUploadSessionParams) error
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
@@ -113,6 +118,10 @@ type Querier interface {
 	// filter from the old GetBlobByteSize — quarantined / tombstoned / soft_deleted
 	// blobs MUST NOT be served to donors (no row → 404 blob_unavailable).
 	GetEnvelopeSize(ctx context.Context, cid string) (int64, error)
+	// The DB-derivable part of local_recoverable: the coordinator has a present local
+	// copy in a usable role for a repair-eligible blob. backend.Has(cid) confirms at
+	// emergency-source mint time (D-M5-8b); this is the projection's cheap predicate.
+	GetLocalRecoverable(ctx context.Context, cid string) (bool, error)
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
 	GetMasterVersionByLabel(ctx context.Context, versionLabel string) (MasterKeyVersion, error)
 	GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
@@ -124,6 +133,8 @@ type Querier interface {
 	GetPinSnapshotPage(ctx context.Context, arg GetPinSnapshotPageParams) ([]GetPinSnapshotPageRow, error)
 	GetPruneWatermark(ctx context.Context) (int64, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)
+	// durability_class is authoritative on blob_storage_state (M4.1).
+	GetReplicationDurabilityClass(ctx context.Context, cid string) (string, error)
 	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
 	GetSigningKeyByKID(ctx context.Context, kid string) (GetSigningKeyByKIDRow, error)
 	// Full row fetch for internal state inspection.
@@ -192,6 +203,7 @@ type Querier interface {
 	ListOverdueTombstones(ctx context.Context) ([]ListOverdueTombstonesRow, error)
 	// Committed + present + mode-eligible durability class; ordered by prune_eligible_at (oldest first).
 	ListPruneCandidates(ctx context.Context, arg ListPruneCandidatesParams) ([]ListPruneCandidatesRow, error)
+	ListReconcileBatch(ctx context.Context, limit int32) ([]string, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)
 	// Deliberately re-wraps ALL non-shredded retired keys (not only within-grace):
 	// a retired-but-not-yet-shredded key still holds real wrapped bytes that would
@@ -201,16 +213,32 @@ type Querier interface {
 	ListSourceableHolders(ctx context.Context, arg ListSourceableHoldersParams) ([]ListSourceableHoldersRow, error)
 	// Reconciler input: staging rows + the blob's product, ordered oldest-first.
 	ListStagingBlobs(ctx context.Context, lim int32) ([]ListStagingBlobsRow, error)
+	// Healing input: CIDs at a given safety tier, smallest target first is irrelevant;
+	// ordered by updated_at so the oldest under-replication is addressed first.
+	ListUnderReplicatedByTier(ctx context.Context, arg ListUnderReplicatedByTierParams) ([]ListUnderReplicatedByTierRow, error)
 	ListUploadTokens(ctx context.Context) ([]ListUploadTokensRow, error)
 	// Owner resolution for `novactl collection create`: the sole operator user is
 	// the default collection owner when --owner is omitted.
 	ListUserIDsByRole(ctx context.Context, role UserRole) ([]pgtype.UUID, error)
 	ListVerifiedHoldersByCID(ctx context.Context, cid string) ([]ListVerifiedHoldersByCIDRow, error)
+	// P2-M5 blob_replication_state projection (donor-replica health). The projection
+	// is rebuildable cache; authority remains pin_assignments ⨝ node liveness. These
+	// queries are consumed by internal/orchestrator/projection.go under a per-CID
+	// advisory lock (RecomputeCID), the bounded reconcile drain (DrainReconcile), and
+	// the config-change reconcile (RecomputeTargets).
+	// Per-CID transaction-scoped advisory lock (D-M5-2d) so admission, healing, the
+	// dirty drain, and ack/fail cannot recompute from or write stale counts for the
+	// same CID concurrently. Orthogonal to AcquireChangeLogLock (a single global
+	// sequence-ordering lock): this one is keyed per CID in a distinct namespace.
+	LockReplicationCID(ctx context.Context, hashtext string) error
 	// Reconciler: staging → committed, set committed_at and local_bytes.
 	MarkCommitted(ctx context.Context, arg MarkCommittedParams) (int64, error)
 	// Reconciler: staging → failed (upload or remote-commit error).
 	MarkFailed(ctx context.Context, cid string) (int64, error)
 	MarkRefreshTokenRotated(ctx context.Context, arg MarkRefreshTokenRotatedParams) (int64, error)
+	// Bulk liveness transitions mark affected CIDs dirty in their mutation tx; the
+	// scheduler recomputes a dirty CID from authority before reserving against it.
+	MarkReplicationDirty(ctx context.Context, cids []string) error
 	// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
 	// distinguishes 404 vs 409 via GetBlobMeta).
@@ -220,6 +248,16 @@ type Querier interface {
 	PromoteToProtected(ctx context.Context, arg PromoteToProtectedParams) error
 	// Atomic delete + watermark advance in one statement (no tx needed).
 	PruneChangeLog(ctx context.Context, createdAt time.Time) (int64, error)
+	// The authoritative recompute over countable holders. healthy counts acks on
+	// active/suspect nodes that are sync-current (D5/countability guard). sourceable
+	// additionally requires non-suspended + read-source/v1 + a nebula addr (the
+	// read-availability count; status-based, NO time predicate — D-M5-2a). in_flight
+	// counts ONLY pending reservations on destinations still eligible to complete, so
+	// a dead pending row never throttles healing forever (Rev. 5 #5).
+	RecomputeReplicationCounts(ctx context.Context, cid string) (RecomputeReplicationCountsRow, error)
+	// On a replication.factor change (D-M5-2b): reset target_count for a class, mark
+	// rows dirty so the drain recomputes safety_tier, and the scheduler re-evaluates.
+	RecomputeTargetsForClass(ctx context.Context, arg RecomputeTargetsForClassParams) error
 	RegisterNode(ctx context.Context, arg RegisterNodeParams) (Node, error)
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
@@ -263,6 +301,7 @@ type Querier interface {
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) (Node, error)
 	UpsertPinAssignmentAssign(ctx context.Context, arg UpsertPinAssignmentAssignParams) (UpsertPinAssignmentAssignRow, error)
 	UpsertRepeatInfringer(ctx context.Context, userID pgtype.UUID) error
+	UpsertReplicationState(ctx context.Context, arg UpsertReplicationStateParams) error
 	// Gate-on Put: insert staging row; ON CONFLICT re-opens a previously failed row.
 	UpsertStorageStateStaging(ctx context.Context, arg UpsertStorageStateStagingParams) error
 }

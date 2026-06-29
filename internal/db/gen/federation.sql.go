@@ -145,7 +145,7 @@ func (q *Queries) GetEnvelopeSize(ctx context.Context, cid string) (int64, error
 }
 
 const getNodeByID = `-- name: GetNodeByID :one
-SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr FROM nodes WHERE id = $1
+SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps FROM nodes WHERE id = $1
 `
 
 func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error) {
@@ -176,6 +176,18 @@ func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
 		&i.LastFreeBytes,
 		&i.LastStoredBytes,
 		&i.SourceNebulaAddr,
+		&i.FailureDomainID,
+		&i.DonorPrincipalID,
+		&i.Provider,
+		&i.Asn,
+		&i.Region,
+		&i.OperatorVerifiedAt,
+		&i.PlacementWeight,
+		&i.AssignmentSyncState,
+		&i.RevokedSignaledAt,
+		&i.LastEgressRemainingBytes,
+		&i.LastEgressCapacityBytes,
+		&i.LastEgressRefillBps,
 	)
 	return i, err
 }
@@ -619,7 +631,7 @@ ON CONFLICT (id) DO UPDATE SET
     required_capabilities          = EXCLUDED.required_capabilities,
     client_version                 = EXCLUDED.client_version,
     source_nebula_addr             = EXCLUDED.source_nebula_addr
-RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr
+RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps
 `
 
 type RegisterNodeParams struct {
@@ -680,6 +692,18 @@ func (q *Queries) RegisterNode(ctx context.Context, arg RegisterNodeParams) (Nod
 		&i.LastFreeBytes,
 		&i.LastStoredBytes,
 		&i.SourceNebulaAddr,
+		&i.FailureDomainID,
+		&i.DonorPrincipalID,
+		&i.Provider,
+		&i.Asn,
+		&i.Region,
+		&i.OperatorVerifiedAt,
+		&i.PlacementWeight,
+		&i.AssignmentSyncState,
+		&i.RevokedSignaledAt,
+		&i.LastEgressRemainingBytes,
+		&i.LastEgressCapacityBytes,
+		&i.LastEgressRefillBps,
 	)
 	return i, err
 }
@@ -726,7 +750,7 @@ SET last_seen_at      = now(),
     last_stored_bytes = $3,
     source_nebula_addr = COALESCE(NULLIF($4::text, ''), nodes.source_nebula_addr)
 WHERE id = $1
-RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr
+RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps
 `
 
 type UpdateNodeHeartbeatParams struct {
@@ -769,6 +793,18 @@ func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbe
 		&i.LastFreeBytes,
 		&i.LastStoredBytes,
 		&i.SourceNebulaAddr,
+		&i.FailureDomainID,
+		&i.DonorPrincipalID,
+		&i.Provider,
+		&i.Asn,
+		&i.Region,
+		&i.OperatorVerifiedAt,
+		&i.PlacementWeight,
+		&i.AssignmentSyncState,
+		&i.RevokedSignaledAt,
+		&i.LastEgressRemainingBytes,
+		&i.LastEgressCapacityBytes,
+		&i.LastEgressRefillBps,
 	)
 	return i, err
 }

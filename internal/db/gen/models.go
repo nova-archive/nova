@@ -829,6 +829,25 @@ type BlobManifest struct {
 	CreatedAt     time.Time
 }
 
+type BlobReplicationReconcileQueue struct {
+	Cid        string
+	Reason     string
+	EnqueuedAt time.Time
+}
+
+type BlobReplicationState struct {
+	Cid                  string
+	HealthyAckedCount    int32
+	SourceableAckedCount int32
+	InFlightCount        int32
+	TargetCount          int32
+	SafetyTier           string
+	LocalRecoverable     bool
+	DurabilityClass      string
+	Dirty                bool
+	UpdatedAt            time.Time
+}
+
 type BlobStorageState struct {
 	Cid             string
 	CommitState     BlobCommitState
@@ -1020,16 +1039,31 @@ type Node struct {
 	LastFreeBytes              pgtype.Int8
 	LastStoredBytes            pgtype.Int8
 	SourceNebulaAddr           pgtype.Text
+	FailureDomainID            pgtype.Text
+	DonorPrincipalID           pgtype.Text
+	Provider                   pgtype.Text
+	Asn                        pgtype.Text
+	Region                     pgtype.Text
+	OperatorVerifiedAt         pgtype.Timestamptz
+	PlacementWeight            float32
+	AssignmentSyncState        string
+	RevokedSignaledAt          pgtype.Timestamptz
+	LastEgressRemainingBytes   pgtype.Int8
+	LastEgressCapacityBytes    pgtype.Int8
+	LastEgressRefillBps        pgtype.Int8
 }
 
 type PinAssignment struct {
-	Cid          string
-	NodeID       pgtype.UUID
-	State        PinState
-	AssignedAt   time.Time
-	AckedAt      pgtype.Timestamptz
-	AssignmentID pgtype.UUID
-	Generation   int64
+	Cid                 string
+	NodeID              pgtype.UUID
+	State               PinState
+	AssignedAt          time.Time
+	AckedAt             pgtype.Timestamptz
+	AssignmentID        pgtype.UUID
+	Generation          int64
+	SourceNodeID        pgtype.UUID
+	SourceAttempts      int32
+	SourceNextAttemptAt pgtype.Timestamptz
 }
 
 type PinAudit struct {
@@ -1056,6 +1090,7 @@ type PinChange struct {
 	Cid          string
 	ByteSize     int64
 	CreatedAt    time.Time
+	SourceNodeID pgtype.UUID
 }
 
 type RefreshToken struct {
@@ -1132,4 +1167,11 @@ type User struct {
 	UpdatedAt    time.Time
 	PasswordHash pgtype.Text
 	Disabled     bool
+}
+
+type WebhookSuppression struct {
+	EventType   string
+	Destination string
+	ScopeKey    string
+	LastFiredAt time.Time
 }
