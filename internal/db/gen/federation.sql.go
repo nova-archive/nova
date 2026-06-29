@@ -51,6 +51,20 @@ func (q *Queries) AcquireChangeLogLock(ctx context.Context) error {
 	return err
 }
 
+const deleteNodeAssignments = `-- name: DeleteNodeAssignments :execrows
+DELETE FROM pin_assignments WHERE node_id = $1
+`
+
+// Eviction retires the node's desired set (D-M5-4a-EVICT): pin_state has no
+// 'retired', so the rows are deleted (after the affected CIDs were enqueued).
+func (q *Queries) DeleteNodeAssignments(ctx context.Context, nodeID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteNodeAssignments, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deletePinAssignment = `-- name: DeletePinAssignment :execrows
 DELETE FROM pin_assignments WHERE cid = $1 AND node_id = $2
 `
@@ -62,6 +76,39 @@ type DeletePinAssignmentParams struct {
 
 func (q *Queries) DeletePinAssignment(ctx context.Context, arg DeletePinAssignmentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deletePinAssignment, arg.Cid, arg.NodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enqueueReconcileForNode = `-- name: EnqueueReconcileForNode :exec
+INSERT INTO blob_replication_reconcile_queue (cid, reason)
+SELECT DISTINCT cid, $1 FROM pin_assignments WHERE node_id = $2
+ON CONFLICT (cid) DO UPDATE SET reason = EXCLUDED.reason, enqueued_at = now()
+`
+
+type EnqueueReconcileForNodeParams struct {
+	Reason string
+	NodeID pgtype.UUID
+}
+
+// Durable enqueue half (D-M5-2d): queue every CID the node holds an assignment for,
+// for bounded async recompute after a transition drops the node's countability.
+func (q *Queries) EnqueueReconcileForNode(ctx context.Context, arg EnqueueReconcileForNodeParams) error {
+	_, err := q.db.Exec(ctx, enqueueReconcileForNode, arg.Reason, arg.NodeID)
+	return err
+}
+
+const failNodePendingAssignments = `-- name: FailNodePendingAssignments :execrows
+UPDATE pin_assignments SET state = 'failed'
+WHERE node_id = $1 AND state = 'pending'
+`
+
+// A liveness transition to unreachable/evicted fails the node's still-pending
+// reservations so a dead in-flight reservation never blocks re-scheduling.
+func (q *Queries) FailNodePendingAssignments(ctx context.Context, nodeID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, failNodePendingAssignments, nodeID)
 	if err != nil {
 		return 0, err
 	}
@@ -570,6 +617,27 @@ func (q *Queries) ListVerifiedHoldersByCID(ctx context.Context, cid string) ([]L
 	return items, nil
 }
 
+const markReplicationDirtyForNode = `-- name: MarkReplicationDirtyForNode :exec
+UPDATE blob_replication_state SET dirty = true, updated_at = now()
+WHERE cid IN (SELECT cid FROM pin_assignments WHERE node_id = $1)
+`
+
+// Bulk projection enqueue half (D-M5-2d): mark every projection row for a CID the
+// node holds dirty, so the scheduler recomputes it from authority before reserving.
+func (q *Queries) MarkReplicationDirtyForNode(ctx context.Context, nodeID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markReplicationDirtyForNode, nodeID)
+	return err
+}
+
+const markRevokedSignaled = `-- name: MarkRevokedSignaled :exec
+UPDATE nodes SET revoked_signaled_at = now() WHERE id = $1
+`
+
+func (q *Queries) MarkRevokedSignaled(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markRevokedSignaled, id)
+	return err
+}
+
 const nodeHasChangesAfter = `-- name: NodeHasChangesAfter :one
 SELECT EXISTS (
     SELECT 1 FROM pin_changes WHERE node_id = $1 AND sequence > $2
@@ -614,10 +682,10 @@ INSERT INTO nodes (
     id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name,
     geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters,
     status, trust_state, selected_protocol, advertised_capabilities,
-    required_capabilities, client_version, source_nebula_addr
+    required_capabilities, client_version, source_nebula_addr, assignment_sync_state
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    'active', 'probationary', $9, $10, $11, $12, $13
+    'active', 'probationary', $9, $10, $11, $12, $13, 'snapshot_required'
 )
 ON CONFLICT (id) DO UPDATE SET
     nebula_cert_fingerprint        = EXCLUDED.nebula_cert_fingerprint,
@@ -630,7 +698,11 @@ ON CONFLICT (id) DO UPDATE SET
     advertised_capabilities        = EXCLUDED.advertised_capabilities,
     required_capabilities          = EXCLUDED.required_capabilities,
     client_version                 = EXCLUDED.client_version,
-    source_nebula_addr             = EXCLUDED.source_nebula_addr
+    source_nebula_addr             = EXCLUDED.source_nebula_addr,
+    status                         = 'active',
+    assignment_sync_state          = 'snapshot_required',
+    last_seen_at                   = now(),
+    last_status_change_at          = now()
 RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps
 `
 
@@ -650,6 +722,13 @@ type RegisterNodeParams struct {
 	SourceNebulaAddr           pgtype.Text
 }
 
+// Registration (insert or re-register) always lands the node in
+// assignment_sync_state='snapshot_required' (D-M5-4a): a fresh node has no synced
+// desired set, and a re-registering one (e.g. a returning evicted node) must
+// (re)sync from the current epoch before its assignments count again. Re-register
+// also reactivates (status='active') and refreshes last_seen_at so the liveness
+// sweeper does not immediately re-evict a node that just contacted us. The
+// handler rejects revoked nodes before calling this, so the reactivation is safe.
 func (q *Queries) RegisterNode(ctx context.Context, arg RegisterNodeParams) (Node, error) {
 	row := q.db.QueryRow(ctx, registerNode,
 		arg.ID,
@@ -743,12 +822,120 @@ func (q *Queries) RotateNodeCert(ctx context.Context, arg RotateNodeCertParams) 
 	return result.RowsAffected(), nil
 }
 
+const selectLivenessTransitions = `-- name: SelectLivenessTransitions :many
+SELECT id, status,
+  (CASE
+    WHEN COALESCE(last_seen_at, joined_at) < now() - $1::int     * interval '1 second' THEN 'evicted'
+    WHEN COALESCE(last_seen_at, joined_at) < now() - $2::int * interval '1 second' THEN 'unreachable'
+    WHEN COALESCE(last_seen_at, joined_at) < now() - $3::int     * interval '1 second' THEN 'suspect'
+    ELSE status
+  END)::node_status AS target_status
+FROM nodes
+WHERE status IN ('active','suspect','unreachable')
+  AND COALESCE(last_seen_at, joined_at) < now() - $3::int * interval '1 second'
+`
+
+type SelectLivenessTransitionsParams struct {
+	EvictedSecs     int32
+	UnreachableSecs int32
+	SuspectSecs     int32
+}
+
+type SelectLivenessTransitionsRow struct {
+	ID           pgtype.UUID
+	Status       NodeStatus
+	TargetStatus NodeStatus
+}
+
+// One sweep's pending status changes (P2-M5 D-M5-4): each silent node mapped to
+// the most severe liveness state its silence warrants, computed from its last
+// evidence of life (last_seen_at, or joined_at if it never heartbeated). Only
+// non-terminal states are considered; the WHERE bounds the result to nodes past
+// at least the suspect threshold. The Go sweeper applies only strict advancements
+// (reactivation is the heartbeat handler's job).
+func (q *Queries) SelectLivenessTransitions(ctx context.Context, arg SelectLivenessTransitionsParams) ([]SelectLivenessTransitionsRow, error) {
+	rows, err := q.db.Query(ctx, selectLivenessTransitions, arg.EvictedSecs, arg.UnreachableSecs, arg.SuspectSecs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SelectLivenessTransitionsRow
+	for rows.Next() {
+		var i SelectLivenessTransitionsRow
+		if err := rows.Scan(&i.ID, &i.Status, &i.TargetStatus); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const selectUnsignaledRevoked = `-- name: SelectUnsignaledRevoked :many
+SELECT id FROM nodes WHERE status = 'revoked' AND revoked_signaled_at IS NULL
+`
+
+// node_revoked observation path (D-M5-4-REVOKE-OBS): novactl revoke is DB-direct,
+// so the sweeper detects revoked-but-unsignaled nodes to emit the event once.
+func (q *Queries) SelectUnsignaledRevoked(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, selectUnsignaledRevoked)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setNodeStatus = `-- name: SetNodeStatus :exec
+UPDATE nodes SET status = $2, last_status_change_at = now() WHERE id = $1
+`
+
+type SetNodeStatusParams struct {
+	ID     pgtype.UUID
+	Status NodeStatus
+}
+
+func (q *Queries) SetNodeStatus(ctx context.Context, arg SetNodeStatusParams) error {
+	_, err := q.db.Exec(ctx, setNodeStatus, arg.ID, arg.Status)
+	return err
+}
+
+const setNodeSyncState = `-- name: SetNodeSyncState :exec
+UPDATE nodes SET assignment_sync_state = $2 WHERE id = $1
+`
+
+type SetNodeSyncStateParams struct {
+	ID                  pgtype.UUID
+	AssignmentSyncState string
+}
+
+func (q *Queries) SetNodeSyncState(ctx context.Context, arg SetNodeSyncStateParams) error {
+	_, err := q.db.Exec(ctx, setNodeSyncState, arg.ID, arg.AssignmentSyncState)
+	return err
+}
+
 const updateNodeHeartbeat = `-- name: UpdateNodeHeartbeat :one
 UPDATE nodes
 SET last_seen_at      = now(),
     last_free_bytes   = $2,
     last_stored_bytes = $3,
-    source_nebula_addr = COALESCE(NULLIF($4::text, ''), nodes.source_nebula_addr)
+    source_nebula_addr = COALESCE(NULLIF($4::text, ''), nodes.source_nebula_addr),
+    status = CASE WHEN status IN ('suspect','unreachable') THEN 'active'::node_status ELSE status END,
+    assignment_sync_state = CASE WHEN status = 'unreachable' THEN 'reconciling' ELSE assignment_sync_state END,
+    last_status_change_at = CASE WHEN status IN ('suspect','unreachable') THEN now() ELSE last_status_change_at END
 WHERE id = $1
 RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps
 `
@@ -760,6 +947,13 @@ type UpdateNodeHeartbeatParams struct {
 	SourceNebulaAddr string
 }
 
+// Heartbeat is the canonical liveness path (D-M5-4a-LIVENESS-SIGNAL): besides
+// refreshing telemetry it reactivates a suspect/unreachable node. A node returning
+// from unreachable had pending divergence, so it re-enters 'reconciling' and does
+// NOT count toward durability until it resyncs to the current epoch (D-M5-2a).
+// All SET right-hand sides reference the pre-update row, so the CASE expressions
+// read the OLD status. The handler rejects evicted/revoked before calling this, so
+// only active/suspect/unreachable reach here.
 func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) (Node, error) {
 	row := q.db.QueryRow(ctx, updateNodeHeartbeat,
 		arg.ID,

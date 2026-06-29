@@ -58,6 +58,9 @@ type Querier interface {
 	// the index scan instead of a sequential scan. Revoked-but-old rows are
 	// cleaned up by DeleteRevokedRefreshTokensOlderThan below.
 	DeleteExpiredRefreshTokens(ctx context.Context) (int64, error)
+	// Eviction retires the node's desired set (D-M5-4a-EVICT): pin_state has no
+	// 'retired', so the rows are deleted (after the affected CIDs were enqueued).
+	DeleteNodeAssignments(ctx context.Context, nodeID pgtype.UUID) (int64, error)
 	DeletePinAssignment(ctx context.Context, arg DeletePinAssignmentParams) (int64, error)
 	DeleteReconciled(ctx context.Context, cid string) error
 	// Drops refresh_tokens rows that were explicitly revoked more than $1 ago
@@ -70,6 +73,12 @@ type Querier interface {
 	// Companion to RecomputeTargetsForClass: enqueue the class's CIDs for bounded
 	// recompute of their new safety_tier.
 	EnqueueReconcileByClass(ctx context.Context, durabilityClass string) error
+	// Durable enqueue half (D-M5-2d): queue every CID the node holds an assignment for,
+	// for bounded async recompute after a transition drops the node's countability.
+	EnqueueReconcileForNode(ctx context.Context, arg EnqueueReconcileForNodeParams) error
+	// A liveness transition to unreachable/evicted fails the node's still-pending
+	// reservations so a dead in-flight reservation never blocks re-scheduling.
+	FailNodePendingAssignments(ctx context.Context, nodeID pgtype.UUID) (int64, error)
 	FailPinAssignment(ctx context.Context, arg FailPinAssignmentParams) (int64, error)
 	FinalizeUploadSession(ctx context.Context, arg FinalizeUploadSessionParams) error
 	GetActiveSigningKey(ctx context.Context) (GetActiveSigningKeyRow, error)
@@ -239,6 +248,10 @@ type Querier interface {
 	// Bulk liveness transitions mark affected CIDs dirty in their mutation tx; the
 	// scheduler recomputes a dirty CID from authority before reserving against it.
 	MarkReplicationDirty(ctx context.Context, cids []string) error
+	// Bulk projection enqueue half (D-M5-2d): mark every projection row for a CID the
+	// node holds dirty, so the scheduler recomputes it from authority before reserving.
+	MarkReplicationDirtyForNode(ctx context.Context, nodeID pgtype.UUID) error
+	MarkRevokedSignaled(ctx context.Context, id pgtype.UUID) error
 	// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
 	// distinguishes 404 vs 409 via GetBlobMeta).
@@ -258,6 +271,13 @@ type Querier interface {
 	// On a replication.factor change (D-M5-2b): reset target_count for a class, mark
 	// rows dirty so the drain recomputes safety_tier, and the scheduler re-evaluates.
 	RecomputeTargetsForClass(ctx context.Context, arg RecomputeTargetsForClassParams) error
+	// Registration (insert or re-register) always lands the node in
+	// assignment_sync_state='snapshot_required' (D-M5-4a): a fresh node has no synced
+	// desired set, and a re-registering one (e.g. a returning evicted node) must
+	// (re)sync from the current epoch before its assignments count again. Re-register
+	// also reactivates (status='active') and refreshes last_seen_at so the liveness
+	// sweeper does not immediately re-evict a node that just contacted us. The
+	// handler rejects revoked nodes before calling this, so the reactivation is safe.
 	RegisterNode(ctx context.Context, arg RegisterNodeParams) (Node, error)
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
@@ -284,11 +304,23 @@ type Querier interface {
 	SampleManifestConsistency(ctx context.Context, limit int32) ([]SampleManifestConsistencyRow, error)
 	SampleMultiBlockBlocks(ctx context.Context, limit int32) ([]SampleMultiBlockBlocksRow, error)
 	SeedAuditSchedule(ctx context.Context) ([]SeedAuditScheduleRow, error)
+	// One sweep's pending status changes (P2-M5 D-M5-4): each silent node mapped to
+	// the most severe liveness state its silence warrants, computed from its last
+	// evidence of life (last_seen_at, or joined_at if it never heartbeated). Only
+	// non-terminal states are considered; the WHERE bounds the result to nodes past
+	// at least the suspect threshold. The Go sweeper applies only strict advancements
+	// (reactivation is the heartbeat handler's job).
+	SelectLivenessTransitions(ctx context.Context, arg SelectLivenessTransitionsParams) ([]SelectLivenessTransitionsRow, error)
+	// node_revoked observation path (D-M5-4-REVOKE-OBS): novactl revoke is DB-direct,
+	// so the sweeper detects revoked-but-unsignaled nodes to emit the event once.
+	SelectUnsignaledRevoked(ctx context.Context) ([]pgtype.UUID, error)
 	SetBlobState(ctx context.Context, arg SetBlobStateParams) error
 	SetDEKLegalHoldForBlobTree(ctx context.Context, arg SetDEKLegalHoldForBlobTreeParams) error
 	SetDMCACaseActioned(ctx context.Context, id pgtype.UUID) error
 	// Pruner/cache: update local_present, local_role, cache_segment, local_bytes, prune_eligible_at.
 	SetLocalPresence(ctx context.Context, arg SetLocalPresenceParams) error
+	SetNodeStatus(ctx context.Context, arg SetNodeStatusParams) error
+	SetNodeSyncState(ctx context.Context, arg SetNodeSyncStateParams) error
 	SetUploadSessionToken(ctx context.Context, arg SetUploadSessionTokenParams) error
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	ShredDEKsForBlobTree(ctx context.Context, arg ShredDEKsForBlobTreeParams) error
@@ -298,6 +330,13 @@ type Querier interface {
 	// Throttled by caller; only update when last_accessed_at is stale or NULL.
 	TouchLastAccessed(ctx context.Context, arg TouchLastAccessedParams) error
 	TouchUploadTokenUsed(ctx context.Context, id pgtype.UUID) error
+	// Heartbeat is the canonical liveness path (D-M5-4a-LIVENESS-SIGNAL): besides
+	// refreshing telemetry it reactivates a suspect/unreachable node. A node returning
+	// from unreachable had pending divergence, so it re-enters 'reconciling' and does
+	// NOT count toward durability until it resyncs to the current epoch (D-M5-2a).
+	// All SET right-hand sides reference the pre-update row, so the CASE expressions
+	// read the OLD status. The handler rejects evicted/revoked before calling this, so
+	// only active/suspect/unreachable reach here.
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) (Node, error)
 	UpsertPinAssignmentAssign(ctx context.Context, arg UpsertPinAssignmentAssignParams) (UpsertPinAssignmentAssignRow, error)
 	UpsertRepeatInfringer(ctx context.Context, userID pgtype.UUID) error

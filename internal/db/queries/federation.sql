@@ -2,14 +2,21 @@
 SELECT * FROM nodes WHERE id = $1;
 
 -- name: RegisterNode :one
+-- Registration (insert or re-register) always lands the node in
+-- assignment_sync_state='snapshot_required' (D-M5-4a): a fresh node has no synced
+-- desired set, and a re-registering one (e.g. a returning evicted node) must
+-- (re)sync from the current epoch before its assignments count again. Re-register
+-- also reactivates (status='active') and refreshes last_seen_at so the liveness
+-- sweeper does not immediately re-evict a node that just contacted us. The
+-- handler rejects revoked nodes before calling this, so the reactivation is safe.
 INSERT INTO nodes (
     id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name,
     geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters,
     status, trust_state, selected_protocol, advertised_capabilities,
-    required_capabilities, client_version, source_nebula_addr
+    required_capabilities, client_version, source_nebula_addr, assignment_sync_state
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    'active', 'probationary', $9, $10, $11, $12, $13
+    'active', 'probationary', $9, $10, $11, $12, $13, 'snapshot_required'
 )
 ON CONFLICT (id) DO UPDATE SET
     nebula_cert_fingerprint        = EXCLUDED.nebula_cert_fingerprint,
@@ -22,15 +29,29 @@ ON CONFLICT (id) DO UPDATE SET
     advertised_capabilities        = EXCLUDED.advertised_capabilities,
     required_capabilities          = EXCLUDED.required_capabilities,
     client_version                 = EXCLUDED.client_version,
-    source_nebula_addr             = EXCLUDED.source_nebula_addr
+    source_nebula_addr             = EXCLUDED.source_nebula_addr,
+    status                         = 'active',
+    assignment_sync_state          = 'snapshot_required',
+    last_seen_at                   = now(),
+    last_status_change_at          = now()
 RETURNING *;
 
 -- name: UpdateNodeHeartbeat :one
+-- Heartbeat is the canonical liveness path (D-M5-4a-LIVENESS-SIGNAL): besides
+-- refreshing telemetry it reactivates a suspect/unreachable node. A node returning
+-- from unreachable had pending divergence, so it re-enters 'reconciling' and does
+-- NOT count toward durability until it resyncs to the current epoch (D-M5-2a).
+-- All SET right-hand sides reference the pre-update row, so the CASE expressions
+-- read the OLD status. The handler rejects evicted/revoked before calling this, so
+-- only active/suspect/unreachable reach here.
 UPDATE nodes
 SET last_seen_at      = now(),
     last_free_bytes   = $2,
     last_stored_bytes = $3,
-    source_nebula_addr = COALESCE(NULLIF(sqlc.arg(source_nebula_addr)::text, ''), nodes.source_nebula_addr)
+    source_nebula_addr = COALESCE(NULLIF(sqlc.arg(source_nebula_addr)::text, ''), nodes.source_nebula_addr),
+    status = CASE WHEN status IN ('suspect','unreachable') THEN 'active'::node_status ELSE status END,
+    assignment_sync_state = CASE WHEN status = 'unreachable' THEN 'reconciling' ELSE assignment_sync_state END,
+    last_status_change_at = CASE WHEN status IN ('suspect','unreachable') THEN now() ELSE last_status_change_at END
 WHERE id = $1
 RETURNING *;
 
@@ -183,3 +204,59 @@ WHERE n.status IN ('active','suspect')
 ORDER BY (n.last_free_bytes IS NULL OR n.last_free_bytes >= sqlc.arg(min_free_bytes)) DESC,
          n.reputation_score DESC, n.id
 LIMIT sqlc.arg(lim);
+
+-- name: SelectLivenessTransitions :many
+-- One sweep's pending status changes (P2-M5 D-M5-4): each silent node mapped to
+-- the most severe liveness state its silence warrants, computed from its last
+-- evidence of life (last_seen_at, or joined_at if it never heartbeated). Only
+-- non-terminal states are considered; the WHERE bounds the result to nodes past
+-- at least the suspect threshold. The Go sweeper applies only strict advancements
+-- (reactivation is the heartbeat handler's job).
+SELECT id, status,
+  (CASE
+    WHEN COALESCE(last_seen_at, joined_at) < now() - sqlc.arg(evicted_secs)::int     * interval '1 second' THEN 'evicted'
+    WHEN COALESCE(last_seen_at, joined_at) < now() - sqlc.arg(unreachable_secs)::int * interval '1 second' THEN 'unreachable'
+    WHEN COALESCE(last_seen_at, joined_at) < now() - sqlc.arg(suspect_secs)::int     * interval '1 second' THEN 'suspect'
+    ELSE status
+  END)::node_status AS target_status
+FROM nodes
+WHERE status IN ('active','suspect','unreachable')
+  AND COALESCE(last_seen_at, joined_at) < now() - sqlc.arg(suspect_secs)::int * interval '1 second';
+
+-- name: SetNodeStatus :exec
+UPDATE nodes SET status = $2, last_status_change_at = now() WHERE id = $1;
+
+-- name: SetNodeSyncState :exec
+UPDATE nodes SET assignment_sync_state = $2 WHERE id = $1;
+
+-- name: FailNodePendingAssignments :execrows
+-- A liveness transition to unreachable/evicted fails the node's still-pending
+-- reservations so a dead in-flight reservation never blocks re-scheduling.
+UPDATE pin_assignments SET state = 'failed'
+WHERE node_id = $1 AND state = 'pending';
+
+-- name: DeleteNodeAssignments :execrows
+-- Eviction retires the node's desired set (D-M5-4a-EVICT): pin_state has no
+-- 'retired', so the rows are deleted (after the affected CIDs were enqueued).
+DELETE FROM pin_assignments WHERE node_id = $1;
+
+-- name: MarkReplicationDirtyForNode :exec
+-- Bulk projection enqueue half (D-M5-2d): mark every projection row for a CID the
+-- node holds dirty, so the scheduler recomputes it from authority before reserving.
+UPDATE blob_replication_state SET dirty = true, updated_at = now()
+WHERE cid IN (SELECT cid FROM pin_assignments WHERE node_id = $1);
+
+-- name: EnqueueReconcileForNode :exec
+-- Durable enqueue half (D-M5-2d): queue every CID the node holds an assignment for,
+-- for bounded async recompute after a transition drops the node's countability.
+INSERT INTO blob_replication_reconcile_queue (cid, reason)
+SELECT DISTINCT cid, sqlc.arg(reason) FROM pin_assignments WHERE node_id = sqlc.arg(node_id)
+ON CONFLICT (cid) DO UPDATE SET reason = EXCLUDED.reason, enqueued_at = now();
+
+-- name: SelectUnsignaledRevoked :many
+-- node_revoked observation path (D-M5-4-REVOKE-OBS): novactl revoke is DB-direct,
+-- so the sweeper detects revoked-but-unsignaled nodes to emit the event once.
+SELECT id FROM nodes WHERE status = 'revoked' AND revoked_signaled_at IS NULL;
+
+-- name: MarkRevokedSignaled :exec
+UPDATE nodes SET revoked_signaled_at = now() WHERE id = $1;

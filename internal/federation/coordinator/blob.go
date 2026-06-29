@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
-	node, ok := s.authNode(w, r)
+	node, _, ok := s.authNode(w, r)
 	if !ok {
 		return
 	}

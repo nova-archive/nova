@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,37 +19,43 @@ import (
 
 const defaultPinPageLimit = 1000
 
-// authNode authenticates the peer, parses its node UUID, and rejects revoked
-// nodes — the shared front-half of every /fed/v1/pins/* handler.
-func (s *Server) authNode(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+// authNode authenticates the peer, parses its node UUID, and rejects nodes that
+// are out of the federation (revoked, evicted) — the shared front-half of every
+// /fed/v1/pins/* handler. It returns the node's status so per-endpoint matrices
+// (D-M5-5) can apply finer rules (e.g. changes pauses for unreachable nodes).
+func (s *Server) authNode(w http.ResponseWriter, r *http.Request) (uuid.UUID, gen.NodeStatus, bool) {
 	id, err := s.authenticate(r)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthenticated", err.Error())
-		return uuid.Nil, false
+		return uuid.Nil, "", false
 	}
 	nodeUUID, err := uuid.Parse(id.NodeID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "bad_node_id", "")
-		return uuid.Nil, false
+		return uuid.Nil, "", false
 	}
 	node, err := s.q.GetNodeByID(r.Context(), pgUUIDFrom(nodeUUID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusForbidden, "registration_required", "node must register first")
-		return uuid.Nil, false
+		return uuid.Nil, "", false
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "lookup failed")
-		return uuid.Nil, false
+		return uuid.Nil, "", false
 	}
 	if node.Status == gen.NodeStatusRevoked {
 		writeError(w, http.StatusForbidden, "node_revoked", "")
-		return uuid.Nil, false
+		return uuid.Nil, "", false
+	}
+	if node.Status == gen.NodeStatusEvicted {
+		writeError(w, http.StatusForbidden, "registration_required", "evicted node must re-register")
+		return uuid.Nil, "", false
 	}
 	if node.FederationCertFingerprint != id.Fingerprint {
 		writeError(w, http.StatusForbidden, "fingerprint_mismatch", "presented cert is not the active cert")
-		return uuid.Nil, false
+		return uuid.Nil, "", false
 	}
-	return nodeUUID, true
+	return nodeUUID, node.Status, true
 }
 
 // queryInt parses a non-negative int64 query param. Absent ⇒ def. Present but
@@ -77,8 +84,15 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
 		return
 	}
-	node, ok := s.authNode(w, r)
+	node, status, ok := s.authNode(w, r)
 	if !ok {
+		return
+	}
+	// An unreachable node must heartbeat to reactivate (which resets it to
+	// 'reconciling') before pulling changes — otherwise it would resync as a
+	// still-uncounted holder without the recovery transition (D-M5-5 matrix).
+	if status == gen.NodeStatusUnreachable {
+		writeError(w, http.StatusForbidden, "heartbeat_required", "unreachable node must heartbeat to reactivate")
 		return
 	}
 	ctx := r.Context()
@@ -100,6 +114,9 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if since < wm {
+		// Cursor predates retention: the node cannot catch up incrementally and
+		// must snapshot (D-M5-5 sync-state table).
+		s.setSyncState(ctx, node, "snapshot_required")
 		writeError(w, http.StatusBadRequest, wire.CodeSnapshotRequired, "since_seq predates retention")
 		return
 	}
@@ -137,6 +154,12 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 	if len(rows) > 0 {
 		next = rows[len(rows)-1].Sequence
 	}
+	// A short page (fewer rows than requested) means the node has drained its
+	// change stream — it is caught up to the current epoch, so it counts again
+	// (D-M5-2a/4a). A full page may have more pending, so it stays mid-sync.
+	if len(rows) < int(limit) {
+		s.setSyncState(ctx, node, "current")
+	}
 	slog.Info("fed.changes.served", "node_id", node, "since_seq", since, "returned", len(rows), "next_seq", next)
 	writeJSON(w, http.StatusOK, wire.ChangesResponse{Changes: changes, NextSeq: next, CurrentEpoch: head})
 }
@@ -146,7 +169,7 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
 		return
 	}
-	node, ok := s.authNode(w, r)
+	node, _, ok := s.authNode(w, r)
 	if !ok {
 		return
 	}
@@ -198,6 +221,11 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if int64(len(rows)) == int64(limit) && len(rows) > 0 {
 		nextCursor = rows[len(rows)-1].Cid
 	}
+	// The final page (cursor exhausted) means the node has the full desired set as
+	// of the captured epoch, so it counts again (D-M5-5 sync-state table).
+	if nextCursor == "" {
+		s.setSyncState(ctx, node, "current")
+	}
 	slog.Info("fed.snapshot.page", "node_id", node, "epoch", epoch, "returned", len(rows))
 	writeJSON(w, http.StatusOK, wire.SnapshotResponse{Data: items, Cursor: nextCursor, SnapshotEpoch: epoch})
 }
@@ -207,7 +235,9 @@ func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
 		return
 	}
-	node, ok := s.authNode(w, r)
+	// ack/fail accept active/suspect/unreachable (a recovering node may still be
+	// reporting); authNode already rejects evicted/revoked (D-M5-5 matrix).
+	node, _, ok := s.authNode(w, r)
 	if !ok {
 		return
 	}
@@ -262,7 +292,7 @@ func (s *Server) handleFail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
 		return
 	}
-	node, ok := s.authNode(w, r)
+	node, _, ok := s.authNode(w, r)
 	if !ok {
 		return
 	}
@@ -312,6 +342,15 @@ func (s *Server) handleFail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusConflict, wire.CodeStaleAssignment, "")
+}
+
+// setSyncState advances a node's assignment_sync_state during recovery. It is
+// advisory: a failure is logged but never fails the response the node already
+// received — the next successful poll/snapshot re-derives the state (D-M5-2a).
+func (s *Server) setSyncState(ctx context.Context, node uuid.UUID, state string) {
+	if err := s.q.SetNodeSyncState(ctx, gen.SetNodeSyncStateParams{ID: pgUUIDFrom(node), AssignmentSyncState: state}); err != nil {
+		slog.Warn("fed.syncstate.update_failed", "node_id", node, "state", state, "err", err)
+	}
 }
 
 // mintSource builds a fresh coordinator-as-source grant for a pending assign

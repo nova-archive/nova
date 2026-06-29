@@ -152,6 +152,14 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "node_revoked", "")
 		return
 	}
+	// An evicted node is out of the desired set (its assignments were retired); it
+	// must re-register, not heartbeat its way back in (D-M5-5 endpoint matrix). The
+	// query reactivates only suspect/unreachable, but rejecting here keeps a stale
+	// heartbeat from refreshing an evicted node's last_seen_at.
+	if node.Status == gen.NodeStatusEvicted {
+		writeError(w, http.StatusForbidden, "registration_required", "evicted node must re-register")
+		return
+	}
 	if node.FederationCertFingerprint != id.Fingerprint {
 		writeError(w, http.StatusForbidden, "fingerprint_mismatch", "presented cert is not the active cert")
 		return
