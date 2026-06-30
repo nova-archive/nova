@@ -35,6 +35,9 @@ type Querier interface {
 	ClaimDEKsForRewrap(ctx context.Context, arg ClaimDEKsForRewrapParams) ([]ClaimDEKsForRewrapRow, error)
 	ClearModerationLegalHold(ctx context.Context, cid string) error
 	ClearScheduledTombstone(ctx context.Context, cid string) error
+	// Operator clear-review: restart the epoch, drop the marker (D-M6-8).
+	ClearTrustReview(ctx context.Context, id pgtype.UUID) error
+	CountAckedTransfersSince(ctx context.Context, arg CountAckedTransfersSinceParams) (int64, error)
 	CountActiveSessionsByToken(ctx context.Context, uploadTokenID pgtype.UUID) (int64, error)
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
@@ -44,6 +47,7 @@ type Querier interface {
 	CountDMCACases(ctx context.Context) (int64, error)
 	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
 	CountModerationDecisions(ctx context.Context) (int64, error)
+	CountPassedAuditsSince(ctx context.Context, arg CountPassedAuditsSinceParams) (int64, error)
 	// Nodes that went unreachable within the mass-casualty window (D-M5-11): an
 	// active→unreachable burst signal.
 	CountRecentlyUnreachable(ctx context.Context, windowSeconds int32) (int64, error)
@@ -83,6 +87,9 @@ type Querier interface {
 	// Durable enqueue half (D-M5-2d): queue every CID the node holds an assignment for,
 	// for bounded async recompute after a transition drops the node's countability.
 	EnqueueReconcileForNode(ctx context.Context, arg EnqueueReconcileForNodeParams) error
+	// D-M6-7 hard-fail: invalidate the ACKED row for this exact assignment/generation.
+	// (M5's FailPinAssignment only fails 'pending' rows — wrong state for audits.)
+	FailAckedPinAssignmentForAudit(ctx context.Context, arg FailAckedPinAssignmentForAuditParams) (int64, error)
 	// A liveness transition to unreachable/evicted fails the node's still-pending
 	// reservations so a dead in-flight reservation never blocks re-scheduling.
 	FailNodePendingAssignments(ctx context.Context, nodeID pgtype.UUID) (int64, error)
@@ -141,6 +148,11 @@ type Querier interface {
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
 	GetMasterVersionByLabel(ctx context.Context, versionLabel string) (MasterKeyVersion, error)
 	GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
+	// The donor's inbound source address to POST the challenge to.
+	GetNodeSourceAddr(ctx context.Context, id pgtype.UUID) (pgtype.Text, error)
+	GetNodeTrust(ctx context.Context, id pgtype.UUID) (GetNodeTrustRow, error)
+	// Row-locked read for the reputation/trust transaction (Blocker 5: lost-update safe).
+	GetNodeTrustForUpdate(ctx context.Context, id pgtype.UUID) (GetNodeTrustForUpdateRow, error)
 	GetPinAssignment(ctx context.Context, arg GetPinAssignmentParams) (GetPinAssignmentRow, error)
 	GetPinAssignmentForUpdate(ctx context.Context, arg GetPinAssignmentForUpdateParams) (GetPinAssignmentForUpdateRow, error)
 	// source_node_id (M5, D-M5-8a) is the durable repair source copied in at assign
@@ -171,6 +183,8 @@ type Querier interface {
 	GetUploadTokenByID(ctx context.Context, id pgtype.UUID) (UploadToken, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (GetUserByIDRow, error)
+	// D-M6-3b: insert BEFORE dispatch with result NULL so a crash mid-flight is recoverable.
+	InsertAuditChallenge(ctx context.Context, arg InsertAuditChallengeParams) error
 	// Audit-log write + query queries (M9). See docs/specs/DATA_MODEL.sql.
 	// The audit_log table is monthly-partitioned (0003_partitions.sql).
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
@@ -300,6 +314,8 @@ type Querier interface {
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
 	// distinguishes 404 vs 409 via GetBlobMeta).
 	MarkSoftDeleted(ctx context.Context, cid string) (int64, error)
+	// Atomic, lost-update-safe (D-M6-7): clamp to [0,1].
+	MoveReputation(ctx context.Context, arg MoveReputationParams) (float32, error)
 	NodeHasChangesAfter(ctx context.Context, arg NodeHasChangesAfterParams) (bool, error)
 	// Cache hit on a probationary row: promote to protected segment (throttled like TouchLastAccessed).
 	PromoteToProtected(ctx context.Context, arg PromoteToProtectedParams) error
@@ -315,6 +331,11 @@ type Querier interface {
 	// On a replication.factor change (D-M5-2b): reset target_count for a class, mark
 	// rows dirty so the drain recomputes safety_tier, and the scheduler re-evaluates.
 	RecomputeTargetsForClass(ctx context.Context, arg RecomputeTargetsForClassParams) error
+	// Startup: crashed-mid-flight attempts -> skip (D-M6-3b step 4).
+	ReconcileStaleAudits(ctx context.Context, dollar_1 float64) error
+	// Resolve only the unresolved row, so a replayed challenge_id cannot overwrite a
+	// decided audit (the caller asserts 1 row; 0 = replay/already-decided).
+	RecordAuditOutcome(ctx context.Context, arg RecordAuditOutcomeParams) (int64, error)
 	// Registration (insert or re-register) always lands the node in
 	// assignment_sync_state='snapshot_required' (D-M5-4a): a fresh node has no synced
 	// desired set, and a re-registering one (e.g. a returning evicted node) must
@@ -334,6 +355,8 @@ type Querier interface {
 	ResolveEffectiveVisibility(ctx context.Context, cid string) ([]string, error)
 	RetirePriorActiveSigningKey(ctx context.Context, arg RetirePriorActiveSigningKeyParams) error
 	RetireVersion(ctx context.Context, versionLabel string) (int64, error)
+	// D-M6-7a: confirm the audited assignment is still the live acked one before scoring.
+	RevalidateAuditPin(ctx context.Context, arg RevalidateAuditPinParams) (bool, error)
 	RevokeNode(ctx context.Context, id pgtype.UUID) (int64, error)
 	RevokeRefreshToken(ctx context.Context, id pgtype.UUID) error
 	RevokeRefreshTokenFamily(ctx context.Context, userID pgtype.UUID) error
@@ -353,6 +376,16 @@ type Querier interface {
 	SampleManifestConsistency(ctx context.Context, limit int32) ([]SampleManifestConsistencyRow, error)
 	SampleMultiBlockBlocks(ctx context.Context, limit int32) ([]SampleMultiBlockBlocksRow, error)
 	SeedAuditSchedule(ctx context.Context) ([]SeedAuditScheduleRow, error)
+	// Stage 2: one acked pin for a node, WEIGHTED-random by envelope_size
+	// (Efraimidis–Spirakis: key = random()^(1/weight), largest key wins) so big
+	// custodians are sampled proportionally without ORDER BY random() over the corpus.
+	SelectAckedPinForAudit(ctx context.Context, nodeID pgtype.UUID) (SelectAckedPinForAuditRow, error)
+	// Stage 1 (D-M6-5a): live, current-synced nodes with at least one acked pin, ordered
+	// by node-level pressure (stored bytes proxy + acked pin count) and audit staleness.
+	SelectDueAuditNodes(ctx context.Context, limit int32) ([]SelectDueAuditNodesRow, error)
+	// Startup cadence seed (D-M6-5): last resolved audit per node, so a restart does not
+	// immediately re-audit every due node.
+	SelectLastAuditPerNode(ctx context.Context) ([]SelectLastAuditPerNodeRow, error)
 	// One sweep's pending status changes (P2-M5 D-M5-4): each silent node mapped to
 	// the most severe liveness state its silence warrants, computed from its last
 	// evidence of life (last_seen_at, or joined_at if it never heartbeated). Only
@@ -360,6 +393,10 @@ type Querier interface {
 	// at least the suspect threshold. The Go sweeper applies only strict advancements
 	// (reactivation is the heartbeat handler's job).
 	SelectLivenessTransitions(ctx context.Context, arg SelectLivenessTransitionsParams) ([]SelectLivenessTransitionsRow, error)
+	// Fast lane (D-M6-5b): pins acked within the window, not yet audited, bounded quota.
+	SelectNewlyAckedPins(ctx context.Context, arg SelectNewlyAckedPinsParams) ([]SelectNewlyAckedPinsRow, error)
+	// Stage 3: a block to challenge (size <= max_block_bytes; never issue an over-cap block).
+	SelectRandomBlockForCID(ctx context.Context, arg SelectRandomBlockForCIDParams) (SelectRandomBlockForCIDRow, error)
 	// node_revoked observation path (D-M5-4-REVOKE-OBS): novactl revoke is DB-direct,
 	// so the sweeper detects revoked-but-unsignaled nodes to emit the event once.
 	SelectUnsignaledRevoked(ctx context.Context) ([]pgtype.UUID, error)
@@ -375,6 +412,9 @@ type Querier interface {
 	SetNodeDomain(ctx context.Context, arg SetNodeDomainParams) (int64, error)
 	SetNodeStatus(ctx context.Context, arg SetNodeStatusParams) error
 	SetNodeSyncState(ctx context.Context, arg SetNodeSyncStateParams) error
+	// Hash-mismatch path: reset epoch + mark for operator review (D-M6-2b).
+	SetTrustReview(ctx context.Context, arg SetTrustReviewParams) error
+	SetTrustState(ctx context.Context, arg SetTrustStateParams) error
 	SetUploadSessionToken(ctx context.Context, arg SetUploadSessionTokenParams) error
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	ShredDEKsForBlobTree(ctx context.Context, arg ShredDEKsForBlobTreeParams) error

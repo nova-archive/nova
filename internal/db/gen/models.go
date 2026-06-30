@@ -1051,6 +1051,9 @@ type Node struct {
 	LastEgressRemainingBytes   pgtype.Int8
 	LastEgressCapacityBytes    pgtype.Int8
 	LastEgressRefillBps        pgtype.Int8
+	TrustEpochStartedAt        time.Time
+	TrustReviewRequiredAt      pgtype.Timestamptz
+	TrustReviewReason          pgtype.Text
 }
 
 type PinAssignment struct {
@@ -1067,18 +1070,21 @@ type PinAssignment struct {
 }
 
 type PinAudit struct {
-	ID            pgtype.UUID
-	BlobCid       string
-	NodeID        pgtype.UUID
-	ChallengeKind string
-	Nonce         string
-	Deadline      time.Time
-	Result        NullAuditResult
-	LatencyMs     pgtype.Int4
-	BytesVerified pgtype.Int8
-	Error         pgtype.Text
-	ChallengedAt  time.Time
-	CompletedAt   pgtype.Timestamptz
+	ID             pgtype.UUID
+	BlobCid        string
+	NodeID         pgtype.UUID
+	ChallengeKind  string
+	Nonce          string
+	Deadline       time.Time
+	Result         NullAuditResult
+	LatencyMs      pgtype.Int4
+	BytesVerified  pgtype.Int8
+	Error          pgtype.Text
+	ChallengedAt   time.Time
+	CompletedAt    pgtype.Timestamptz
+	ReceivedAt     pgtype.Timestamptz
+	DecidedAt      pgtype.Timestamptz
+	TranscriptHash []byte
 }
 
 type PinChange struct {

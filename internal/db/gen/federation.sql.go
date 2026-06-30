@@ -192,7 +192,7 @@ func (q *Queries) GetEnvelopeSize(ctx context.Context, cid string) (int64, error
 }
 
 const getNodeByID = `-- name: GetNodeByID :one
-SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps FROM nodes WHERE id = $1
+SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason FROM nodes WHERE id = $1
 `
 
 func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error) {
@@ -235,6 +235,9 @@ func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
 		&i.LastEgressRemainingBytes,
 		&i.LastEgressCapacityBytes,
 		&i.LastEgressRefillBps,
+		&i.TrustEpochStartedAt,
+		&i.TrustReviewRequiredAt,
+		&i.TrustReviewReason,
 	)
 	return i, err
 }
@@ -804,7 +807,7 @@ ON CONFLICT (id) DO UPDATE SET
     assignment_sync_state          = 'snapshot_required',
     last_seen_at                   = now(),
     last_status_change_at          = now()
-RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps
+RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason
 `
 
 type RegisterNodeParams struct {
@@ -884,6 +887,9 @@ func (q *Queries) RegisterNode(ctx context.Context, arg RegisterNodeParams) (Nod
 		&i.LastEgressRemainingBytes,
 		&i.LastEgressCapacityBytes,
 		&i.LastEgressRefillBps,
+		&i.TrustEpochStartedAt,
+		&i.TrustReviewRequiredAt,
+		&i.TrustReviewReason,
 	)
 	return i, err
 }
@@ -1106,7 +1112,7 @@ SET last_seen_at      = now(),
     assignment_sync_state = CASE WHEN status = 'unreachable' THEN 'reconciling' ELSE assignment_sync_state END,
     last_status_change_at = CASE WHEN status IN ('suspect','unreachable') THEN now() ELSE last_status_change_at END
 WHERE id = $1
-RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps
+RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason
 `
 
 type UpdateNodeHeartbeatParams struct {
@@ -1174,6 +1180,9 @@ func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbe
 		&i.LastEgressRemainingBytes,
 		&i.LastEgressCapacityBytes,
 		&i.LastEgressRefillBps,
+		&i.TrustEpochStartedAt,
+		&i.TrustReviewRequiredAt,
+		&i.TrustReviewReason,
 	)
 	return i, err
 }
