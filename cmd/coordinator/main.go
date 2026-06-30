@@ -514,6 +514,17 @@ func run() error {
 		}
 		orch := orchestrator.NewOrchestrator(pool, liveness, sched, notifier,
 			time.Duration(opCfg.Orchestrator.TickIntervalSeconds)*time.Second)
+		// Concentration + slow-attrition signals on each tick (D-M5-10/11).
+		orch.SetMetrics(orchestrator.MetricsConfig{
+			TopK:          3,
+			Concentration: orchestrator.ConcentrationThresholds{LargestShareMax: 0.5, NormalizedEntropyMin: 0.4},
+			Attrition: orchestrator.AttritionConfig{
+				Targets:                 targets,
+				MassCasualtyWindow:      time.Duration(opCfg.Orchestrator.MassCasualtyWindowSeconds) * time.Second,
+				MassCasualtyRatio:       opCfg.Orchestrator.MassCasualtyThresholdRatio,
+				CapacityRunwayFloorDays: float64(opCfg.Orchestrator.CapacityRunwayFloorDays),
+			},
+		})
 		return runBoth(ctx, c.Run, fedSrv.Run, func(ctx context.Context) error { orch.Run(ctx); return nil })
 	}
 	return c.Run(ctx)

@@ -44,6 +44,9 @@ type Querier interface {
 	CountDMCACases(ctx context.Context) (int64, error)
 	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
 	CountModerationDecisions(ctx context.Context) (int64, error)
+	// Nodes that went unreachable within the mass-casualty window (D-M5-11): an
+	// active→unreachable burst signal.
+	CountRecentlyUnreachable(ctx context.Context, windowSeconds int32) (int64, error)
 	CountSigningKeysForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
 	// Sourceable-holder count: acked pin + reachable + trusted + fresh + has read-source/v1 cap + has nebula addr.
 	// Called by commit/prune/read tiers to determine if donor-backed reads are viable.
@@ -196,6 +199,10 @@ type Querier interface {
 	// copy of this CID (D-M5-8a/8c). A non-advertiser is read-sourceable but never
 	// repair-sourceable (mixed-version safety).
 	IsRepairSourceableForCID(ctx context.Context, arg IsRepairSourceableForCIDParams) (bool, error)
+	// Per-node acked pin count + operator-VERIFIED placement dimensions (NULL when the
+	// node is unverified or the field is blank). The Go side collapses NULL → "unknown"
+	// before grouping, so a node cannot manufacture diversity (D-M5-3a/10).
+	ListAckedNodeDimensions(ctx context.Context) ([]ListAckedNodeDimensionsRow, error)
 	// Admission targets: live, non-suspended, read-source-capable, addressed nodes,
 	// preferring those with known free space >= the blob's envelope size (unknown
 	// free space is treated as OK; the donor's own storage_max_bytes is the real
@@ -369,6 +376,13 @@ type Querier interface {
 	ShredExpiredRetiredSigningKeys(ctx context.Context, wrappedKey []byte) error
 	// Per-segment byte totals for admission/eviction budgeting.
 	SumCacheBytes(ctx context.Context) (SumCacheBytesRow, error)
+	// Repair-eligible corpus bytes per durability class (active + quarantined, D-M5-RE),
+	// the basis of desired_replicated_bytes = Σ corpus_bytes_c × R_c.
+	SumCorpusBytesByClass(ctx context.Context) ([]SumCorpusBytesByClassRow, error)
+	// Surviving (active/suspect) donor egress + free capacity + count, for the
+	// slow-attrition metrics (D-M5-11). Egress prefers the reported capacity telemetry,
+	// falling back to the registered daily budget.
+	SurvivingCapacity(ctx context.Context) (SurvivingCapacityRow, error)
 	// Throttled by caller; only update when last_accessed_at is stale or NULL.
 	TouchLastAccessed(ctx context.Context, arg TouchLastAccessedParams) error
 	TouchUploadTokenUsed(ctx context.Context, id pgtype.UUID) error

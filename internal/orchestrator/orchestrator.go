@@ -20,7 +20,18 @@ type Orchestrator struct {
 	scheduler    *Scheduler
 	notifier     notify.Notifier
 	tickInterval time.Duration
+	metrics      *MetricsConfig
 }
+
+// MetricsConfig enables the per-tick concentration + attrition signals (D-M5-10/11).
+type MetricsConfig struct {
+	TopK          int
+	Concentration ConcentrationThresholds
+	Attrition     AttritionConfig
+}
+
+// SetMetrics enables the concentration + slow-attrition signals on each tick.
+func (o *Orchestrator) SetMetrics(m MetricsConfig) { o.metrics = &m }
 
 // NewOrchestrator wires the loop. A non-positive tickInterval defaults to 60s.
 func NewOrchestrator(pool *pgxpool.Pool, liveness LivenessConfig, scheduler *Scheduler, n notify.Notifier, tickInterval time.Duration) *Orchestrator {
@@ -60,9 +71,16 @@ func (o *Orchestrator) runOnce(ctx context.Context) {
 	healed, err := o.scheduler.Tick(ctx)
 	if err != nil {
 		slog.Warn("orchestrator.tick.error", "err", err)
-		return
-	}
-	if healed > 0 {
+	} else if healed > 0 {
 		slog.Info("orchestrator.heal.tick", "scheduled", healed)
+	}
+
+	if o.metrics != nil {
+		if err := EmitConcentration(ctx, o.pool, o.notifier, o.metrics.TopK, o.metrics.Concentration); err != nil {
+			slog.Warn("orchestrator.concentration.error", "err", err)
+		}
+		if err := EvaluateAttrition(ctx, o.pool, o.notifier, o.metrics.Attrition); err != nil {
+			slog.Warn("orchestrator.attrition.error", "err", err)
+		}
 	}
 }
