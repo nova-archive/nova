@@ -37,6 +37,12 @@ type Pinner interface {
 	Get(ctx context.Context, cid string) (io.ReadCloser, error)
 }
 
+// AuditBlockReader reads a single block from LOCAL storage only (no Bitswap).
+// Satisfied by *ipfsclient.Client (BlockGetLocal).
+type AuditBlockReader interface {
+	BlockGetLocal(ctx context.Context, blockCID string) ([]byte, error)
+}
+
 // Budget is the authoritative donor egress enforcer (D11). Satisfied by
 // *bandwidth.Bucket. Take debits n bytes as of now and returns false when the
 // daily budget cannot cover the request (no refund on a later stream abort).
@@ -69,6 +75,11 @@ type Deps struct {
 	ReplayCache *replay.Cache
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
+
+	// Audit deps (POST /fed/v1/audit/challenge).
+	AuditBlocks        AuditBlockReader
+	AuditBudget        Budget
+	MaxAuditBlockBytes int64 // default 262144 when ≤ 0
 }
 
 // Server is the donor read-source HTTP handler.
@@ -82,6 +93,11 @@ type Server struct {
 	replay   *replay.Cache
 	now      func() time.Time
 	mux      *http.ServeMux
+
+	// Audit fields (POST /fed/v1/audit/challenge).
+	auditBlocks        AuditBlockReader
+	auditBudget        Budget
+	maxAuditBlockBytes int64
 }
 
 // NewServer wires a Server from its deps and registers the route.
@@ -90,19 +106,27 @@ func NewServer(d Deps) *Server {
 	if now == nil {
 		now = time.Now
 	}
+	maxAuditBlockBytes := d.MaxAuditBlockBytes
+	if maxAuditBlockBytes <= 0 {
+		maxAuditBlockBytes = 262144
+	}
 	s := &Server{
-		pinner:   d.Pinner,
-		budget:   d.Budget,
-		pubkey:   d.PubKey,
-		progress: d.Progress,
-		nodeID:   d.NodeID,
-		boot:     d.BootTime,
-		replay:   d.ReplayCache,
-		now:      now,
-		mux:      http.NewServeMux(),
+		pinner:             d.Pinner,
+		budget:             d.Budget,
+		pubkey:             d.PubKey,
+		progress:           d.Progress,
+		nodeID:             d.NodeID,
+		boot:               d.BootTime,
+		replay:             d.ReplayCache,
+		now:                now,
+		mux:                http.NewServeMux(),
+		auditBlocks:        d.AuditBlocks,
+		auditBudget:        d.AuditBudget,
+		maxAuditBlockBytes: maxAuditBlockBytes,
 	}
 	// Go 1.22 method+path routing; no chi.
 	s.mux.HandleFunc("GET /fed/v1/blob/{cid}", s.handleBlob)
+	s.mux.HandleFunc("POST /fed/v1/audit/challenge", s.handleAuditChallenge)
 	return s
 }
 
