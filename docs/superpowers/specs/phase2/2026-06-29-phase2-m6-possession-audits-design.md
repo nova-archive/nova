@@ -195,10 +195,15 @@ concatenation of variable-length strings:
 lp(x)       = uint32be(len(x)) || x
 result_hash = sha256(
     "NOVA-POSSESSION-AUDIT-v1" || 0x00 ||
-    lp(challenge_id) || lp(blob_cid) || lp(block_cid) ||
-    uint64be(block_index) || lp(nonce) || lp(block_bytes)
+    lp(challenge_id) || lp(blob_cid) || lp(assignment_id) || uint64be(generation) ||
+    lp(block_cid) || uint64be(block_index) || uint64be(block_size) ||
+    lp(nonce) || lp(block_bytes)
 )
 ```
+
+The digest commits the **full challenge semantics** (assignment id/generation and
+block size, now that the audit is assignment-bound) — not security-critical given
+`challenge_id` uniqueness, but it makes the transcript and test vectors total.
 
 This amends `POSSESSION_AUDIT.md` § "Challenge protocol"/"Verification" (D-M6-13):
 the response carries block bytes (not a digest), the challenge carries
@@ -288,10 +293,13 @@ has parity via `EmbeddedBackend.BlockGet`.
 ### D-M6-5 — Coordinator audit scheduler: `internal/audit/possession`, standalone.
 
 A new package mirroring the Phase-1 `internal/audit/integrity` scheduler: an
-in-process goroutine on its own cadence, resuming from natural cadence on
-restart, **no `jobs.Queue`**, started in `cmd/coordinator` next to the M5
-orchestrator. Single-coordinator Phase 2 ⇒ no fencing (multi-coordinator →
-Phase 6). It owns no durable state beyond the rows it writes.
+in-process goroutine on its own cadence, **no `jobs.Queue`**, started in
+`cmd/coordinator` next to the M5 orchestrator. Single-coordinator Phase 2 ⇒ no
+fencing (multi-coordinator → Phase 6). It owns no durable state beyond the rows
+it writes. **Resuming from natural cadence on restart** is concrete: on startup
+the scheduler seeds its in-memory per-node `lastRun` from `MAX(decided_at)` per
+node over resolved `pin_audits` rows, so a restart does not immediately re-audit
+every due node (matching the integrity scheduler's restart behavior).
 
 #### D-M6-5a — Sampling is two-stage; never `ORDER BY random()` over the corpus.
 
@@ -356,18 +364,30 @@ other writers:
 |---|---|---|
 | `pass` | `min(1.0, score + 0.01)` | — |
 | `fail` — deadline exceeded (**soft**) | `score *= 0.95` | pin stays `acked` (tolerate transient latency; repeated misses drift the score toward the floor) |
-| `fail` — `404` / not-present / stale-assignment (**hard**) | `score *= 0.5` | `FailPinAssignment(cid,node_id)` → `state='failed'`; `EnqueueReconcile(cid, 'audit_not_present')` |
-| `fail` — returned-bytes / CID mismatch / hash mismatch (**hard**) | `score = 0` | `FailPinAssignment` → `state='failed'`; `EnqueueReconcile(cid, 'audit_mismatch')`; reset trust epoch + set the review marker (D-M6-2b); emit `federation.node_suspect` (D-M6-10) |
-| `skip` (unreachable / `audit_budget_exhausted`) | — | — |
+| `fail` — `404` / not-present / stale-assignment (**hard**) | `score *= 0.5` | `FailAckedPinAssignmentForAudit(cid,node_id,assignment_id,generation)` → `state='failed'` (acked-state-guarded; **M5's `FailPinAssignment` only fails `pending` rows**, so M6 adds this acked-specific query); `EnqueueReconcile(cid, 'audit_not_present')` |
+| `fail` — returned-bytes / CID mismatch / hash mismatch (**hard**) | `score = 0` | `FailAckedPinAssignmentForAudit(…)` → `state='failed'`; `EnqueueReconcile(cid, 'audit_mismatch')`; reset trust epoch + set the review marker (D-M6-2b); emit `federation.node_suspect` (D-M6-10) |
+| `skip` — unreachable (pre-dispatch connection/TLS failure) / `audit_budget_exhausted` | — | — |
 
-Additionally, when a node **crosses below `reputation_floor`** (default 0.5) as a
-result of an audit, M6 calls `EnqueueReconcileForNode(node_id,
-'reputation_below_floor')` so its acked CIDs are re-evaluated for re-replication
-— matching M5's rule that below-floor nodes get no new assignments *and* their
-acked pins are scheduled for re-replication. M6 adds **no new healing path**: it
-reuses M5's `FailPinAssignment` and `blob_replication_reconcile_queue`
-(`EnqueueReconcile` / `EnqueueReconcileForNode`); the orchestrator drains them as
-it already does.
+A failed audit moves reputation in a **row-locked** transaction (`SELECT … FOR
+UPDATE` on the node row, then the clamped reputation write) so concurrent writers
+cannot lose an update. A **pre-dispatch transport failure** (connection refused,
+TLS handshake, no route — the donor may never have received the challenge) is a
+`skip`, not a reputation `fail`; only a post-dispatch deadline miss is a `fail`.
+
+**Below-floor reputation does not bulk-replace present replicas (narrowed,
+2026-06-30).** When an audit drops a node below `reputation_floor`, M6 does **not**
+bulk-fail or bulk-replace that node's existing acked replicas. Below-floor
+reputation excludes the node from new placement through the existing M5 placement
+floor and deprioritizes it in read/repair source ordering, but its existing acked
+pins remain **countable** unless a *pin-specific* hard audit failure invalidates
+them. A below-floor node usually still **holds** the bytes (it is slow/unreliable,
+not empty); making its pins non-countable would risk corpus-wide replication
+storms on reputation flapping near the floor. Bulk re-replication of
+present-but-untrusted below-floor replicas is **deferred to P2-M7**, where
+hysteresis, rate limits, and a separate "untrusted replica replacement" queue can
+be designed explicitly. M6 adds **no new healing path**: hard-fail invalidation
+reuses `blob_replication_reconcile_queue` (`EnqueueReconcile`) and the orchestrator
+drains it as it already does.
 
 #### D-M6-7a — Final-transaction revalidation guards against stale challenges.
 
@@ -605,6 +625,10 @@ Out (deferred):
   selection, delete cascades, backup/restore at ~9.8 M `blob_blocks` rows) +
   Prometheus `/metrics` — **P2-M7** (the D-M6-11 slog set is its blueprint).
 - Automatic node **suspension** — never; operator/security judgment (D-M6-8).
+- **Bulk re-replication of present-but-untrusted below-floor replicas** — **P2-M7**
+  (D-M6-7): must include hysteresis around the floor, rate limits, and a separate
+  "untrusted replica replacement" queue so transient reputation flapping cannot
+  trigger corpus-wide replication storms.
 - Streaming-AEAD audit semantics (per-record / CAR / Range) — **P2-M8+**.
 - Multi-coordinator audit-leader fencing — **Phase 6**.
 

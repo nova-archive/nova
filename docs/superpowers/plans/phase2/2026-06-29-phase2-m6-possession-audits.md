@@ -311,12 +311,14 @@ func AuditTranscriptHash(c AuditChallenge, blockBytes []byte) []byte {
         h.Write(n[:])
         h.Write(b)
     }
+    be64 := func(v int64) { var b [8]byte; binary.BigEndian.PutUint64(b[:], uint64(v)); h.Write(b[:]) }
     lp([]byte(c.ChallengeID))
     lp([]byte(c.BlobCID))
+    lp([]byte(c.AssignmentID))
+    be64(c.Generation)
     lp([]byte(c.BlockCID))
-    var idx [8]byte
-    binary.BigEndian.PutUint64(idx[:], uint64(c.BlockIndex))
-    h.Write(idx[:])
+    be64(c.BlockIndex)
+    be64(c.BlockSize)
     lp([]byte(c.Nonce))
     lp(blockBytes)
     return h.Sum(nil)
@@ -360,8 +362,8 @@ type AuditBlockReader interface {
 }
 ```
 
-Add to `Deps`: `AuditBlocks AuditBlockReader` and `AuditBudget Budget`.
-Add to `Server`: `auditBlocks AuditBlockReader` and `auditBudget Budget`; set them in `NewServer`; and register:
+Add to `Deps`: `AuditBlocks AuditBlockReader`, `AuditBudget Budget`, and `MaxAuditBlockBytes int64` (default 262144 in `NewServer` when ≤ 0).
+Add to `Server`: `auditBlocks AuditBlockReader`, `auditBudget Budget`, `maxAuditBlockBytes int64`; set them in `NewServer`; and register:
 
 ```go
 s.mux.HandleFunc("POST /fed/v1/audit/challenge", s.handleAuditChallenge)
@@ -442,7 +444,6 @@ import (
 
     "github.com/nova-archive/nova/internal/federation/transport"
     "github.com/nova-archive/nova/internal/federation/wire"
-    "github.com/nova-archive/nova/internal/node/ipfsclient"
     "github.com/nova-archive/nova/internal/node/state"
 )
 
@@ -475,6 +476,12 @@ func (s *Server) handleAuditChallenge(w http.ResponseWriter, r *http.Request) {
         s.refuse(w, http.StatusBadRequest, codeBad, "bad_challenge", ch.BlobCID)
         return
     }
+    // 2a) Local block-size ceiling (defense against a buggy/malicious coordinator
+    // requesting a huge read): reject BEFORE any budget debit or block read.
+    if ch.BlockSize <= 0 || ch.BlockSize > s.maxAuditBlockBytes {
+        s.refuse(w, http.StatusBadRequest, codeBad, "block_size_out_of_range", ch.BlobCID)
+        return
+    }
 
     // 3) Assignment-bound: acked-delivered + assignment/generation match (D-M6-4-BIND).
     prog, ok := s.progress.Get(ch.BlobCID)
@@ -497,17 +504,14 @@ func (s *Server) handleAuditChallenge(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // 6) Local-only block read; absence is a clean 404.
+    // 6) Local-only block read; ANY error (incl. not-present) is a clean 404. We do
+    // not import the concrete ipfsclient here — the package stays interface-only.
     block, err := s.auditBlocks.BlockGetLocal(r.Context(), ch.BlockCID)
-    if err == ipfsclient.ErrBlockNotLocal {
-        s.refuse(w, http.StatusNotFound, codeBlobUnavail, "block_not_local", ch.BlobCID)
-        return
-    }
     if err != nil {
-        s.refuse(w, http.StatusNotFound, codeBlobUnavail, "block_read_failed", ch.BlobCID)
+        s.refuse(w, http.StatusNotFound, codeBlobUnavail, "block_unavailable", ch.BlobCID)
         return
     }
-    if ch.BlockSize > 0 && int64(len(block)) != ch.BlockSize {
+    if int64(len(block)) != ch.BlockSize {
         s.refuse(w, http.StatusNotFound, codeBlobUnavail, "block_size_mismatch", ch.BlobCID)
         return
     }
@@ -519,7 +523,7 @@ func (s *Server) handleAuditChallenge(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-> The `ipfsclient` import here is allowed in the donor graph (already used by `cmd/node`). If the boundary check flags importing the concrete package for `ErrBlockNotLocal`, move the sentinel comparison behind a small `errors.Is` check on an interface error exported from `source` instead.
+> The handler imports no concrete `ipfsclient` — `source` stays interface-only (cleaner boundary). Any `BlockGetLocal` error (including not-present) maps to a single `404 block_unavailable`.
 
 - [ ] **Step 5: Run to verify it passes**
 
@@ -577,15 +581,17 @@ Add `wire.CapAuditBlockHash` to the donor's advertised capability slice (where `
 Where `source.NewServer(source.Deps{...})` is constructed, add a **separate** audit-budget bucket sized at `audit_budget_fraction × daily_budget` and the block reader:
 
 ```go
-auditBucket := bandwidth.NewBucket(int64(float64(dailyBudgetBytes)*auditBudgetFraction)) // separate from the D11 source/repair bucket
+// Separate from the D11 source/repair bucket. Constructor is NewDailyBucket(bytesPerDay, now).
+auditBucket := bandwidth.NewDailyBucket(int64(float64(dailyBudgetBytes)*auditBudgetFraction), time.Now())
 srv := source.NewServer(source.Deps{
     // ... existing fields ...
-    AuditBlocks: ipfsClient,
-    AuditBudget: auditBucket,
+    AuditBlocks:        ipfsClient,
+    AuditBudget:        auditBucket,
+    MaxAuditBlockBytes: 262144,
 })
 ```
 
-(Use the existing `bandwidth.NewBucket` constructor signature; `auditBudgetFraction` comes from donor config, default 0.01. If the donor config has no daily-budget figure available at this point, reuse the same source the D11 bucket is sized from.)
+(`auditBudgetFraction` comes from donor config, default 0.01; `dailyBudgetBytes` is the same figure the D11 bucket is sized from.)
 
 - [ ] **Step 5: Run + boundary check**
 
@@ -609,7 +615,7 @@ git commit -m "feat(p2-m6): donor advertises audit-block-hash/v1 + separate audi
 - Test: covered by Tasks 8–9 (DB-backed); this task's deliverable is "sqlc generates and compiles".
 
 **Interfaces:**
-- Produces (generated method names): `InsertAuditChallenge`, `RecordAuditOutcome`, `RevalidateAuditPin`, `MoveReputation`, `GetNodeTrust`, `CountPassedAuditsSince`, `CountAckedTransfersSince`, `SetTrustState`, `SetTrustReview`, `ClearTrustReview`, `ReconcileStaleAudits`, `SelectDueAuditNodes`, `SelectAckedPinForAudit`, `SelectNewlyAckedPins`, `SelectRandomBlockForCID`.
+- Produces (generated method names): `InsertAuditChallenge`, `RevalidateAuditPin`, `FailAckedPinAssignmentForAudit`, `GetNodeTrustForUpdate`, `SelectLastAuditPerNode`, `RecordAuditOutcome`, `MoveReputation`, `GetNodeTrust`, `CountPassedAuditsSince`, `CountAckedTransfersSince`, `SetTrustState`, `SetTrustReview`, `ClearTrustReview`, `ReconcileStaleAudits`, `SelectDueAuditNodes`, `SelectAckedPinForAudit`, `SelectNewlyAckedPins`, `SelectRandomBlockForCID`, `GetNodeSourceAddr`.
 
 - [ ] **Step 1: Write the queries**
 
@@ -629,11 +635,32 @@ SELECT EXISTS (
     AND assignment_id = $3 AND generation = $4
 ) AS still_current;
 
--- name: RecordAuditOutcome :exec
+-- name: FailAckedPinAssignmentForAudit :execrows
+-- D-M6-7 hard-fail: invalidate the ACKED row for this exact assignment/generation.
+-- (M5's FailPinAssignment only fails 'pending' rows — wrong state for audits.)
+UPDATE pin_assignments
+SET state = 'failed'
+WHERE cid = $1 AND node_id = $2 AND assignment_id = $3 AND generation = $4 AND state = 'acked';
+
+-- name: GetNodeTrustForUpdate :one
+-- Row-locked read for the reputation/trust transaction (Blocker 5: lost-update safe).
+SELECT trust_state, reputation_score, trust_epoch_started_at, trust_review_required_at, joined_at
+FROM nodes WHERE id = $1 FOR UPDATE;
+
+-- name: SelectLastAuditPerNode :many
+-- Startup cadence seed (D-M6-5): last resolved audit per node, so a restart does not
+-- immediately re-audit every due node.
+SELECT node_id, max(decided_at)::timestamptz AS last_decided_at
+FROM pin_audits WHERE result IS NOT NULL
+GROUP BY node_id;
+
+-- name: RecordAuditOutcome :execrows
+-- Resolve only the unresolved row, so a replayed challenge_id cannot overwrite a
+-- decided audit (the caller asserts 1 row; 0 = replay/already-decided).
 UPDATE pin_audits
 SET result = $2, received_at = $3, decided_at = $4, latency_ms = $5,
     bytes_verified = $6, transcript_hash = $7, error = $8
-WHERE id = $1;
+WHERE id = $1 AND result IS NULL;
 
 -- name: MoveReputation :one
 -- Atomic, lost-update-safe (D-M6-7): clamp to [0,1].
@@ -684,18 +711,21 @@ SELECT n.id AS node_id, n.trust_state, n.reputation_score,
 FROM nodes n
 JOIN pin_assignments pa ON pa.node_id = n.id AND pa.state = 'acked'
 WHERE n.status IN ('active','suspect') AND n.assignment_sync_state = 'current'
+  AND n.advertised_capabilities @> ARRAY['audit-block-hash/v1']  -- only challengeable donors
+  AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
 GROUP BY n.id
 ORDER BY (COALESCE(n.last_stored_bytes,0)::float8 * count(pa.cid)) DESC, n.id
 LIMIT $1;
 
 -- name: SelectAckedPinForAudit :one
--- Stage 2: one acked pin for a node, size-weighted by envelope_size (largest first
--- with a random tie-break keeps big custodians audited without ORDER BY random() over all).
+-- Stage 2: one acked pin for a node, WEIGHTED-random by envelope_size
+-- (Efraimidis–Spirakis: key = random()^(1/weight), largest key wins) so big
+-- custodians are sampled proportionally without ORDER BY random() over the corpus.
 SELECT pa.cid, pa.assignment_id, pa.generation
 FROM pin_assignments pa
 JOIN blob_manifests m ON m.cid = pa.cid
 WHERE pa.node_id = $1 AND pa.state = 'acked'
-ORDER BY m.envelope_size DESC, random()
+ORDER BY power(random(), 1.0 / GREATEST(m.envelope_size, 1)) DESC
 LIMIT 1;
 
 -- name: SelectNewlyAckedPins :many
@@ -742,7 +772,7 @@ git commit -m "feat(p2-m6): sqlc queries for possession audits — challenge/out
 
 **Interfaces:**
 - Consumes: `wire.AuditChallenge`, a `*tls.Config` (CoordinatorClientTLS), `go-cid`.
-- Produces: `type Dispatcher struct{...}`; `func (d *Dispatcher) Challenge(ctx, addr string, ch wire.AuditChallenge) (DispatchResult, error)`; `type DispatchResult struct { Outcome Outcome; Bytes []byte; ReceivedAt time.Time; LatencyMS int }`; `type Outcome int` with `OutcomePass, OutcomeFailNotPresent, OutcomeFailMismatch, OutcomeSkipBudget, OutcomeFailDeadline`.
+- Produces: `type Dispatcher struct{...}`; `func (d *Dispatcher) Challenge(ctx, addr string, ch wire.AuditChallenge) (DispatchResult, error)`; `type DispatchResult struct { Outcome Outcome; Bytes []byte; ReceivedAt time.Time; LatencyMS int }`; `type Outcome int` with `OutcomePass, OutcomeFailNotPresent, OutcomeFailMismatch, OutcomeFailDeadline, OutcomeSkipBudget, OutcomeSkipUnreachable`.
 
 - [ ] **Step 1: Write the failing test (against a fake donor)**
 
@@ -782,6 +812,7 @@ import (
     "context"
     "crypto/tls"
     "encoding/json"
+    "errors"
     "io"
     "net/http"
     "time"
@@ -798,6 +829,7 @@ const (
     OutcomeFailMismatch
     OutcomeFailDeadline
     OutcomeSkipBudget
+    OutcomeSkipUnreachable // pre-dispatch connection/TLS failure: donor may never have been challenged
 )
 
 type DispatchResult struct {
@@ -822,6 +854,9 @@ func NewDispatcher(clientTLS *tls.Config) *Dispatcher {
 const maxAuditResp = 1 << 20 // 1 MiB ceiling on any returned block (importspec leaves <= 256 KiB)
 
 func (d *Dispatcher) Challenge(ctx context.Context, addr string, ch wire.AuditChallenge) (DispatchResult, error) {
+    if ch.BlockSize <= 0 || ch.BlockSize > maxAuditResp { // sanity ceiling; scheduler also filters over-cap blocks
+        return DispatchResult{Outcome: OutcomeFailMismatch}, nil
+    }
     ch.ChallengeKind = wire.AuditChallengeKindBlockHash
     body, _ := json.Marshal(ch)
     req, err := http.NewRequestWithContext(ctx, http.MethodPost, addr+"/fed/v1/audit/challenge", bytes.NewReader(body))
@@ -832,23 +867,36 @@ func (d *Dispatcher) Challenge(ctx context.Context, addr string, ch wire.AuditCh
     start := d.now()
     resp, err := d.hc.Do(req)
     if err != nil {
-        return DispatchResult{Outcome: OutcomeFailDeadline}, nil // transport/timeout failure after dispatch
+        // Distinguish "donor was challenged but missed the deadline" (fail) from
+        // "could not reach the donor" (skip, no reputation movement): a deadline
+        // exceedance after the request began is a fail; a dial/TLS/no-route error
+        // before any response is unreachable.
+        if errors.Is(err, context.DeadlineExceeded) {
+            return DispatchResult{Outcome: OutcomeFailDeadline}, nil
+        }
+        return DispatchResult{Outcome: OutcomeSkipUnreachable}, nil
     }
     defer resp.Body.Close()
-    received := d.now()
     switch resp.StatusCode {
     case http.StatusTooManyRequests:
-        return DispatchResult{Outcome: OutcomeSkipBudget, ReceivedAt: received}, nil
+        return DispatchResult{Outcome: OutcomeSkipBudget, ReceivedAt: d.now()}, nil
     case http.StatusNotFound:
-        return DispatchResult{Outcome: OutcomeFailNotPresent, ReceivedAt: received}, nil
+        return DispatchResult{Outcome: OutcomeFailNotPresent, ReceivedAt: d.now()}, nil
     case http.StatusOK:
         // fall through
     default:
-        return DispatchResult{Outcome: OutcomeFailNotPresent, ReceivedAt: received}, nil
+        return DispatchResult{Outcome: OutcomeFailNotPresent, ReceivedAt: d.now()}, nil
     }
-    raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAuditResp))
+    // Read EXACTLY the expected body (+1 to detect over-length), THEN stamp
+    // received_at — so a slow-body donor is judged against the deadline after the
+    // full read (D-M6-15 #4 late-body), and received_at reflects true completion.
+    raw, err := io.ReadAll(io.LimitReader(resp.Body, ch.BlockSize+1))
+    received := d.now()
     if err != nil {
         return DispatchResult{Outcome: OutcomeFailDeadline, ReceivedAt: received}, nil
+    }
+    if int64(len(raw)) != ch.BlockSize {
+        return DispatchResult{Outcome: OutcomeFailMismatch, ReceivedAt: received}, nil
     }
     // Primary verifier: reconstruct the CID from the stored prefix and compare.
     stored, err := cid.Decode(ch.BlockCID)
@@ -885,7 +933,7 @@ git commit -m "feat(p2-m6): coordinator audit dispatcher — mTLS challenge + CI
 - Test: `internal/audit/possession/verify_test.go`, `internal/audit/possession/trust_test.go` (DB-backed)
 
 **Interfaces:**
-- Consumes: Task 6 queries; `DispatchResult` (Task 7); `notify.Notifier`; existing `gen.FailPinAssignment`, `gen.EnqueueReconcile`, `gen.EnqueueReconcileForNode`.
+- Consumes: Task 6 queries (incl. `FailAckedPinAssignmentForAudit`, `GetNodeTrustForUpdate`); `DispatchResult` (Task 7); `notify.Notifier`; existing `gen.EnqueueReconcile`.
 - Produces: `func (a *Auditor) Record(ctx, challenge AuditTarget, res DispatchResult) error`; `type AuditTarget struct { AuditID, NodeID, BlobCID, BlockCID, AssignmentID string; Generation int64; Nonce string; Deadline time.Time }`; `applyTrust(ctx, tx, nodeID, cfg)`.
 
 - [ ] **Step 1: Write the failing tests (one per outcome, DB-backed)**
@@ -898,7 +946,9 @@ func TestRecordDeadlineSoftFailKeepsPin(t *testing.T)        { /* score *=0.95, 
 func TestRecordNotPresentHardFailsPin(t *testing.T)          { /* score*=0.5, pin state='failed', reconcile enqueued (audit_not_present) */ }
 func TestRecordMismatchZeroesAndSuspects(t *testing.T)       { /* score=0, pin failed, reconcile (audit_mismatch), trust_review set, federation.node_suspect emitted */ }
 func TestRecordStaleChallengeSkips(t *testing.T)             { /* RevalidateAuditPin=false -> result=skip(stale_challenge), no rep move, pin untouched */ }
-func TestRecordBelowFloorEnqueuesNodeCIDs(t *testing.T)      { /* a fail that crosses 0.5 -> EnqueueReconcileForNode called */ }
+func TestRecordBelowFloorDoesNotBulkReplace(t *testing.T)    { /* a soft fail crossing 0.5: trusted->probationary demote, but NO reconcile enqueue for the node's other still-acked CIDs (narrowed, D-M6-7) */ }
+func TestRecordUnreachableIsSkipNoMovement(t *testing.T)     { /* OutcomeSkipUnreachable -> result=skip(unreachable), reputation unchanged, pin acked */ }
+func TestRecordOutcomeReplayDoesNotOverwrite(t *testing.T)   { /* RecordAuditOutcome WHERE result IS NULL: second call returns 0 rows, original outcome preserved */ }
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -924,8 +974,8 @@ import (
 
 type AuditTarget struct {
     AuditID, NodeID, BlobCID, BlockCID, AssignmentID, Nonce string
-    Generation int64
-    Deadline   time.Time
+    Generation, BlockIndex, BlockSize int64
+    Deadline                          time.Time
 }
 
 type Auditor struct {
@@ -960,32 +1010,43 @@ func (a *Auditor) Record(ctx context.Context, t AuditTarget, res DispatchResult,
         var transcript []byte
         if res.Outcome == OutcomePass {
             transcript = wire.AuditTranscriptHash(wire.AuditChallenge{
-                ChallengeID: t.AuditID, BlobCID: t.BlobCID, BlockCID: t.BlockCID, Nonce: t.Nonce}, res.Bytes)
+                ChallengeID: t.AuditID, BlobCID: t.BlobCID, AssignmentID: t.AssignmentID, Generation: t.Generation,
+                BlockCID: t.BlockCID, BlockIndex: t.BlockIndex, BlockSize: t.BlockSize, Nonce: t.Nonce}, res.Bytes)
         }
-        if err := q.RecordAuditOutcome(ctx, recordParams(t, result, transcript, decided, res, errReason)); err != nil {
+        // RecordAuditOutcome updates only the unresolved (result IS NULL) row, so a
+        // replayed challenge_id cannot silently overwrite a decided audit.
+        if _, err := q.RecordAuditOutcome(ctx, recordParams(t, result, transcript, decided, res, errReason)); err != nil {
             return err
         }
-        if result == "skip" { return nil } // budget skip: no movement
+        if result == "skip" { return nil } // budget/unreachable skip: no movement
 
-        cur, err := q.GetNodeTrust(ctx, pgNodeID(t.NodeID))
+        // Row-lock the node so the read-compute-write reputation update cannot lose a
+        // concurrent update (Blocker 5).
+        cur, err := q.GetNodeTrustForUpdate(ctx, pgNodeID(t.NodeID))
         if err != nil { return err }
         newScore := cur.ReputationScore
         if repZero { newScore = 0 } else if repMul > 0 { newScore = cur.ReputationScore * float32(repMul) } else { newScore = minF32(1, cur.ReputationScore+0.01) }
         if _, err := q.MoveReputation(ctx, gen.MoveReputationParams{ID: pgNodeID(t.NodeID), Column2: newScore}); err != nil {
             return err
         }
+        slog.Info("audit.reputation.moved", "node", t.NodeID, "from", cur.ReputationScore, "to", newScore, "outcome", result)
         if hard {
-            if _, err := q.FailPinAssignment(ctx, failParams(t)); err != nil { return err }
-            if err := q.EnqueueReconcile(ctx, gen.EnqueueReconcileParams{Cid: t.BlobCID, Reason: pgText(reconcileReason(mismatch))}); err != nil { return err }
+            // FailAckedPinAssignmentForAudit fails ONLY the acked row for this exact
+            // assignment/generation (M5's FailPinAssignment fails pending rows only).
+            n, err := q.FailAckedPinAssignmentForAudit(ctx, failAckedParams(t))
+            if err != nil { return err }
+            if n == 1 { // only enqueue if we actually invalidated the live acked pin
+                if err := q.EnqueueReconcile(ctx, gen.EnqueueReconcileParams{Cid: t.BlobCID, Reason: pgText(reconcileReason(mismatch))}); err != nil { return err }
+            }
         }
         if mismatch {
             if err := q.SetTrustReview(ctx, gen.SetTrustReviewParams{ID: pgNodeID(t.NodeID), TrustReviewReason: pgText("hash_mismatch")}); err != nil { return err }
             suspect = true
         }
-        // Below-floor re-replication of the node's CIDs.
-        if float64(cur.ReputationScore) >= reputationFloor && float64(newScore) < reputationFloor {
-            if err := q.EnqueueReconcileForNode(ctx, gen.EnqueueReconcileForNodeParams{NodeID: pgNodeID(t.NodeID), Reason: pgText("reputation_below_floor")}); err != nil { return err }
-        }
+        // Below-floor BULK re-replication is intentionally NOT done here (deferred to
+        // P2-M7, D-M6-7): below-floor excludes new placement + deprioritizes source
+        // ordering, but present acked pins stay countable unless a pin-specific hard
+        // failure invalidated one above.
         return a.applyTrust(ctx, q, t.NodeID, float64(newScore), reputationFloor)
     })
     if err != nil { return err }
@@ -1004,6 +1065,7 @@ func classify(o Outcome) (result string, mul float64, zero, hard, mismatch bool,
     case OutcomeFailNotPresent:return "fail", 0.5, false, true, false, "not_present"
     case OutcomeFailMismatch:  return "fail", 0, true, true, true, "mismatch"
     case OutcomeSkipBudget:    return "skip", 0, false, false, false, "audit_budget_exhausted"
+    case OutcomeSkipUnreachable: return "skip", 0, false, false, false, "unreachable"
     }
     return "skip", 0, false, false, false, "unknown"
 }
@@ -1143,7 +1205,24 @@ func (s *Scheduler) auditOne(ctx context.Context, q *gen.Queries, nodeID, cid, a
 }
 ```
 
-`donorAddr` reads `nodes.source_nebula_addr` for the node (add a small `GetNodeSourceAddr` query, or reuse an existing one). `due(n)` modulates cadence: track `lastRun[nodeID]`; trusted & rep≥0.95 → 1.25× interval, probationary/rep<0.5 → 0.25× interval. `Run` is the integrity-style ticker calling `runOnce`, after `ReconcileOnStartup`.
+`donorAddr` reads `nodes.source_nebula_addr` via `GetNodeSourceAddr` (Task 6). `due(n)` modulates cadence: track `lastRun[nodeID]`; trusted & rep≥0.95 → 1.25× interval, probationary/rep<0.5 → 0.25× interval. `Run` is the integrity-style ticker calling `runOnce`, after `ReconcileOnStartup`.
+
+`ReconcileOnStartup` does two things (D-M6-5 resume-from-natural-cadence + D-M6-3b crash recovery):
+
+```go
+func (s *Scheduler) ReconcileOnStartup(ctx context.Context) error {
+    q := gen.New(s.pool)
+    // 1) Crashed-mid-flight challenges -> skip.
+    if err := q.ReconcileStaleAudits(ctx, s.cfg.StaleGraceSeconds); err != nil { return err }
+    // 2) Seed per-node lastRun so a restart does not re-audit every due node at once.
+    rows, err := q.SelectLastAuditPerNode(ctx)
+    if err != nil { return err }
+    s.mu.Lock()
+    for _, r := range rows { s.lastRun[r.NodeID.String()] = r.LastDecidedAt.Time }
+    s.mu.Unlock()
+    return nil
+}
+```
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -1176,13 +1255,15 @@ git commit -m "feat(p2-m6): possession audit scheduler — two-stage sampling, f
 
 ```go
 func TestPossessionAuditDefaults(t *testing.T) {
-    var p PossessionAudit
+    var p PossessionAudit // all zero values
     if p.EffectiveDeadline() != 30*time.Second { t.Fatal("deadline default") }
     if p.EffectiveAuditBudgetFraction() != 0.01 { t.Fatal("budget default") }
+    if err := p.Validate(); err != nil { t.Fatalf("zero value must validate (means unset): %v", err) }
 }
 func TestPossessionAuditValidationRejectsBadFraction(t *testing.T) {
-    p := PossessionAudit{AuditBudgetFraction: 1.5}
-    if err := p.Validate(); err == nil { t.Fatal("fraction > 1 must be rejected") }
+    if err := (PossessionAudit{AuditBudgetFraction: 1.5}).Validate(); err == nil { t.Fatal("fraction > 1 must be rejected") }
+    if err := (PossessionAudit{AuditBudgetFraction: -0.1}).Validate(); err == nil { t.Fatal("negative fraction must be rejected") }
+    if err := (PossessionAudit{DeadlineSeconds: -1}).Validate(); err == nil { t.Fatal("negative deadline must be rejected") }
 }
 ```
 
@@ -1193,7 +1274,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement the block + validation**
 
-Add `PossessionAudit PossessionAudit `yaml:"possession_audit,omitempty"`` to the operator `Config`, the struct with the fields above, `Effective*` accessors (defaulting via constants like `DefaultReputationFloor`), and a `Validate()` that enforces `0 < AuditBudgetFraction <= 1`, `DeadlineSeconds > 0`, `BaseIntervalSeconds > 0`, `GraduateRep in (0,1]`, `MaxBlockBytes > 0`. Wire its `Validate()` into the existing config-validation aggregation.
+Add `PossessionAudit PossessionAudit `yaml:"possession_audit,omitempty"`` to the operator `Config`, the struct with the fields above, and the `Effective*` accessors that supply defaults for zero values. **Zero means "unset" → defaulted**, so `Validate()` must *allow* zero and reject only invalid *explicit* values: `AuditBudgetFraction < 0 || > 1`, `DeadlineSeconds < 0`, `BaseIntervalSeconds < 0`, `MaxBlockBytes < 0`, `GraduateReputation < 0 || > 1`, `MinAgeDays < 0`, `MinPassedAudits < 0`, `MinAckedTransfers < 0`. Wire its `Validate()` into the existing config-validation aggregation.
 
 - [ ] **Step 4: Add the two first-class /settings knobs**
 
