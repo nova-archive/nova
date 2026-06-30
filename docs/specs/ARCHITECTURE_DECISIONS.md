@@ -158,7 +158,7 @@ threat tolerance.
 
 | Key | Default | Range | Where documented |
 |---|---|---|---|
-| `replication.factor.important` | 3 | 1..20 | `HEALING_PROTOCOL.md` |
+| `replication.factor.important` | 5 | 1..20 | `HEALING_PROTOCOL.md` |
 | `replication.factor.normal` | 3 | 1..20 | `HEALING_PROTOCOL.md` |
 | `replication.factor.cache` | 2 | 1..20 | `HEALING_PROTOCOL.md` |
 | `tick_interval_seconds` | 60 | 5..600 | `HEALING_PROTOCOL.md` |

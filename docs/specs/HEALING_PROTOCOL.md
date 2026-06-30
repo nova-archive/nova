@@ -310,22 +310,33 @@ slow-failure threshold approaches. The metric backing it is the
 **capacity runway**: how many days of full corpus re-replication
 the surviving network's daily budget could sustain.
 
-### Computation
+### Computation (P2-M5 amendment — corrected dimensions, D-M5-11)
 
-Per content class `c` with replication factor `R_c`:
+The pre-M5 formula `runway_days_c = surviving_daily_budget /
+desired_replicated_c` was dimensionally **`1/day`, not days** (bytes/day ÷
+bytes). M5 replaces it with metrics that are honest about their units and
+split across the limiting axes (attrition is not only egress). Per content
+class `c` with replication factor `R_c`:
 
 ```
-corpus_bytes_c       = SUM(blobs.byte_size WHERE content_class = c
+corpus_bytes_c        = SUM(blob_manifests.envelope_size WHERE durability_class = c
                                               AND blobs.state IN ('active','quarantined'))
-desired_replicated_c = corpus_bytes_c * R_c
-surviving_daily_budget = SUM(nodes.bandwidth_budget_bytes_per_day - nodes.bytes_uploaded_today
+desired_replicated_c  = corpus_bytes_c * R_c
+surviving_daily_egress = SUM(COALESCE(nodes.last_egress_capacity_bytes,
+                                      nodes.bandwidth_budget_bytes_per_day)
                               WHERE nodes.status IN ('active','suspect'))
-runway_days_c        = surviving_daily_budget / desired_replicated_c
+surviving_free_bytes  = SUM(COALESCE(nodes.last_free_bytes, 0)
+                              WHERE nodes.status IN ('active','suspect'))
+
+repair_time_days_c    = desired_replicated_c / surviving_daily_egress   # bytes ÷ bytes/day = DAYS
+storage_headroom_c    = surviving_free_bytes / desired_replicated_c     # ≥1 means it fits
+active_node_trend     = (active+suspect now) vs the trailing-28d baseline
 ```
 
-The federation's overall runway is `min(runway_days_c)` across all
-classes with non-zero corpus. The minimum-runway class is the
-limiting factor and is identified in the webhook payload.
+`federation.shrinking` fires for class `c` when `repair_time_days_c >
+capacity_runway_floor_days` **or** `storage_headroom_c < 1` — so a
+healthy-egress-but-storage-starved federation is not misread as fine. The
+limiting class is identified in the payload.
 
 ### Webhook semantics
 
@@ -333,18 +344,17 @@ limiting factor and is identified in the webhook payload.
 {
   "event": "federation.shrinking",
   "limiting_class": "important",
-  "runway_days": 4.2,
-  "floor_days": 7,
-  "active_nodes": 18,
-  "active_nodes_trailing_28d_p50": 27,
+  "repair_time_days": 4.2,
+  "storage_headroom": 0.8,
+  "active_node_trend": 18,
   "emitted_at": "2026-05-19T14:00:00Z"
 }
 ```
 
-Suppression: the webhook fires at most once per 24-hour window. If
-the runway recovers above the floor (donors recruited, budgets
-expanded), the next dip below re-arms the webhook. This prevents
-alert storms when budgets oscillate near the boundary.
+Suppression: the webhook fires at most once per 24-hour window. If the
+metrics recover above the floor (donors recruited, budgets/storage
+expanded), the next dip below re-arms the webhook. This prevents alert
+storms when budgets oscillate near the boundary.
 
 The webhook does not change orchestrator behavior. It is a
 notification so the operator can recruit, expand budgets, or

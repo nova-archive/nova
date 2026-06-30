@@ -725,3 +725,67 @@ CREATE TRIGGER users_updated_at
 -- This file does not create the row itself (the value depends on the
 -- runtime environment); cmd/migrate handles it on first deployment.
 -- ----------------------------------------------------------------------------
+
+-- ============================================================================
+-- P2-M5 (migration 0014) — liveness & healing (as-built, D-M5-14)
+-- ============================================================================
+
+-- blob_replication_state: rebuildable donor-replica health projection (authority
+-- remains pin_assignments ⨝ node liveness). Counts are acked-on-COUNTABLE-nodes
+-- only (status IN active/suspect AND assignment_sync_state='current'); pending,
+-- coordinator cache, and origin copies NEVER count toward R.
+CREATE TABLE blob_replication_state (
+    cid                    text PRIMARY KEY REFERENCES blobs(cid) ON DELETE CASCADE,
+    healthy_acked_count    integer NOT NULL DEFAULT 0,
+    sourceable_acked_count integer NOT NULL DEFAULT 0,
+    in_flight_count        integer NOT NULL DEFAULT 0,   -- pending reservations; never lift Tier-1
+    target_count           integer NOT NULL,
+    safety_tier            text NOT NULL CHECK (safety_tier IN ('donor_lost','tier1','tier2','healthy')),
+    local_recoverable      boolean NOT NULL DEFAULT false,  -- coordinator holds a usable local copy
+    durability_class       text NOT NULL CHECK (durability_class IN ('important','normal','cache')),
+    dirty                  boolean NOT NULL DEFAULT false,  -- recompute-before-schedule (D-M5-2d)
+    updated_at             timestamptz NOT NULL DEFAULT now()
+);
+
+-- Durable, bounded reconcile queue: a bulk node-status transition enqueues affected
+-- CIDs (set-based) in its mutation tx; an idempotent drain recomputes them in batches.
+CREATE TABLE blob_replication_reconcile_queue (
+    cid         text PRIMARY KEY REFERENCES blobs(cid) ON DELETE CASCADE,
+    reason      text NOT NULL,
+    enqueued_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Durable, restart-stable webhook once-per-window suppression, scoped so distinct
+-- subjects are not collapsed (D-M5-9a).
+CREATE TABLE webhook_suppression (
+    event_type    text NOT NULL,
+    destination   text NOT NULL,
+    scope_key     text NOT NULL,
+    last_fired_at timestamptz NOT NULL,
+    PRIMARY KEY (event_type, destination, scope_key)
+);
+
+-- nodes: D8/D9 placement + liveness/telemetry columns.
+ALTER TABLE nodes
+    ADD COLUMN failure_domain_id    text,        -- operator-verified only (else collapses to "unknown")
+    ADD COLUMN donor_principal_id   text,
+    ADD COLUMN provider             text,
+    ADD COLUMN asn                  text,
+    ADD COLUMN region               text,
+    ADD COLUMN operator_verified_at timestamptz, -- set by `novactl node set-domain`
+    ADD COLUMN placement_weight     real NOT NULL DEFAULT 1.0 CHECK (placement_weight BETWEEN 0.0 AND 1.0),
+    ADD COLUMN assignment_sync_state text NOT NULL DEFAULT 'current'
+        CHECK (assignment_sync_state IN ('current','snapshot_required','reconciling')),
+    ADD COLUMN revoked_signaled_at   timestamptz,  -- node_revoked emit-once gate
+    ADD COLUMN last_egress_remaining_bytes bigint,  -- best-effort step_capacity telemetry (hint only)
+    ADD COLUMN last_egress_capacity_bytes  bigint,
+    ADD COLUMN last_egress_refill_bps       bigint;
+
+-- pin_assignments: durable repair-source binding that survives snapshot recovery.
+ALTER TABLE pin_assignments
+    ADD COLUMN source_node_id         uuid REFERENCES nodes(id),  -- NULL ⇒ coordinator-as-source
+    ADD COLUMN source_attempts        integer NOT NULL DEFAULT 0,
+    ADD COLUMN source_next_attempt_at timestamptz;                -- late-bind retry backoff
+
+-- pin_changes: incremental copy of the repair source for change-log delivery + audit.
+ALTER TABLE pin_changes ADD COLUMN source_node_id uuid REFERENCES nodes(id);

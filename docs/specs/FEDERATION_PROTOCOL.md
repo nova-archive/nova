@@ -540,3 +540,46 @@ coordinator emit deprecation warnings for outdated clients via
 - IPFS hardening: `docs/specs/KUBO_HARDENING.md`
 - Possession audits: `docs/specs/POSSESSION_AUDIT.md`
 - Donor onboarding UX: `docs/VOLUNTEER_DEPLOYMENT_GUIDANCE.md`
+
+---
+
+## P2-M5 amendment — liveness & healing (as-built, D-M5-14)
+
+**Liveness state machine v2 (code-enforced).** The coordinator's `internal/orchestrator`
+sweeper transitions `active→suspect→unreachable→evicted` from `last_seen_at` (strict
+advancement only). **Heartbeat is the canonical recovery path:** an authenticated
+heartbeat flips `suspect/unreachable→active`; a node returning from `unreachable`
+re-enters `assignment_sync_state='reconciling'` and **does not count toward `R`**
+until it resyncs to the current change-log head (or completes a snapshot). `evicted`
+heartbeats are rejected (`registration_required`); re-registration reactivates with
+`assignment_sync_state='snapshot_required'`. Countability requires
+`status IN (active,suspect) ∧ assignment_sync_state='current'`.
+
+**Endpoint × status matrix.** `pins/changes` pauses for `unreachable`
+(`heartbeat_required`); `ack`/`fail` accept active/suspect/unreachable; all reject
+`evicted`/`revoked`. A `suspect` node may remain the last surviving repair **source**
+but is never a new **destination**.
+
+**Heartbeat egress telemetry (D-M5-6-TEL).** `HeartbeatRequest` carries optional
+`egress_budget_remaining_bytes` / `egress_budget_capacity_bytes` /
+`egress_refill_bytes_per_second`. These are a **best-effort scheduling hint** only
+(persisted on `nodes.last_egress_*`); the donor's token bucket stays authoritative —
+an over-optimistic hint still yields a `budget_exceeded` refusal.
+
+**Donor↔donor repair (live).** `repair-stream/v1` is advertised by donors that run a
+source server; the coordinator selects a donor **source** only from advertisers (a
+non-advertiser stays read-sourceable only — mixed-version safety). The repair token's
+`assignment_id`/`generation` name the **source donor's acked** assignment (the source
+verifies against its own progress record); the additive `dest_assignment_id`/
+`dest_generation` bind the **destination's pending** assignment. The destination donor
+verifies that binding (`dest_node_id`==self, `dest_*`==its `PinChange`) **before**
+fetching the ciphertext envelope from the source's address; the source debits its
+authoritative egress bucket and streams **exactly `byte_size`**; the destination
+re-imports + root-CID-verifies before ack. A repair source is late-bound at
+`/pins/changes` / `/pins/snapshot` serve time to its **current** address; an
+unsourceable stored source is requeued with backoff (never silently substituted).
+
+**Snapshot recovery learns the source.** `SnapshotItem` carries an optional `source`,
+so a long-offline donor recovering via snapshot after change-log retention still
+learns its repair source (`pin_assignments.source_node_id` is the durable binding;
+`pin_changes.source_node_id` is the incremental copy).
