@@ -85,11 +85,13 @@ func NewBestEffortHTTP(dests []Destination, suppress Suppressor, o Options) *Bes
 }
 
 // windowSeconds is the once-per-window suppression window per event type (D-M5-9a):
-// shrinking 24h; node_revoked 0 (always, deduped upstream); the rest (degraded,
+// shrinking 24h; node_suspect 24h; node_revoked 0 (always, deduped upstream); the rest (degraded,
 // concentrated, homogeneous) use the mass-casualty window.
 func (e *BestEffortHTTP) windowSeconds(eventType string) int {
 	switch eventType {
 	case "federation.shrinking":
+		return int((24 * time.Hour).Seconds())
+	case "federation.node_suspect":
 		return int((24 * time.Hour).Seconds())
 	case "federation.node_revoked":
 		return 0

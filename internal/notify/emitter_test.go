@@ -153,3 +153,10 @@ func TestBoundedConcurrencyUnderStorm(t *testing.T) {
 	require.LessOrEqual(t, atomic.LoadInt32(&maxConcurrent), int32(cap), "never more than `cap` concurrent POSTs")
 	close(release)
 }
+
+func TestNodeSuspectWindowIs24h(t *testing.T) {
+	e := &BestEffortHTTP{massCasualtyWindow: time.Hour}
+	if e.windowSeconds("federation.node_suspect") != int((24 * time.Hour).Seconds()) {
+		t.Fatal("node_suspect should suppress per 24h, scoped by node_id")
+	}
+}
