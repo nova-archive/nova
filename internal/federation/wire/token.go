@@ -23,17 +23,26 @@ var (
 // Claims is the Ed25519 repair-token payload (D1). In M1 the id/cid fields are
 // opaque non-empty strings; deeper CID/UUID parsing lands when transfer/register
 // code needs it (no go-cid/UUID dependency enters the donor graph yet).
+// For a donor↔donor repair grant (M5, D-M5-8e): AssignmentID/Generation name the
+// SOURCE donor's acked assignment (the source server verifies the token against
+// its own ProgressAckDelivered record), while the additive DestAssignmentID/
+// DestGeneration bind the DESTINATION's pending assignment so the receiving donor
+// can confirm the grant is for the change it is processing before fetching. Both
+// Dest* fields are omitempty: a coordinator-as-source read grant (M4/M4.1) leaves
+// them unset and marshals byte-identically to the pre-M5 token.
 type Claims struct {
-	JTI             string `json:"jti"`
-	AssignmentID    string `json:"assignment_id"`
-	Generation      int64  `json:"generation"`
-	CID             string `json:"cid"`
-	SourceNodeID    string `json:"source_node_id"`
-	DestNodeID      string `json:"dest_node_id"`
-	NotBefore       int64  `json:"not_before"`
-	NotAfter        int64  `json:"not_after"`
-	MaxBytes        int64  `json:"max_bytes"`
-	ProtocolVersion string `json:"protocol_version"`
+	JTI              string `json:"jti"`
+	AssignmentID     string `json:"assignment_id"`
+	Generation       int64  `json:"generation"`
+	CID              string `json:"cid"`
+	SourceNodeID     string `json:"source_node_id"`
+	DestNodeID       string `json:"dest_node_id"`
+	NotBefore        int64  `json:"not_before"`
+	NotAfter         int64  `json:"not_after"`
+	MaxBytes         int64  `json:"max_bytes"`
+	ProtocolVersion  string `json:"protocol_version"`
+	DestAssignmentID string `json:"dest_assignment_id,omitempty"`
+	DestGeneration   int64  `json:"dest_generation,omitempty"`
 }
 
 var b64 = base64.RawURLEncoding

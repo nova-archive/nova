@@ -3,6 +3,7 @@ package wire_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,33 @@ func signTestToken(t *testing.T, priv ed25519.PrivateKey, c wire.Claims) string 
 	si, err := wire.SigningInput(c)
 	require.NoError(t, err)
 	return wire.AssembleToken(si, ed25519.Sign(priv, []byte(si)))
+}
+
+func TestClaimsMarshalsDeterministicallyWithDestFields(t *testing.T) {
+	// A grant WITHOUT the M5 Dest* fields must marshal byte-identically to the
+	// pre-M5 token (omitempty), so existing read grants keep verifying.
+	base := wire.Claims{
+		JTI: "jti-1", AssignmentID: "a-1", Generation: 7, CID: "bafyTEST",
+		SourceNodeID: "src", DestNodeID: "dst",
+		NotBefore: 100, NotAfter: 200, MaxBytes: 1 << 20, ProtocolVersion: wire.ProtocolV1,
+	}
+	const wantBase = `{"jti":"jti-1","assignment_id":"a-1","generation":7,"cid":"bafyTEST",` +
+		`"source_node_id":"src","dest_node_id":"dst","not_before":100,"not_after":200,` +
+		`"max_bytes":1048576,"protocol_version":"fed/v1"}`
+	gotBase, err := json.Marshal(base)
+	require.NoError(t, err)
+	require.Equal(t, wantBase, string(gotBase), "Dest*-empty claims must match the pre-M5 wire bytes")
+
+	// With Dest* set, the two additive keys appear after protocol_version.
+	repair := base
+	repair.DestAssignmentID = "d-9"
+	repair.DestGeneration = 4
+	const wantRepair = `{"jti":"jti-1","assignment_id":"a-1","generation":7,"cid":"bafyTEST",` +
+		`"source_node_id":"src","dest_node_id":"dst","not_before":100,"not_after":200,` +
+		`"max_bytes":1048576,"protocol_version":"fed/v1","dest_assignment_id":"d-9","dest_generation":4}`
+	gotRepair, err := json.Marshal(repair)
+	require.NoError(t, err)
+	require.Equal(t, wantRepair, string(gotRepair))
 }
 
 func TestTokenRoundTrip(t *testing.T) {

@@ -136,7 +136,7 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	peer, err := transport.IdentityFromCert(r.TLS.PeerCertificates[0])
-	if err != nil || peer.Role != transport.RoleCoordinator {
+	if err != nil || (peer.Role != transport.RoleCoordinator && peer.Role != transport.RoleNode) {
 		s.refuse(w, http.StatusForbidden, codeUnauthorized, "wrong_role", cid)
 		return
 	}
@@ -155,13 +155,20 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4) Binding: this donor is the named source, the coordinator is the dest,
-	// and the CID matches the path (defends against token reuse across CIDs).
+	// 4) Binding: this donor is the named source, the requester is the named dest,
+	// and the CID matches the path (defends against token reuse across CIDs). A
+	// coordinator caller (M4.1 read) must be bound as the synthetic coordinator
+	// dest; a donor caller (M5 repair) must be bound as its own verified node id —
+	// so a grant minted for donor B cannot be replayed by donor C.
 	if claims.SourceNodeID != s.nodeID {
 		s.refuse(w, http.StatusForbidden, codeUnauthorized, "source_mismatch", cid)
 		return
 	}
-	if claims.DestNodeID != wire.CoordinatorSourceID {
+	wantDest := wire.CoordinatorSourceID
+	if peer.Role == transport.RoleNode {
+		wantDest = peer.NodeID
+	}
+	if claims.DestNodeID != wantDest {
 		s.refuse(w, http.StatusForbidden, codeUnauthorized, "dest_mismatch", cid)
 		return
 	}
@@ -215,8 +222,12 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 10) Stream exactly `size` bytes; LimitReader(size+1) lets us detect (and
-	// abort) an over-large body without ever serving more than `size`.
+	// 10) Stream EXACTLY `size` bytes (D-M5-8d): CopyN never writes more than the
+	// recorded envelope size, so a donor whose pinned object drifted larger cannot
+	// put extra bytes on the wire (the dest's re-import CID verify is still the
+	// backstop, but "stream exactly size" is now true). A short pinned object
+	// yields fewer than `size` bytes and an error, which the dest also catches via
+	// CID mismatch — either way the dest never acks a wrong blob.
 	rc, err := s.pinner.Get(r.Context(), cid)
 	if err != nil {
 		s.refuse(w, http.StatusNotFound, codeBlobUnavail, "get_failed", cid)
@@ -227,13 +238,12 @@ func (s *Server) handleBlob(w http.ResponseWriter, r *http.Request) {
 	start := now
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
-	copied, _ := io.Copy(w, io.LimitReader(rc, size+1))
-	if copied > size {
-		// Donor mis-accounting: the pinned object is larger than the recorded
-		// envelope size. We already wrote `size+1` bytes to the wire, but the
-		// coordinator verifies the CID and will reject the over-served body.
-		// Log loudly so the operator notices the size drift.
-		slog.Error("node.source.oversize", "cid", cid, "recorded", size, "copied", copied)
+	copied, err := io.CopyN(w, rc, size)
+	if err != nil {
+		// Short read: the pinned object is smaller than the recorded size. The
+		// header is already sent, so we cannot change the status; log the drift.
+		// The dest's CID verify rejects the truncated body (no ack).
+		slog.Error("node.source.short_read", "cid", cid, "recorded", size, "copied", copied, "err", err)
 		return
 	}
 	slog.Info("node.source.served",
