@@ -89,6 +89,7 @@ func startReadSource(
 	caPEM, certPEM, keyPEM []byte,
 	regStore state.RegistrationStore,
 	pinner source.Pinner,
+	auditBlocks source.AuditBlockReader,
 	progress source.ProgressLookup,
 	keyProvider source.PubKeyProvider,
 ) (*http.Server, net.Listener, bool, error) {
@@ -117,6 +118,8 @@ func startReadSource(
 		NodeID:      reg.NodeID,
 		BootTime:    time.Now(),
 		ReplayCache: replay.New(),
+		AuditBlocks: auditBlocks,
+		AuditBudget: bandwidth.NewDailyBucket(int64(float64(cfg.EgressBudgetBytesPerDay)*cfg.AuditBudgetFraction), time.Now()),
 	})
 	srv := &http.Server{
 		Handler:           handler,
@@ -226,7 +229,7 @@ func serve(cfg *nodeconfig.Config, stdout io.Writer) error {
 	// knows its node_id (from a persisted registration) — the verify chain binds
 	// read-grants to the donor's node_id, so a not-yet-registered donor cannot
 	// serve until its next boot. Fail-closed by construction.
-	if srcSrv, srcLn, ok, serr := startReadSource(cfg, caPEM, certPEM, keyPEM, regStore, pinner, progress, keyProvider); serr != nil {
+	if srcSrv, srcLn, ok, serr := startReadSource(cfg, caPEM, certPEM, keyPEM, regStore, pinner, pinner, progress, keyProvider); serr != nil {
 		return serr
 	} else if ok {
 		defer srcSrv.Close()

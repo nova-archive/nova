@@ -176,3 +176,23 @@ func TestRejectsNegativeEgressBudget(t *testing.T) {
 	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
 	require.ErrorContains(t, err, "egress_budget_bytes_per_day")
 }
+
+func TestAuditBudgetFractionDefaultsToOnePercent(t *testing.T) {
+	// When audit_budget_fraction is unset, it must default to 0.01.
+	yaml, _ := writeValid(t)
+	cfg, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.NoError(t, err)
+	require.InEpsilon(t, 0.01, cfg.AuditBudgetFraction, 1e-9, "unset audit_budget_fraction should default to 0.01")
+}
+
+func TestAuditBudgetFractionRejectsOutOfRange(t *testing.T) {
+	yaml, _ := writeValid(t)
+	yaml += "audit_budget_fraction: 1.5\n"
+	_, err := nodeconfig.LoadFromBytes([]byte(yaml))
+	require.ErrorContains(t, err, "audit_budget_fraction")
+
+	yaml2, _ := writeValid(t)
+	yaml2 += "audit_budget_fraction: -0.1\n"
+	_, err2 := nodeconfig.LoadFromBytes([]byte(yaml2))
+	require.ErrorContains(t, err2, "audit_budget_fraction")
+}

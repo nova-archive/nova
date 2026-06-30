@@ -127,7 +127,7 @@ func (a *Agent) registerReq() wire.RegisterRequest {
 		// donor↔donor repair from the same endpoint (D-M5-8c). Advertising
 		// repair-stream/v1 is what makes the coordinator eligible to pick this donor
 		// as a repair SOURCE; a non-advertiser stays read-sourceable only.
-		caps = append(caps, wire.CapReadSource, wire.CapRepairStream)
+		caps = append(caps, wire.CapReadSource, wire.CapRepairStream, wire.CapAuditBlockHash)
 	}
 	return wire.RegisterRequest{
 		SupportedProtocols:         []string{wire.ProtocolV1},

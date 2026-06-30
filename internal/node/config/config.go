@@ -47,6 +47,7 @@ type Config struct {
 	SourceNebulaAddr           string        `yaml:"source_nebula_addr"`          // M4.1: address coordinator uses to reach this donor's read-source server; empty = not a read source
 	SourceReadListenAddr       string        `yaml:"source_read_listen_addr"`     // M4.1: bind address for the read-source mTLS listener (DISTINCT from the advertised source_nebula_addr); required when source_nebula_addr is set
 	EgressBudgetBytesPerDay    int64         `yaml:"egress_budget_bytes_per_day"` // M4.1: authoritative D11 read-source egress budget; defaults to bandwidth_budget_bytes_per_day when unset
+	AuditBudgetFraction        float64       `yaml:"audit_budget_fraction"`       // M6: fraction of the D11 egress budget reserved for possession-audit responses; defaults to 0.01 when unset
 }
 
 // LoadFromFile reads, parses, defaults, and validates a node.yaml.
@@ -79,6 +80,9 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	}
 	if c.SourceNebulaAddr != "" && c.EgressBudgetBytesPerDay == 0 {
 		c.EgressBudgetBytesPerDay = c.BandwidthBudgetBytesPerDay
+	}
+	if c.AuditBudgetFraction == 0 {
+		c.AuditBudgetFraction = 0.01
 	}
 	return &c, nil
 }
@@ -134,6 +138,9 @@ func (c *Config) validate() error {
 	}
 	if c.EgressBudgetBytesPerDay < 0 {
 		return fmt.Errorf("node config: egress_budget_bytes_per_day must be >= 0")
+	}
+	if c.AuditBudgetFraction < 0 || c.AuditBudgetFraction > 1 {
+		return fmt.Errorf("node config: audit_budget_fraction must be in [0, 1]")
 	}
 	return nil
 }
