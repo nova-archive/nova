@@ -200,6 +200,10 @@ func validate(cfg *Config) error {
 		return err
 	}
 
+	if err := cfg.PossessionAudit.Validate(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

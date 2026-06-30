@@ -3,7 +3,10 @@
 // live in operator_yaml.go (loader) and paranoid.go (mode overrides).
 package config
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Config is the root of operator.yaml.
 // DeprecationWarnings returns one-time startup warnings for config that is still
@@ -49,6 +52,11 @@ type Config struct {
 
 	// TosURL must be set when public uploads are enabled.
 	TosURL string `yaml:"tos_url,omitempty"`
+
+	// PossessionAudit tunes the P2-M6 donor possession-proof challenge loop.
+	// Zero-valued fields default via Effective* accessors; Validate() allows zero
+	// (means "unset") and rejects only invalid explicit values.
+	PossessionAudit PossessionAudit `yaml:"possession_audit,omitempty"`
 
 	// privacyWarnings holds consequence warnings produced by ApplyPrivacyPreset
 	// at load time (e.g. paranoid on but webhooks configured). Unexported so it
@@ -189,6 +197,129 @@ type IntegrityAudit struct {
 type AuditCadence struct {
 	IntervalSeconds int `yaml:"interval_seconds"`
 	SampleSize      int `yaml:"sample_size"`
+}
+
+// PossessionAudit tunes the P2-M6 donor possession-proof challenge loop.
+// All fields are zero-defaulted via Effective* accessors; operators rarely
+// need to touch them. Task 13 wires these into the audit scheduler.
+type PossessionAudit struct {
+	BaseIntervalSeconds int     `yaml:"base_interval_seconds,omitempty"`
+	DeadlineSeconds     int     `yaml:"deadline_seconds,omitempty"`
+	AuditBudgetFraction float64 `yaml:"audit_budget_fraction,omitempty"`
+	MaxBlockBytes       int64   `yaml:"max_block_bytes,omitempty"`
+	MinAgeDays          int     `yaml:"min_age_days,omitempty"`
+	MinPassedAudits     int64   `yaml:"min_passed_audits,omitempty"`
+	MinAckedTransfers   int64   `yaml:"min_acked_transfers,omitempty"`
+	GraduateReputation  float64 `yaml:"graduate_reputation,omitempty"`
+}
+
+// Default constants for PossessionAudit zero-value accessors.
+const (
+	DefaultPossessionBaseInterval      = 3600 * time.Second
+	DefaultPossessionDeadline          = 30 * time.Second
+	DefaultPossessionAuditBudget       = 0.01
+	DefaultPossessionMaxBlockBytes     = int64(262144)
+	DefaultPossessionMinAge            = 7 * 24 * time.Hour
+	DefaultPossessionGraduateRep       = 0.95
+	DefaultPossessionMinPassedAudits   = int64(10)
+	DefaultPossessionMinAckedTransfers = int64(5)
+)
+
+// EffectiveBaseInterval returns the configured base challenge interval, defaulting to 1 hour.
+func (p PossessionAudit) EffectiveBaseInterval() time.Duration {
+	if p.BaseIntervalSeconds <= 0 {
+		return DefaultPossessionBaseInterval
+	}
+	return time.Duration(p.BaseIntervalSeconds) * time.Second
+}
+
+// EffectiveDeadline returns the configured per-challenge deadline, defaulting to 30s.
+func (p PossessionAudit) EffectiveDeadline() time.Duration {
+	if p.DeadlineSeconds <= 0 {
+		return DefaultPossessionDeadline
+	}
+	return time.Duration(p.DeadlineSeconds) * time.Second
+}
+
+// EffectiveAuditBudgetFraction returns the configured audit budget fraction, defaulting to 0.01.
+func (p PossessionAudit) EffectiveAuditBudgetFraction() float64 {
+	if p.AuditBudgetFraction <= 0 {
+		return DefaultPossessionAuditBudget
+	}
+	return p.AuditBudgetFraction
+}
+
+// EffectiveMaxBlockBytes returns the configured max challenge block size, defaulting to 256 KiB.
+func (p PossessionAudit) EffectiveMaxBlockBytes() int64 {
+	if p.MaxBlockBytes <= 0 {
+		return DefaultPossessionMaxBlockBytes
+	}
+	return p.MaxBlockBytes
+}
+
+// EffectiveMinAge returns the configured minimum pin age before auditing, defaulting to 7 days.
+func (p PossessionAudit) EffectiveMinAge() time.Duration {
+	if p.MinAgeDays <= 0 {
+		return DefaultPossessionMinAge
+	}
+	return time.Duration(p.MinAgeDays) * 24 * time.Hour
+}
+
+// EffectiveGraduateRep returns the reputation threshold for graduating a donor
+// from audit-heavy to audit-light, defaulting to 0.95.
+func (p PossessionAudit) EffectiveGraduateRep() float64 {
+	if p.GraduateReputation <= 0 {
+		return DefaultPossessionGraduateRep
+	}
+	return p.GraduateReputation
+}
+
+// EffectiveMinPassedAudits returns the minimum passed-audit count before
+// graduation, defaulting to 10.
+func (p PossessionAudit) EffectiveMinPassedAudits() int64 {
+	if p.MinPassedAudits <= 0 {
+		return DefaultPossessionMinPassedAudits
+	}
+	return p.MinPassedAudits
+}
+
+// EffectiveMinAckedTransfers returns the minimum acked-transfer count before
+// graduation, defaulting to 5.
+func (p PossessionAudit) EffectiveMinAckedTransfers() int64 {
+	if p.MinAckedTransfers <= 0 {
+		return DefaultPossessionMinAckedTransfers
+	}
+	return p.MinAckedTransfers
+}
+
+// Validate returns an error for invalid explicit values. Zero means "unset"
+// (the Effective* accessors supply defaults), so a wholly-zero struct is valid.
+func (p PossessionAudit) Validate() error {
+	if p.AuditBudgetFraction != 0 && (p.AuditBudgetFraction < 0 || p.AuditBudgetFraction > 1) {
+		return fmt.Errorf("config: possession_audit.audit_budget_fraction must be in [0,1], got %v", p.AuditBudgetFraction)
+	}
+	if p.DeadlineSeconds < 0 {
+		return fmt.Errorf("config: possession_audit.deadline_seconds must be >= 0, got %d", p.DeadlineSeconds)
+	}
+	if p.BaseIntervalSeconds < 0 {
+		return fmt.Errorf("config: possession_audit.base_interval_seconds must be >= 0, got %d", p.BaseIntervalSeconds)
+	}
+	if p.MaxBlockBytes < 0 {
+		return fmt.Errorf("config: possession_audit.max_block_bytes must be >= 0, got %d", p.MaxBlockBytes)
+	}
+	if p.GraduateReputation != 0 && (p.GraduateReputation < 0 || p.GraduateReputation > 1) {
+		return fmt.Errorf("config: possession_audit.graduate_reputation must be in [0,1], got %v", p.GraduateReputation)
+	}
+	if p.MinAgeDays < 0 {
+		return fmt.Errorf("config: possession_audit.min_age_days must be >= 0, got %d", p.MinAgeDays)
+	}
+	if p.MinPassedAudits < 0 {
+		return fmt.Errorf("config: possession_audit.min_passed_audits must be >= 0, got %d", p.MinPassedAudits)
+	}
+	if p.MinAckedTransfers < 0 {
+		return fmt.Errorf("config: possession_audit.min_acked_transfers must be >= 0, got %d", p.MinAckedTransfers)
+	}
+	return nil
 }
 
 type Moderation struct {

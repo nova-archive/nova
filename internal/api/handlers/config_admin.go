@@ -78,6 +78,11 @@ var fieldEffect = map[string]effect{
 	"orchestrator.mass_casualty_threshold_ratio": effectRestart,
 	"orchestrator.capacity_runway_floor_days":    effectRestart,
 	"orchestrator.reputation_floor":              effectRestart,
+
+	// P2-M6 first-class possession-audit knobs (explicit = surfaced in /settings;
+	// remaining possession_audit.* fields default to restart via longest-prefix match).
+	"possession_audit.base_interval_seconds": effectRestart,
+	"possession_audit.deadline_seconds":      effectRestart,
 }
 
 func effectFor(dotted string) effect {
