@@ -49,6 +49,13 @@ SET last_seen_at      = now(),
     last_free_bytes   = $2,
     last_stored_bytes = $3,
     source_nebula_addr = COALESCE(NULLIF(sqlc.arg(source_nebula_addr)::text, ''), nodes.source_nebula_addr),
+    -- M5 egress telemetry (D-M5-6-TEL): only a telemetry-capable donor reports a
+    -- positive capacity; gate on it so a non-reporting donor leaves the columns
+    -- untouched (NULL until first real report), while a reporting donor may carry a
+    -- meaningful remaining of 0.
+    last_egress_remaining_bytes = CASE WHEN sqlc.arg(egress_capacity)::bigint > 0 THEN sqlc.arg(egress_remaining)::bigint ELSE last_egress_remaining_bytes END,
+    last_egress_capacity_bytes  = CASE WHEN sqlc.arg(egress_capacity)::bigint > 0 THEN sqlc.arg(egress_capacity)::bigint ELSE last_egress_capacity_bytes END,
+    last_egress_refill_bps      = CASE WHEN sqlc.arg(egress_capacity)::bigint > 0 THEN sqlc.arg(egress_refill)::bigint ELSE last_egress_refill_bps END,
     status = CASE WHEN status IN ('suspect','unreachable') THEN 'active'::node_status ELSE status END,
     assignment_sync_state = CASE WHEN status = 'unreachable' THEN 'reconciling' ELSE assignment_sync_state END,
     last_status_change_at = CASE WHEN status IN ('suspect','unreachable') THEN now() ELSE last_status_change_at END

@@ -173,6 +173,9 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		LastFreeBytes:    pgInt8(req.FreeBytes),
 		LastStoredBytes:  pgInt8(req.StoredBytes),
 		SourceNebulaAddr: req.SourceNebulaAddr,
+		EgressCapacity:   req.EgressBudgetCapacityBytes,
+		EgressRemaining:  req.EgressBudgetRemainingBytes,
+		EgressRefill:     req.EgressRefillBytesPerSecond,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "heartbeat failed")
 		return

@@ -56,3 +56,28 @@ func (b *Bucket) Take(n int64, now time.Time) bool {
 	b.tokens -= float64(n)
 	return true
 }
+
+// Remaining refills as of now and returns the floor of the currently-available
+// budget in bytes. Read-only telemetry for the coordinator's best-effort
+// step_capacity hint (D-M5-6-TEL) — the bucket stays authoritative via Take.
+func (b *Bucket) Remaining(now time.Time) int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
+		b.tokens += elapsed * b.refillPerSec
+		if b.tokens > b.capacity {
+			b.tokens = b.capacity
+		}
+		b.last = now
+	}
+	if b.tokens < 0 {
+		return 0
+	}
+	return int64(b.tokens)
+}
+
+// Capacity returns the daily budget (bucket capacity) in bytes.
+func (b *Bucket) Capacity() int64 { return int64(b.capacity) }
+
+// RefillPerSecond returns the steady-state refill rate in bytes per second.
+func (b *Bucket) RefillPerSecond() int64 { return int64(b.refillPerSec) }

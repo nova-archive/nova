@@ -1056,6 +1056,13 @@ SET last_seen_at      = now(),
     last_free_bytes   = $2,
     last_stored_bytes = $3,
     source_nebula_addr = COALESCE(NULLIF($4::text, ''), nodes.source_nebula_addr),
+    -- M5 egress telemetry (D-M5-6-TEL): only a telemetry-capable donor reports a
+    -- positive capacity; gate on it so a non-reporting donor leaves the columns
+    -- untouched (NULL until first real report), while a reporting donor may carry a
+    -- meaningful remaining of 0.
+    last_egress_remaining_bytes = CASE WHEN $5::bigint > 0 THEN $6::bigint ELSE last_egress_remaining_bytes END,
+    last_egress_capacity_bytes  = CASE WHEN $5::bigint > 0 THEN $5::bigint ELSE last_egress_capacity_bytes END,
+    last_egress_refill_bps      = CASE WHEN $5::bigint > 0 THEN $7::bigint ELSE last_egress_refill_bps END,
     status = CASE WHEN status IN ('suspect','unreachable') THEN 'active'::node_status ELSE status END,
     assignment_sync_state = CASE WHEN status = 'unreachable' THEN 'reconciling' ELSE assignment_sync_state END,
     last_status_change_at = CASE WHEN status IN ('suspect','unreachable') THEN now() ELSE last_status_change_at END
@@ -1068,6 +1075,9 @@ type UpdateNodeHeartbeatParams struct {
 	LastFreeBytes    pgtype.Int8
 	LastStoredBytes  pgtype.Int8
 	SourceNebulaAddr string
+	EgressCapacity   int64
+	EgressRemaining  int64
+	EgressRefill     int64
 }
 
 // Heartbeat is the canonical liveness path (D-M5-4a-LIVENESS-SIGNAL): besides
@@ -1083,6 +1093,9 @@ func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbe
 		arg.LastFreeBytes,
 		arg.LastStoredBytes,
 		arg.SourceNebulaAddr,
+		arg.EgressCapacity,
+		arg.EgressRemaining,
+		arg.EgressRefill,
 	)
 	var i Node
 	err := row.Scan(

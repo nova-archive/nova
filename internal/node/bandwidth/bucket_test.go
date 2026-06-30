@@ -54,3 +54,18 @@ func TestBucketWithNonPositiveBudgetRefusesAll(t *testing.T) {
 	require.False(t, bandwidth.NewDailyBucket(0, now).Take(1, now))
 	require.False(t, bandwidth.NewDailyBucket(-5, now).Take(1, now))
 }
+
+func TestBucketReadMethods(t *testing.T) {
+	now := time.Unix(2_000_000, 0)
+	b := bandwidth.NewDailyBucket(86_400, now) // cap 86400, refill 1 B/s
+	require.Equal(t, int64(86_400), b.Capacity())
+	require.Equal(t, int64(1), b.RefillPerSecond())
+	require.Equal(t, int64(86_400), b.Remaining(now), "starts full")
+
+	require.True(t, b.Take(40_000, now))
+	require.Equal(t, int64(46_400), b.Remaining(now), "Remaining reflects the debit")
+
+	// Remaining refills over time, capped at capacity.
+	require.Equal(t, int64(46_410), b.Remaining(now.Add(10*time.Second)))
+	require.Equal(t, int64(86_400), b.Remaining(now.Add(48*time.Hour)), "capped at capacity")
+}

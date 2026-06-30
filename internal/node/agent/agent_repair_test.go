@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/nova-archive/nova/internal/federation/wire"
 	"github.com/nova-archive/nova/internal/node/state"
@@ -87,6 +88,21 @@ func TestDestBindingMatchProceedsToAck(t *testing.T) {
 	h.agent.ReplicatePending(context.Background())
 
 	require.True(t, h.client.ackedCID(cid), "a matching dest binding proceeds to fetch+verify+ack")
+}
+
+type fakeBudgetReporter struct{ remaining, capacity, refill int64 }
+
+func (f fakeBudgetReporter) Remaining(time.Time) int64 { return f.remaining }
+func (f fakeBudgetReporter) Capacity() int64           { return f.capacity }
+func (f fakeBudgetReporter) RefillPerSecond() int64    { return f.refill }
+
+func TestHeartbeatReportsEgressTelemetry(t *testing.T) {
+	h := newAgentHarness(t, "x")
+	WithBudget(h.agent, fakeBudgetReporter{remaining: 500, capacity: 1000, refill: 2})
+	req := h.agent.heartbeatReq(0, 0)
+	require.Equal(t, int64(500), req.EgressBudgetRemainingBytes)
+	require.Equal(t, int64(1000), req.EgressBudgetCapacityBytes)
+	require.Equal(t, int64(2), req.EgressRefillBytesPerSecond)
 }
 
 func TestSourceShortReadDestNoAck(t *testing.T) {

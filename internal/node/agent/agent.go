@@ -25,6 +25,15 @@ type PubKeySink interface {
 	Set(pub ed25519.PublicKey)
 }
 
+// BudgetReporter exposes the donor's egress budget telemetry for the heartbeat
+// scheduling hint (D-M5-6-TEL). Satisfied by *bandwidth.Bucket. The bucket stays
+// authoritative; this is reported best-effort so the coordinator can pace healing.
+type BudgetReporter interface {
+	Remaining(now time.Time) int64
+	Capacity() int64
+	RefillPerSecond() int64
+}
+
 // Client is the donor's view of the coordinator federation API. The real impl is
 // agent.HTTPClient (mTLS); tests inject a fake.
 type Client interface {
@@ -73,6 +82,16 @@ type Agent struct {
 	// verify a donor↔donor repair grant is bound to THIS donor before fetching
 	// (M5, D-M5-8a). Empty until Run loads/obtains it.
 	nodeID string
+
+	// budget, when set, reports egress telemetry on each heartbeat (M5, D-M5-6-TEL).
+	budget BudgetReporter
+}
+
+// WithBudget wires the donor's egress budget reporter so each heartbeat carries
+// the best-effort step_capacity hint (D-M5-6-TEL).
+func WithBudget(a *Agent, b BudgetReporter) *Agent {
+	a.budget = b
+	return a
 }
 
 // New constructs an Agent. hb/poll are the initial heartbeat + pins-poll cadences
@@ -119,11 +138,17 @@ func (a *Agent) registerReq() wire.RegisterRequest {
 }
 
 func (a *Agent) heartbeatReq(freeBytes, storedBytes int64) wire.HeartbeatRequest {
-	return wire.HeartbeatRequest{
+	req := wire.HeartbeatRequest{
 		FreeBytes:        freeBytes,
 		StoredBytes:      storedBytes,
 		SourceNebulaAddr: a.cfg.SourceNebulaAddr,
 	}
+	if a.budget != nil {
+		req.EgressBudgetRemainingBytes = a.budget.Remaining(time.Now())
+		req.EgressBudgetCapacityBytes = a.budget.Capacity()
+		req.EgressRefillBytesPerSecond = a.budget.RefillPerSecond()
+	}
+	return req
 }
 
 // captureRepairPubKey decodes the coordinator's repair pubkey from a heartbeat

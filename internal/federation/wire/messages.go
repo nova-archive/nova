@@ -105,6 +105,13 @@ type HeartbeatRequest struct {
 	FreeBytes        int64  `json:"free_bytes"`
 	StoredBytes      int64  `json:"stored_bytes"`
 	SourceNebulaAddr string `json:"source_nebula_addr,omitempty"` // M4.1: donor's read-source server address
+	// M5 egress telemetry (D-M5-6-TEL): a best-effort scheduling HINT only. The
+	// donor's token bucket stays authoritative — an over-optimistic hint still
+	// yields a budget_exceeded refusal. omitempty so a non-reporting donor sends
+	// nothing and the coordinator leaves the columns untouched.
+	EgressBudgetRemainingBytes int64 `json:"egress_budget_remaining_bytes,omitempty"`
+	EgressBudgetCapacityBytes  int64 `json:"egress_budget_capacity_bytes,omitempty"`
+	EgressRefillBytesPerSecond int64 `json:"egress_refill_bytes_per_second,omitempty"`
 }
 
 // ConfigUpdates carries operator-tunable federation timers back to a donor on
