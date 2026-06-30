@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/federation/wire"
-	"github.com/nova-archive/nova/internal/orchestrator"
 )
 
 // Assignment is the result of a mutation: the immutable handle, its current
@@ -28,15 +27,15 @@ var (
 )
 
 // AssignPinWithSource is the M5 scheduler's reservation primitive (D-M5-8a): it
-// makes (cid,dest) a pending desired assignment bound to a durable repair source,
-// appends a source-bearing assign change, and recomputes the projection in-tx so
-// the new pending reservation lifts in_flight_count atomically. source == uuid.Nil
-// stores SQL NULL (coordinator-as-source — NEVER the synthetic CoordinatorSourceID,
-// which lives only on the wire). A non-Nil source must differ from dest
-// (ErrSourceIsDest) and be repair-sourceable + acked for this CID at reservation
-// time (ErrSourceNotSourceable). Acquires the global change-log lock (sequence
-// order) and, via RecomputeCID, the per-CID projection lock.
-func AssignPinWithSource(ctx context.Context, tx pgx.Tx, cid string, dest, source uuid.UUID, targets orchestrator.ReplicationTargets) (Assignment, error) {
+// makes (cid,dest) a pending desired assignment bound to a durable repair source
+// and appends a source-bearing assign change. source == uuid.Nil stores SQL NULL
+// (coordinator-as-source — NEVER the synthetic CoordinatorSourceID, which lives
+// only on the wire). A non-Nil source must differ from dest (ErrSourceIsDest) and
+// be repair-sourceable + acked for this CID at reservation time
+// (ErrSourceNotSourceable). The caller owns the tx and recomputes the projection
+// (the orchestrator scheduler does so in the same tx) — keeping the projection
+// dependency out of this package avoids an orchestrator↔coordinator import cycle.
+func AssignPinWithSource(ctx context.Context, tx pgx.Tx, cid string, dest, source uuid.UUID) (Assignment, error) {
 	if source != uuid.Nil && source == dest {
 		return Assignment{}, ErrSourceIsDest
 	}
@@ -70,9 +69,6 @@ func AssignPinWithSource(ctx context.Context, tx pgx.Tx, cid string, dest, sourc
 		Kind: wire.ChangeKindAssign, Cid: cid, ByteSize: size, SourceNodeID: srcParam,
 	})
 	if err != nil {
-		return Assignment{}, err
-	}
-	if err := orchestrator.RecomputeCID(ctx, tx, cid, targets); err != nil {
 		return Assignment{}, err
 	}
 	slog.Info("fed.assign.source.txn", "cid", cid, "dest", dest, "source", source, "generation", up.Generation, "seq", seq)

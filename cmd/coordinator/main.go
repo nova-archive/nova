@@ -76,6 +76,8 @@ import (
 	fedtransport "github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/federation/wire"
 	"github.com/nova-archive/nova/internal/ipfs"
+	"github.com/nova-archive/nova/internal/notify"
+	"github.com/nova-archive/nova/internal/orchestrator"
 	"github.com/nova-archive/nova/internal/secret"
 	"github.com/nova-archive/nova/internal/setup"
 	novaimage "github.com/nova-archive/nova/nova-image"
@@ -469,7 +471,28 @@ func run() error {
 			return fmt.Errorf("federation listen %s: %w", fed.ListenAddr, err)
 		}
 		slog.Info("federation listener bound", "listen", fedSrv.Addr())
-		return runBoth(ctx, c.Run, fedSrv.Run)
+
+		// P2-M5 healing orchestrator: single-leader liveness sweep + reconcile drain
+		// + healing tick. Runs alongside the federation listener; it owns no durable
+		// state, so a restart re-derives all work from the projection.
+		targets := orchestrator.ReplicationTargets{
+			Important: opCfg.Orchestrator.Replication.Factor.Important,
+			Normal:    opCfg.Orchestrator.Replication.Factor.Normal,
+			Cache:     opCfg.Orchestrator.Replication.Factor.Cache,
+		}
+		if warn := orchestrator.WarnIfImportantBelowFive(targets.Important); warn != "" {
+			slog.Warn("replication durability", "detail", warn)
+		}
+		liveness := orchestrator.LivenessConfig{
+			HeartbeatInterval:  time.Duration(fed.HeartbeatIntervalSeconds) * time.Second,
+			SuspectAfterMissed: fed.SuspectAfterMissedHeartbeats,
+			UnreachableAfter:   time.Duration(fed.UnreachableAfterSeconds) * time.Second,
+			EvictedAfter:       time.Duration(fed.EvictedAfterSeconds) * time.Second,
+		}
+		sched := orchestrator.NewScheduler(pool, orchestrator.SchedulerConfig{Targets: targets, ReputationFloor: 0.5})
+		orch := orchestrator.NewOrchestrator(pool, liveness, sched, notify.NoopNotifier{},
+			time.Duration(opCfg.Orchestrator.TickIntervalSeconds)*time.Second)
+		return runBoth(ctx, c.Run, fedSrv.Run, func(ctx context.Context) error { orch.Run(ctx); return nil })
 	}
 	return c.Run(ctx)
 }

@@ -13,11 +13,8 @@ import (
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/federation/tokens"
 	"github.com/nova-archive/nova/internal/federation/wire"
-	"github.com/nova-archive/nova/internal/orchestrator"
 	"github.com/stretchr/testify/require"
 )
-
-var repairTargets = orchestrator.ReplicationTargets{Important: 5, Normal: 3, Cache: 2}
 
 // signerServer is a coordinator with a repair signer + positive TTL so the
 // /pins/changes and /pins/snapshot handlers actually mint grants.
@@ -56,7 +53,7 @@ func TestAssignPinWithSourceRejectsSourceEqualsDest(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback(ctx)
 	same := uuid.New()
-	_, err = AssignPinWithSource(ctx, tx, "anycid", same, same, repairTargets)
+	_, err = AssignPinWithSource(ctx, tx, "anycid", same, same)
 	require.ErrorIs(t, err, ErrSourceIsDest)
 }
 
@@ -67,7 +64,7 @@ func TestAssignPinWithSourceNilStoresSQLNull(t *testing.T) {
 	dest := seedNode(t, ctx, pool)
 	tx, err := pool.Begin(ctx)
 	require.NoError(t, err)
-	_, err = AssignPinWithSource(ctx, tx, "nilcid", dest, uuid.Nil, repairTargets)
+	_, err = AssignPinWithSource(ctx, tx, "nilcid", dest, uuid.Nil)
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit(ctx))
 
@@ -93,7 +90,7 @@ func TestMixedVersionDonorReadSourceableNotRepairSourceable(t *testing.T) {
 	tx, err := pool.Begin(ctx)
 	require.NoError(t, err)
 	defer tx.Rollback(ctx)
-	_, err = AssignPinWithSource(ctx, tx, "mixcid", dest, src, repairTargets)
+	_, err = AssignPinWithSource(ctx, tx, "mixcid", dest, src)
 	require.ErrorIs(t, err, ErrSourceNotSourceable)
 }
 
@@ -106,7 +103,7 @@ func TestPinsChangesNullSourceEmitsCoordinatorSourceID(t *testing.T) {
 
 	tx, err := pool.Begin(ctx)
 	require.NoError(t, err)
-	_, err = AssignPinWithSource(ctx, tx, "ccid", id, uuid.Nil, repairTargets)
+	_, err = AssignPinWithSource(ctx, tx, "ccid", id, uuid.Nil)
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit(ctx))
 
@@ -133,7 +130,7 @@ func TestCoordinatorSourceIDEmergencyPath(t *testing.T) {
 	seedBlob(t, ctx, pool, "emcid", 10)
 	tx, err := pool.Begin(ctx)
 	require.NoError(t, err)
-	_, err = AssignPinWithSource(ctx, tx, "emcid", id, uuid.Nil, repairTargets)
+	_, err = AssignPinWithSource(ctx, tx, "emcid", id, uuid.Nil)
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit(ctx))
 
@@ -160,7 +157,7 @@ func TestPinsChangesDonorSourceMintsBoundGrant(t *testing.T) {
 
 	tx, err := pool.Begin(ctx)
 	require.NoError(t, err)
-	_, err = AssignPinWithSource(ctx, tx, "dcid", dest, src, repairTargets)
+	_, err = AssignPinWithSource(ctx, tx, "dcid", dest, src)
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit(ctx))
 
@@ -193,7 +190,7 @@ func TestLateMintRequeuesWithBackoffWhenSourceNotRepairSourceable(t *testing.T) 
 
 	tx, err := pool.Begin(ctx)
 	require.NoError(t, err)
-	_, err = AssignPinWithSource(ctx, tx, "rqcid", dest, src, repairTargets)
+	_, err = AssignPinWithSource(ctx, tx, "rqcid", dest, src)
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit(ctx))
 
@@ -229,7 +226,7 @@ func TestSnapshotItemCarriesSource(t *testing.T) {
 
 	tx, err := pool.Begin(ctx)
 	require.NoError(t, err)
-	_, err = AssignPinWithSource(ctx, tx, "scid", dest, src, repairTargets)
+	_, err = AssignPinWithSource(ctx, tx, "scid", dest, src)
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit(ctx))
 

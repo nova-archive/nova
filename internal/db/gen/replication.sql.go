@@ -7,7 +7,27 @@ package gen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const cIDHasPendingInBackoff = `-- name: CIDHasPendingInBackoff :one
+SELECT EXISTS (
+  SELECT 1 FROM pin_assignments
+  WHERE cid = $1 AND state = 'pending'
+    AND source_next_attempt_at IS NOT NULL AND source_next_attempt_at > now()
+) AS in_backoff
+`
+
+// The scheduler skips a CID that already has a pending reservation in source-retry
+// backoff, so a flapping source is not re-picked before its backoff elapses
+// (Rev. 5 #3).
+func (q *Queries) CIDHasPendingInBackoff(ctx context.Context, cid string) (bool, error) {
+	row := q.db.QueryRow(ctx, cIDHasPendingInBackoff, cid)
+	var in_backoff bool
+	err := row.Scan(&in_backoff)
+	return in_backoff, err
+}
 
 const deleteReconciled = `-- name: DeleteReconciled :exec
 DELETE FROM blob_replication_reconcile_queue WHERE cid = $1
@@ -77,6 +97,143 @@ func (q *Queries) GetReplicationDurabilityClass(ctx context.Context, cid string)
 	return durability_class, err
 }
 
+const getReplicationState = `-- name: GetReplicationState :one
+SELECT healthy_acked_count, target_count, safety_tier, durability_class, local_recoverable
+FROM blob_replication_state WHERE cid = $1
+`
+
+type GetReplicationStateRow struct {
+	HealthyAckedCount int32
+	TargetCount       int32
+	SafetyTier        string
+	DurabilityClass   string
+	LocalRecoverable  bool
+}
+
+// The scheduler reads the fresh projection row (after RecomputeCID) to decide
+// whether a CID still needs healing and how (D-M5-6).
+func (q *Queries) GetReplicationState(ctx context.Context, cid string) (GetReplicationStateRow, error) {
+	row := q.db.QueryRow(ctx, getReplicationState, cid)
+	var i GetReplicationStateRow
+	err := row.Scan(
+		&i.HealthyAckedCount,
+		&i.TargetCount,
+		&i.SafetyTier,
+		&i.DurabilityClass,
+		&i.LocalRecoverable,
+	)
+	return i, err
+}
+
+const listCIDHolders = `-- name: ListCIDHolders :many
+SELECT n.failure_domain_id, n.donor_principal_id, n.provider, n.asn, n.region,
+       (n.operator_verified_at IS NOT NULL)::boolean AS operator_verified
+FROM nodes n
+JOIN pin_assignments pa ON pa.node_id = n.id
+WHERE pa.cid = $1 AND pa.state = 'acked'
+`
+
+type ListCIDHoldersRow struct {
+	FailureDomainID  pgtype.Text
+	DonorPrincipalID pgtype.Text
+	Provider         pgtype.Text
+	Asn              pgtype.Text
+	Region           pgtype.Text
+	OperatorVerified bool
+}
+
+// Existing acked holders' verified placement dimensions, for the engine's
+// anti-affinity comparison.
+func (q *Queries) ListCIDHolders(ctx context.Context, cid string) ([]ListCIDHoldersRow, error) {
+	rows, err := q.db.Query(ctx, listCIDHolders, cid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCIDHoldersRow
+	for rows.Next() {
+		var i ListCIDHoldersRow
+		if err := rows.Scan(
+			&i.FailureDomainID,
+			&i.DonorPrincipalID,
+			&i.Provider,
+			&i.Asn,
+			&i.Region,
+			&i.OperatorVerified,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlacementCandidates = `-- name: ListPlacementCandidates :many
+SELECT n.id AS node_id, n.failure_domain_id, n.donor_principal_id, n.provider, n.asn, n.region,
+       (n.operator_verified_at IS NOT NULL)::boolean AS operator_verified,
+       COALESCE(n.last_free_bytes, 0) AS free_bytes,
+       n.trust_state, n.reputation_score, n.placement_weight
+FROM nodes n
+WHERE n.status = 'active'
+  AND n.assignment_sync_state = 'current'
+  AND n.trust_state <> 'suspended'
+  AND NOT EXISTS (SELECT 1 FROM pin_assignments pa WHERE pa.cid = $1 AND pa.node_id = n.id)
+ORDER BY n.id
+`
+
+type ListPlacementCandidatesRow struct {
+	NodeID           pgtype.UUID
+	FailureDomainID  pgtype.Text
+	DonorPrincipalID pgtype.Text
+	Provider         pgtype.Text
+	Asn              pgtype.Text
+	Region           pgtype.Text
+	OperatorVerified bool
+	FreeBytes        int64
+	TrustState       string
+	ReputationScore  float32
+	PlacementWeight  float32
+}
+
+// Eligible repair DESTINATIONS for a CID: live, current-synced, non-suspended
+// NON-holders (a node already assigned the CID, pending or acked, is excluded).
+// The placement engine (Task 4) applies anti-affinity, trust caps, capacity and
+// reputation floor over these.
+func (q *Queries) ListPlacementCandidates(ctx context.Context, cid string) ([]ListPlacementCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listPlacementCandidates, cid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlacementCandidatesRow
+	for rows.Next() {
+		var i ListPlacementCandidatesRow
+		if err := rows.Scan(
+			&i.NodeID,
+			&i.FailureDomainID,
+			&i.DonorPrincipalID,
+			&i.Provider,
+			&i.Asn,
+			&i.Region,
+			&i.OperatorVerified,
+			&i.FreeBytes,
+			&i.TrustState,
+			&i.ReputationScore,
+			&i.PlacementWeight,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReconcileBatch = `-- name: ListReconcileBatch :many
 SELECT cid FROM blob_replication_reconcile_queue
 ORDER BY enqueued_at
@@ -101,6 +258,45 @@ func (q *Queries) ListReconcileBatch(ctx context.Context, limit int32) ([]string
 		return nil, err
 	}
 	return items, nil
+}
+
+const listRepairSourceHolders = `-- name: ListRepairSourceHolders :one
+SELECT n.id AS node_id, n.reputation_score,
+       COALESCE(n.last_egress_remaining_bytes, 0) AS remaining
+FROM nodes n
+JOIN pin_assignments pa ON pa.node_id = n.id
+WHERE pa.cid = $1 AND pa.state = 'acked'
+  AND n.status IN ('active','suspect')
+  AND n.assignment_sync_state = 'current'
+  AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
+  AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
+  AND (n.last_egress_remaining_bytes IS NULL OR n.last_egress_remaining_bytes >= $2)
+ORDER BY (COALESCE(n.last_egress_remaining_bytes, 0)::float8 * n.reputation_score) DESC,
+         n.reputation_score DESC, n.id
+LIMIT 1
+`
+
+type ListRepairSourceHoldersParams struct {
+	Cid  string
+	Size pgtype.Int8
+}
+
+type ListRepairSourceHoldersRow struct {
+	NodeID          pgtype.UUID
+	ReputationScore float32
+	Remaining       int64
+}
+
+// Asymmetric repair-source selection (D-M5-6): the single best repair-sourceable
+// acked holder of this CID, weighted by step_capacity × reputation. step_capacity
+// is the reported egress remaining (a telemetry-less donor scores 0 on the weight
+// but is still eligible, sorted last). A donor with KNOWN remaining below the blob
+// size is excluded (byte-infeasible); unknown (NULL) remaining is not excluded.
+func (q *Queries) ListRepairSourceHolders(ctx context.Context, arg ListRepairSourceHoldersParams) (ListRepairSourceHoldersRow, error) {
+	row := q.db.QueryRow(ctx, listRepairSourceHolders, arg.Cid, arg.Size)
+	var i ListRepairSourceHoldersRow
+	err := row.Scan(&i.NodeID, &i.ReputationScore, &i.Remaining)
+	return i, err
 }
 
 const listUnderReplicatedByTier = `-- name: ListUnderReplicatedByTier :many

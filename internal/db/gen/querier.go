@@ -25,6 +25,10 @@ type Querier interface {
 	// Atomically mark the source version 'rotating' iff it is currently 'active'
 	// and no other version is already rotating. 0 rows => caller maps to 409/400.
 	BeginVersionRotation(ctx context.Context, versionLabel string) (int64, error)
+	// The scheduler skips a CID that already has a pending reservation in source-retry
+	// backoff, so a flapping source is not re-picked before its backoff elapses
+	// (Rev. 5 #3).
+	CIDHasPendingInBackoff(ctx context.Context, cid string) (bool, error)
 	// Claim a batch of re-wrappable DEK ids for a version. FOR UPDATE SKIP LOCKED
 	// gives clean N-worker parallelism; run inside the per-batch tx so the locks
 	// are held until commit. Served by dek_master_version_idx.
@@ -153,6 +157,9 @@ type Querier interface {
 	GetRepairSource(ctx context.Context, arg GetRepairSourceParams) (GetRepairSourceRow, error)
 	// durability_class is authoritative on blob_storage_state (M4.1).
 	GetReplicationDurabilityClass(ctx context.Context, cid string) (string, error)
+	// The scheduler reads the fresh projection row (after RecomputeCID) to decide
+	// whether a CID still needs healing and how (D-M5-6).
+	GetReplicationState(ctx context.Context, cid string) (GetReplicationStateRow, error)
 	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
 	GetSigningKeyByKID(ctx context.Context, kid string) (GetSigningKeyByKIDRow, error)
 	// Full row fetch for internal state inspection.
@@ -205,6 +212,9 @@ type Querier interface {
 	// added_by is nullable; coalesce so a system-added entry (NULL) never crashes
 	// the listing. '' renders as a null actor in the handler.
 	ListBlocklist(ctx context.Context, arg ListBlocklistParams) ([]ListBlocklistRow, error)
+	// Existing acked holders' verified placement dimensions, for the engine's
+	// anti-affinity comparison.
+	ListCIDHolders(ctx context.Context, cid string) ([]ListCIDHoldersRow, error)
 	ListDMCACases(ctx context.Context, arg ListDMCACasesParams) ([]ListDMCACasesRow, error)
 	ListDerivativeCIDs(ctx context.Context, parentCid pgtype.Text) ([]string, error)
 	ListDesiredAssignmentsByCID(ctx context.Context, cid string) ([]ListDesiredAssignmentsByCIDRow, error)
@@ -226,9 +236,20 @@ type Querier interface {
 	// no_shred_under_legal_hold CHECK is the hard backstop.
 	ListOverdueSoftDeletes(ctx context.Context, arg ListOverdueSoftDeletesParams) ([]string, error)
 	ListOverdueTombstones(ctx context.Context) ([]ListOverdueTombstonesRow, error)
+	// Eligible repair DESTINATIONS for a CID: live, current-synced, non-suspended
+	// NON-holders (a node already assigned the CID, pending or acked, is excluded).
+	// The placement engine (Task 4) applies anti-affinity, trust caps, capacity and
+	// reputation floor over these.
+	ListPlacementCandidates(ctx context.Context, cid string) ([]ListPlacementCandidatesRow, error)
 	// Committed + present + mode-eligible durability class; ordered by prune_eligible_at (oldest first).
 	ListPruneCandidates(ctx context.Context, arg ListPruneCandidatesParams) ([]ListPruneCandidatesRow, error)
 	ListReconcileBatch(ctx context.Context, limit int32) ([]string, error)
+	// Asymmetric repair-source selection (D-M5-6): the single best repair-sourceable
+	// acked holder of this CID, weighted by step_capacity × reputation. step_capacity
+	// is the reported egress remaining (a telemetry-less donor scores 0 on the weight
+	// but is still eligible, sorted last). A donor with KNOWN remaining below the blob
+	// size is excluded (byte-infeasible); unknown (NULL) remaining is not excluded.
+	ListRepairSourceHolders(ctx context.Context, arg ListRepairSourceHoldersParams) (ListRepairSourceHoldersRow, error)
 	ListRevocations(ctx context.Context) ([]ListRevocationsRow, error)
 	// Deliberately re-wraps ALL non-shredded retired keys (not only within-grace):
 	// a retired-but-not-yet-shredded key still holds real wrapped bytes that would
