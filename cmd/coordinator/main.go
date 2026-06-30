@@ -59,6 +59,7 @@ import (
 	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/api/httputil"
 	"github.com/nova-archive/nova/internal/audit/integrity"
+	possession "github.com/nova-archive/nova/internal/audit/possession"
 	"github.com/nova-archive/nova/internal/auth"
 	"github.com/nova-archive/nova/internal/auth/localissuer"
 	"github.com/nova-archive/nova/internal/auth/oidc"
@@ -450,6 +451,10 @@ func run() error {
 		// present; otherwise a local cache miss returns 404 (today's behavior) and a
 		// hint is logged. Wired post-construction (the storage service is built in
 		// coordinator.New, before this material is loaded), mirroring SetSourceDeps.
+		// Reused by the possession-audit dispatcher below: the audit loop only runs
+		// when this donor-fetch identity is provisioned (a coordinator that cannot
+		// reach donors for reads cannot challenge them for possession either).
+		var coordinatorClientTLS *tls.Config
 		if clientTLS, cerr := loadCoordinatorClientTLS(caPEM, fed); cerr != nil {
 			slog.Warn("federation client identity not loaded; donor-fetch tier disabled until provisioned",
 				"err", cerr,
@@ -458,6 +463,7 @@ func run() error {
 			slog.Warn("donor-fetch tier disabled: client identity present but repair-signing key missing",
 				"hint", "provision the repair-signing key so the coordinator can mint read grants")
 		} else {
+			coordinatorClientTLS = clientTLS
 			c.Storage().EnableDonorReadSource(clientTLS, repairSigner, storage.ReadSourceConfig{
 				TTL:              fed.RepairTokenTTL(),
 				StaleSecs:        fed.SourceStaleSeconds(),
@@ -550,6 +556,30 @@ func run() error {
 				CapacityRunwayFloorDays: float64(opCfg.Orchestrator.CapacityRunwayFloorDays),
 			},
 		})
+
+		// P2-M6 possession-audit scheduler: in-process two-stage sampling loop that
+		// challenges donors over coordinator-identity mTLS and records outcomes. Gated
+		// on the donor-fetch identity (same client TLS used for donor reads) — a
+		// coordinator that cannot reach donors for reads cannot challenge them either.
+		if coordinatorClientTLS != nil {
+			auditor := possession.NewAuditor(pool, notifier, possession.TrustConfig{
+				MinAge:          opCfg.PossessionAudit.EffectiveMinAge(),
+				MinPassedAudits: opCfg.PossessionAudit.EffectiveMinPassedAudits(),
+				MinAckedXfers:   opCfg.PossessionAudit.EffectiveMinAckedTransfers(),
+				GraduateRep:     opCfg.PossessionAudit.EffectiveGraduateRep(),
+			})
+			psched := possession.NewScheduler(pool, possession.NewDispatcher(coordinatorClientTLS), auditor, possession.SchedulerConfig{
+				Deadline:          opCfg.PossessionAudit.EffectiveDeadline(),
+				MaxBlockBytes:     opCfg.PossessionAudit.EffectiveMaxBlockBytes(),
+				ReputationFloor:   opCfg.Orchestrator.EffectiveReputationFloor(),
+				NewAckWindow:      15 * time.Minute,
+				FastLaneQuota:     8,
+				NodesPerTick:      32,
+				BaseInterval:      opCfg.PossessionAudit.EffectiveBaseInterval(),
+				StaleGraceSeconds: 2 * opCfg.PossessionAudit.EffectiveDeadline().Seconds(),
+			})
+			go psched.Run(ctx) // Run() already calls ReconcileOnStartup internally.
+		}
 		return runBoth(ctx, c.Run, fedSrv.Run, func(ctx context.Context) error { orch.Run(ctx); return nil })
 	}
 	return c.Run(ctx)
