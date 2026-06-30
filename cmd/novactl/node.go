@@ -22,7 +22,7 @@ var nodeTemplates embed.FS
 // (revoke/rotate-cert/list) are added in a later task.
 func cmdNode(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: novactl node <ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|nebula-template>")
+		return fmt.Errorf("usage: novactl node <ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|set-domain|nebula-template>")
 	}
 	switch args[0] {
 	case "ca-init":
@@ -37,6 +37,8 @@ func cmdNode(args []string) error {
 		return cmdNodeRotateCert(args[1:])
 	case "list":
 		return cmdNodeList(args[1:])
+	case "set-domain":
+		return cmdNodeSetDomain(args[1:])
 	case "nebula-template":
 		return cmdNodeNebulaTemplate(args[1:])
 	default:

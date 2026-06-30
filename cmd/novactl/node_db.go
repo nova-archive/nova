@@ -153,6 +153,49 @@ func cmdNodeRotateCert(args []string) error {
 	return nil
 }
 
+// setNodeDomain is the testable core: it sets the operator-verified D8 placement
+// dimensions (and operator_verified_at=now()) for a node (D-M5-3). Empty args keep
+// the existing value.
+func setNodeDomain(ctx context.Context, q *gen.Queries, p gen.SetNodeDomainParams) error {
+	n, err := q.SetNodeDomain(ctx, p)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("node not found")
+	}
+	return nil
+}
+
+func cmdNodeSetDomain(args []string) error {
+	fs := flag.NewFlagSet("node set-domain", flag.ContinueOnError)
+	idStr := fs.String("id", "", "node id (uuid)")
+	fd := fs.String("failure-domain", "", "operator-verified failure domain")
+	principal := fs.String("principal", "", "operator-verified donor principal")
+	provider := fs.String("provider", "", "operator-verified hosting provider")
+	asn := fs.String("asn", "", "operator-verified ASN")
+	region := fs.String("region", "", "operator-verified region")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pgID, err := parsePGUUID(*idStr)
+	if err != nil {
+		return err
+	}
+	if *fd == "" && *principal == "" && *provider == "" && *asn == "" && *region == "" {
+		return errors.New("set at least one of --failure-domain/--principal/--provider/--asn/--region")
+	}
+	return withNodeDB(func(ctx context.Context, q *gen.Queries) error {
+		if err := setNodeDomain(ctx, q, gen.SetNodeDomainParams{
+			ID: pgID, FailureDomain: *fd, Principal: *principal, Provider: *provider, Asn: *asn, Region: *region,
+		}); err != nil {
+			return err
+		}
+		fmt.Printf("set operator-verified placement dimensions for node %s\n", *idStr)
+		return nil
+	})
+}
+
 func cmdNodeList(args []string) error {
 	return withNodeDB(func(ctx context.Context, q *gen.Queries) error {
 		rows, err := q.ListNodes(ctx)

@@ -368,6 +368,11 @@ type Querier interface {
 	SetDMCACaseActioned(ctx context.Context, id pgtype.UUID) error
 	// Pruner/cache: update local_present, local_role, cache_segment, local_bytes, prune_eligible_at.
 	SetLocalPresence(ctx context.Context, arg SetLocalPresenceParams) error
+	// Operator-verified D8 placement dimensions (D-M5-3). Only non-empty args overwrite
+	// (empty keeps the existing value); setting any dimension marks the node
+	// operator_verified_at=now() so the placement engine + concentration metrics trust
+	// its declared dimensions. DB-direct (novactl node set-domain).
+	SetNodeDomain(ctx context.Context, arg SetNodeDomainParams) (int64, error)
 	SetNodeStatus(ctx context.Context, arg SetNodeStatusParams) error
 	SetNodeSyncState(ctx context.Context, arg SetNodeSyncStateParams) error
 	SetUploadSessionToken(ctx context.Context, arg SetUploadSessionTokenParams) error

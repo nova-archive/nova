@@ -68,6 +68,16 @@ var fieldEffect = map[string]effect{
 	"coordinator.bounded_cache_max_bytes":                  effectRestart,
 	"coordinator.require_replication_quorum_before_commit": effectRestart,
 	"coordinator.prune_safety_floor":                       effectRestart,
+
+	// P2-M5 first-class healing knobs (explicit entries = surfaced in /settings;
+	// liveness timers + selection internals stay advanced under the "orchestrator"
+	// inert prefix). replication.factor is live: the reload hook recomputes the
+	// projection's target_count/safety_tier (D-M5-2b); the scheduler adopts the new
+	// factor on the next restart.
+	"orchestrator.replication.factor":            effectLive,
+	"orchestrator.mass_casualty_threshold_ratio": effectRestart,
+	"orchestrator.capacity_runway_floor_days":    effectRestart,
+	"orchestrator.reputation_floor":              effectRestart,
 }
 
 func effectFor(dotted string) effect {

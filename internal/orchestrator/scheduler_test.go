@@ -268,3 +268,28 @@ func TestRestartRederivesTiersFromProjection(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, n, "restart re-derives the Tier-1 set from the projection")
 }
+
+func TestRChangeReloadRecomputesTargets(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	seedHealBlob(t, ctx, pool, "rc1", "normal")
+	holder := "d5000000-0000-0000-0000-000000000001"
+	seedNode(t, ctx, pool, holder, "active", "current", false)
+	configSource(t, ctx, pool, holder, "rc1", 1000000, 1.0)
+	recompute(t, ctx, pool, "rc1")
+
+	var target int
+	require.NoError(t, pool.QueryRow(ctx, `SELECT target_count FROM blob_replication_state WHERE cid='rc1'`).Scan(&target))
+	require.Equal(t, 3, target, "normal R=3 initially")
+
+	// Operator raises normal R 3 → 5; the reload hook recomputes the projection.
+	require.NoError(t, ApplyTargetChange(ctx, pool,
+		ReplicationTargets{Important: 5, Normal: 3, Cache: 2},
+		ReplicationTargets{Important: 5, Normal: 5, Cache: 2}))
+
+	require.NoError(t, pool.QueryRow(ctx, `SELECT target_count FROM blob_replication_state WHERE cid='rc1'`).Scan(&target))
+	require.Equal(t, 5, target, "target_count tracks the new R")
+}

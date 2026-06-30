@@ -1022,6 +1022,45 @@ func (q *Queries) SelectUnsignaledRevoked(ctx context.Context) ([]pgtype.UUID, e
 	return items, nil
 }
 
+const setNodeDomain = `-- name: SetNodeDomain :execrows
+UPDATE nodes
+SET failure_domain_id  = COALESCE(NULLIF($2::text, ''), failure_domain_id),
+    donor_principal_id = COALESCE(NULLIF($3::text, ''), donor_principal_id),
+    provider           = COALESCE(NULLIF($4::text, ''), provider),
+    asn                = COALESCE(NULLIF($5::text, ''), asn),
+    region             = COALESCE(NULLIF($6::text, ''), region),
+    operator_verified_at = now()
+WHERE id = $1
+`
+
+type SetNodeDomainParams struct {
+	ID            pgtype.UUID
+	FailureDomain string
+	Principal     string
+	Provider      string
+	Asn           string
+	Region        string
+}
+
+// Operator-verified D8 placement dimensions (D-M5-3). Only non-empty args overwrite
+// (empty keeps the existing value); setting any dimension marks the node
+// operator_verified_at=now() so the placement engine + concentration metrics trust
+// its declared dimensions. DB-direct (novactl node set-domain).
+func (q *Queries) SetNodeDomain(ctx context.Context, arg SetNodeDomainParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setNodeDomain,
+		arg.ID,
+		arg.FailureDomain,
+		arg.Principal,
+		arg.Provider,
+		arg.Asn,
+		arg.Region,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setNodeStatus = `-- name: SetNodeStatus :exec
 UPDATE nodes SET status = $2, last_status_change_at = now() WHERE id = $1
 `

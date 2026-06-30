@@ -52,3 +52,35 @@ func TestRotateNodeCertCore(t *testing.T) {
 		t.Fatalf("rotate not applied: fp=%s rotated=%v", got.FederationCertFingerprint, got.CertRotatedAt.Valid)
 	}
 }
+
+func TestNovactlSetDomainSetsVerifiedAt(t *testing.T) {
+	ctx := context.Background()
+	q := gen.New(dbtest.New(t, ctx))
+	id := uuid.New()
+	seedNode(t, ctx, q, id, "sha256:setdomain")
+
+	if err := setNodeDomain(ctx, q, gen.SetNodeDomainParams{
+		ID: pgtype.UUID{Bytes: id, Valid: true}, Provider: "aws", FailureDomain: "us-east-1a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := q.GetNodeByID(ctx, pgtype.UUID{Bytes: id, Valid: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.OperatorVerifiedAt.Valid {
+		t.Fatal("set-domain must set operator_verified_at so the dimensions are trusted")
+	}
+	if got.Provider.String != "aws" || got.FailureDomainID.String != "us-east-1a" {
+		t.Fatalf("dimensions = provider %q / fd %q", got.Provider.String, got.FailureDomainID.String)
+	}
+}
+
+func TestNovactlSetDomainUnknownNode(t *testing.T) {
+	ctx := context.Background()
+	q := gen.New(dbtest.New(t, ctx))
+	err := setNodeDomain(ctx, q, gen.SetNodeDomainParams{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}, Provider: "x"})
+	if err == nil {
+		t.Fatal("expected error for unknown node")
+	}
+}

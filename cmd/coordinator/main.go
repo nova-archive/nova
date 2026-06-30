@@ -387,6 +387,9 @@ func run() error {
 		for _, w := range opCfg.PrivacyWarnings() {
 			slog.Warn("privacy posture", "detail", w)
 		}
+		for _, w := range opCfg.DeprecationWarnings() {
+			slog.Warn("config deprecated", "detail", w)
+		}
 	}
 
 	// Federation control channel (P2-M2). Enabled when operator.yaml sets
@@ -489,7 +492,29 @@ func run() error {
 			UnreachableAfter:   time.Duration(fed.UnreachableAfterSeconds) * time.Second,
 			EvictedAfter:       time.Duration(fed.EvictedAfterSeconds) * time.Second,
 		}
-		sched := orchestrator.NewScheduler(pool, orchestrator.SchedulerConfig{Targets: targets, ReputationFloor: 0.5})
+		sched := orchestrator.NewScheduler(pool, orchestrator.SchedulerConfig{
+			Targets: targets, ReputationFloor: opCfg.Orchestrator.EffectiveReputationFloor(),
+		})
+		// On a replication.factor hot-reload, recompute the projection's target_count
+		// + safety_tier so the durability view tracks the new R (D-M5-2b); the
+		// scheduler adopts the new factor on the next restart.
+		if cfgStore != nil {
+			cfgStore.Subscribe(func(oldC, newC *config.Config) {
+				oldT := orchestrator.ReplicationTargets{
+					Important: oldC.Orchestrator.Replication.Factor.Important,
+					Normal:    oldC.Orchestrator.Replication.Factor.Normal,
+					Cache:     oldC.Orchestrator.Replication.Factor.Cache,
+				}
+				newT := orchestrator.ReplicationTargets{
+					Important: newC.Orchestrator.Replication.Factor.Important,
+					Normal:    newC.Orchestrator.Replication.Factor.Normal,
+					Cache:     newC.Orchestrator.Replication.Factor.Cache,
+				}
+				if err := orchestrator.ApplyTargetChange(context.Background(), pool, oldT, newT); err != nil {
+					slog.Warn("replication factor reload", "err", err)
+				}
+			})
+		}
 
 		// Webhook dispatcher (P2-M5): best-effort, signed-when-configured, durably
 		// scoped-suppressed. Honored only when not paranoid (privacy posture).

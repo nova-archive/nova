@@ -126,6 +126,27 @@ func reconcileOne(ctx context.Context, pool *pgxpool.Pool, cid string, targets R
 	return tx.Commit(ctx)
 }
 
+// ApplyTargetChange is the config hot-reload hook for a replication.factor change
+// (D-M5-2b): for each class whose R changed, it resets target_count and enqueues
+// the class's CIDs for safety_tier recompute. Classes with unchanged R are skipped.
+func ApplyTargetChange(ctx context.Context, pool *pgxpool.Pool, oldT, newT ReplicationTargets) error {
+	for _, c := range []struct {
+		class    string
+		old, new int
+	}{
+		{"important", oldT.Important, newT.Important},
+		{"normal", oldT.Normal, newT.Normal},
+		{"cache", oldT.Cache, newT.Cache},
+	} {
+		if c.new != c.old {
+			if err := RecomputeTargets(ctx, pool, c.class, c.new); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // RecomputeTargets resets target_count for a class after an R change and enqueues
 // the class's CIDs so the drain recomputes their safety_tier (D-M5-2b).
 func RecomputeTargets(ctx context.Context, pool *pgxpool.Pool, class string, target int) error {

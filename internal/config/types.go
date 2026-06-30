@@ -6,6 +6,19 @@ package config
 import "time"
 
 // Config is the root of operator.yaml.
+// DeprecationWarnings returns one-time startup warnings for config that is still
+// parsed but no longer does what it says (D-M5-2a). prune_stale_seconds is
+// superseded by liveness status as the donor-source freshness authority: the M5
+// sweeper, not a time window, decides sourceability.
+func (c *Config) DeprecationWarnings() []string {
+	var w []string
+	if c.Coordinator.PruneStaleSeconds > 0 {
+		w = append(w, "coordinator.prune_stale_seconds is deprecated and ignored (P2-M5): "+
+			"donor-source freshness is now liveness status, not a time window")
+	}
+	return w
+}
+
 type Config struct {
 	Operator       Operator       `yaml:"operator"`
 	TLS            TLS            `yaml:"tls"`
@@ -84,6 +97,21 @@ type Orchestrator struct {
 	MassCasualtyThresholdRatio float64     `yaml:"mass_casualty_threshold_ratio"`
 	MassCasualtyWindowSeconds  int         `yaml:"mass_casualty_window_seconds"`
 	CapacityRunwayFloorDays    int         `yaml:"capacity_runway_floor_days"`
+	// ReputationFloor excludes donors below this reputation from healing placement
+	// + re-replicates below-floor acked pins (M5, D-M5-7). Defaults to
+	// DefaultReputationFloor when non-positive.
+	ReputationFloor float64 `yaml:"reputation_floor,omitempty"`
+}
+
+// DefaultReputationFloor is the M5 healing reputation cutoff.
+const DefaultReputationFloor = 0.5
+
+// EffectiveReputationFloor returns the configured floor, defaulting when unset.
+func (o Orchestrator) EffectiveReputationFloor() float64 {
+	if o.ReputationFloor <= 0 {
+		return DefaultReputationFloor
+	}
+	return o.ReputationFloor
 }
 
 type Replication struct {

@@ -127,6 +127,26 @@ func TestReplicationFactorValidation(t *testing.T) {
 	require.Error(t, err, "factor > 20 must be rejected")
 }
 
+func TestPruneStaleSecondsDeprecatedWarn(t *testing.T) {
+	t.Parallel()
+	// prune_stale_seconds lives under the existing coordinator block in minimalYAML.
+	cfg, err := config.LoadFromBytes([]byte(minimalYAML + "  prune_stale_seconds: 1800\n"))
+	require.NoError(t, err)
+	w := cfg.DeprecationWarnings()
+	require.NotEmpty(t, w, "prune_stale_seconds is accepted-but-deprecated (P2-M5)")
+	require.Contains(t, w[0], "prune_stale_seconds")
+
+	clean, err := config.LoadFromBytes([]byte(minimalYAML))
+	require.NoError(t, err)
+	require.Empty(t, clean.DeprecationWarnings(), "no deprecation warning when unset")
+}
+
+func TestReputationFloorDefault(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, config.DefaultReputationFloor, config.Orchestrator{}.EffectiveReputationFloor())
+	require.Equal(t, 0.8, config.Orchestrator{ReputationFloor: 0.8}.EffectiveReputationFloor())
+}
+
 func TestPublicUploadsRequiresTosURL(t *testing.T) {
 	t.Parallel()
 

@@ -334,3 +334,17 @@ SET source_node_id         = NULL,
     source_attempts        = source_attempts + 1,
     source_next_attempt_at = now() + make_interval(secs => LEAST(3600, 30 * power(2, LEAST(source_attempts, 7))::int))
 WHERE cid = $1 AND node_id = $2;
+
+-- name: SetNodeDomain :execrows
+-- Operator-verified D8 placement dimensions (D-M5-3). Only non-empty args overwrite
+-- (empty keeps the existing value); setting any dimension marks the node
+-- operator_verified_at=now() so the placement engine + concentration metrics trust
+-- its declared dimensions. DB-direct (novactl node set-domain).
+UPDATE nodes
+SET failure_domain_id  = COALESCE(NULLIF(sqlc.arg(failure_domain)::text, ''), failure_domain_id),
+    donor_principal_id = COALESCE(NULLIF(sqlc.arg(principal)::text, ''), donor_principal_id),
+    provider           = COALESCE(NULLIF(sqlc.arg(provider)::text, ''), provider),
+    asn                = COALESCE(NULLIF(sqlc.arg(asn)::text, ''), asn),
+    region             = COALESCE(NULLIF(sqlc.arg(region)::text, ''), region),
+    operator_verified_at = now()
+WHERE id = $1;
