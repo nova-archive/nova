@@ -106,6 +106,29 @@ func Verify(pub ed25519.PublicKey, token string, now time.Time) (Claims, error) 
 	return c, nil
 }
 
+// DecodeClaimsUnverified decodes a token's claims segment WITHOUT verifying the
+// signature, for a donor's local pre-fetch binding sanity check (Rev. 5 #4): the
+// destination donor confirms a donor↔donor grant is bound to itself and the exact
+// assignment it is processing before bothering to fetch. The source server still
+// runs the full signature-checking Verify before serving — this is never an
+// authorization decision, only a "is this grant even for me" guard that avoids
+// ack/fail ambiguity on a misrouted grant.
+func DecodeClaimsUnverified(token string) (Claims, error) {
+	seg, _, found := strings.Cut(token, ".")
+	if !found || seg == "" {
+		return Claims{}, ErrMalformedToken
+	}
+	cj, err := b64.DecodeString(seg)
+	if err != nil {
+		return Claims{}, ErrMalformedToken
+	}
+	var c Claims
+	if err := json.Unmarshal(cj, &c); err != nil {
+		return Claims{}, ErrMalformedClaims
+	}
+	return c, nil
+}
+
 // EncodePublicKey renders an Ed25519 public key as base64url(raw 32 bytes) for
 // delivery to donors via HeartbeatResponse.RepairTokenPublicKey (D-M4-7).
 func EncodePublicKey(pub ed25519.PublicKey) string { return b64.EncodeToString(pub) }

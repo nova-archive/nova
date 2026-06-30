@@ -136,12 +136,21 @@ type Querier interface {
 	GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
 	GetPinAssignment(ctx context.Context, arg GetPinAssignmentParams) (GetPinAssignmentRow, error)
 	GetPinAssignmentForUpdate(ctx context.Context, arg GetPinAssignmentForUpdateParams) (GetPinAssignmentForUpdateRow, error)
+	// source_node_id (M5, D-M5-8a) is the durable repair source copied in at assign
+	// time: NULL ⇒ coordinator-as-source, a node id ⇒ donor-as-source (late-bound to
+	// the source's current address at serve time).
 	GetPinChangesSince(ctx context.Context, arg GetPinChangesSinceParams) ([]GetPinChangesSinceRow, error)
 	// Donor desired-assignment snapshot page: selects envelope_size (the actual
 	// on-disk ciphertext size) aliased as byte_size for wire compatibility.
+	// source_node_id (M5, D-M5-8a) lets snapshot recovery reconstruct the repair
+	// source after the change log that carried it has been pruned.
 	GetPinSnapshotPage(ctx context.Context, arg GetPinSnapshotPageParams) ([]GetPinSnapshotPageRow, error)
 	GetPruneWatermark(ctx context.Context) (int64, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error)
+	// Late-mint resolution: the source's CURRENT address + its acked assignment for
+	// this CID, only while it is still repair-sourceable. No row ⇒ the stored source
+	// is no longer usable ⇒ the caller requeues (D-M5-8a).
+	GetRepairSource(ctx context.Context, arg GetRepairSourceParams) (GetRepairSourceRow, error)
 	// durability_class is authoritative on blob_storage_state (M4.1).
 	GetReplicationDurabilityClass(ctx context.Context, cid string) (string, error)
 	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
@@ -169,10 +178,17 @@ type Querier interface {
 	InsertManifest(ctx context.Context, arg InsertManifestParams) error
 	InsertModerationDecision(ctx context.Context, arg InsertModerationDecisionParams) (pgtype.UUID, error)
 	InsertPinChange(ctx context.Context, arg InsertPinChangeParams) (int64, error)
+	// Copies the repair source into the change log for incremental delivery + audit.
+	InsertPinChangeWithSource(ctx context.Context, arg InsertPinChangeWithSourceParams) (int64, error)
 	InsertRefreshToken(ctx context.Context, arg InsertRefreshTokenParams) (pgtype.UUID, error)
 	InsertRevocation(ctx context.Context, arg InsertRevocationParams) error
 	InsertSigningKey(ctx context.Context, arg InsertSigningKeyParams) error
 	IsBlocklisted(ctx context.Context, cid string) (bool, error)
+	// Reservation-time guard: the chosen source must currently be repair-sourceable
+	// (live, current-synced, advertises repair-stream/v1, addressed) AND hold an acked
+	// copy of this CID (D-M5-8a/8c). A non-advertiser is read-sourceable but never
+	// repair-sourceable (mixed-version safety).
+	IsRepairSourceableForCID(ctx context.Context, arg IsRepairSourceableForCIDParams) (bool, error)
 	// Admission targets: live, non-suspended, read-source-capable, addressed nodes,
 	// preferring those with known free space >= the blob's envelope size (unknown
 	// free space is treated as OK; the donor's own storage_max_bytes is the real
@@ -279,6 +295,11 @@ type Querier interface {
 	// sweeper does not immediately re-evict a node that just contacted us. The
 	// handler rejects revoked nodes before calling this, so the reactivation is safe.
 	RegisterNode(ctx context.Context, arg RegisterNodeParams) (Node, error)
+	// The stored source is no longer repair-sourceable: clear it (back to NULL /
+	// coordinator-unbound), bump the attempt counter, and back off exponentially
+	// (30s × 2^attempts, capped at 1h) so a flapping source does not tight-loop; the
+	// Task 6 scheduler re-picks once the backoff elapses (D-M5-8a).
+	RequeuePinAssignmentSource(ctx context.Context, arg RequeuePinAssignmentSourceParams) error
 	// For an original, resolves its own collection memberships; for a derivative
 	// (parent_cid NOT NULL) resolves the PARENT's, since derivatives inherit
 	// parent visibility and hold no membership of their own. One query, no N+1.
@@ -339,6 +360,11 @@ type Querier interface {
 	// only active/suspect/unreachable reach here.
 	UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbeatParams) (Node, error)
 	UpsertPinAssignmentAssign(ctx context.Context, arg UpsertPinAssignmentAssignParams) (UpsertPinAssignmentAssignRow, error)
+	// M5 reservation primitive (D-M5-8a): like UpsertPinAssignmentAssign but binds a
+	// durable repair source. source_node_id is NULL for coordinator-as-source (never
+	// the synthetic CoordinatorSourceID — that lives only on the wire). A fresh assign
+	// resets the late-bind backoff counters.
+	UpsertPinAssignmentAssignWithSource(ctx context.Context, arg UpsertPinAssignmentAssignWithSourceParams) (UpsertPinAssignmentAssignWithSourceRow, error)
 	UpsertRepeatInfringer(ctx context.Context, userID pgtype.UUID) error
 	UpsertReplicationState(ctx context.Context, arg UpsertReplicationStateParams) error
 	// Gate-on Put: insert staging row; ON CONFLICT re-opens a previously failed row.

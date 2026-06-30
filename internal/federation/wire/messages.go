@@ -13,8 +13,8 @@ const ProtocolV1 = "fed/v1"
 const (
 	CapPinChangeLog   = "pin-change-log/v1"
 	CapSnapshot       = "snapshot/v1"
-	CapBlobTransfer   = "blob-transfer/v1"  // M4: donor can fetch source-bearing assignments, verify, pin, ack
-	CapRepairStream   = "repair-stream/v1"  // RESERVED for M5 donor-as-source; not advertised in M4
+	CapBlobTransfer   = "blob-transfer/v1" // M4: donor can fetch source-bearing assignments, verify, pin, ack
+	CapRepairStream   = "repair-stream/v1" // RESERVED for M5 donor-as-source; not advertised in M4
 	CapReadSource     = "read-source/v1"   // M4.1: donor serves blobs to coordinator for donor-backed reads
 	CapAuditBlockHash = "audit-block-hash/v1"
 )
@@ -148,13 +148,16 @@ type ChangesResponse struct {
 	CurrentEpoch int64       `json:"current_epoch"`
 }
 
-// SnapshotItem is one row of the recovery snapshot.
+// SnapshotItem is one row of the recovery snapshot. Source (M5, D-M5-8a) lets a
+// long-offline donor that recovers via snapshot — after the change log that
+// carried the source has been pruned — still learn its repair source.
 type SnapshotItem struct {
-	CID          string `json:"cid"`
-	AssignmentID string `json:"assignment_id"`
-	Generation   int64  `json:"generation"`
-	ByteSize     int64  `json:"byte_size"`
-	AssignedAt   string `json:"assigned_at"` // RFC3339
+	CID          string        `json:"cid"`
+	AssignmentID string        `json:"assignment_id"`
+	Generation   int64         `json:"generation"`
+	ByteSize     int64         `json:"byte_size"`
+	AssignedAt   string        `json:"assigned_at"` // RFC3339
+	Source       *ChangeSource `json:"source,omitempty"`
 }
 
 type SnapshotResponse struct {

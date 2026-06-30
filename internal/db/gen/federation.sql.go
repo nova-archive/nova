@@ -299,7 +299,7 @@ func (q *Queries) GetPinAssignmentForUpdate(ctx context.Context, arg GetPinAssig
 }
 
 const getPinChangesSince = `-- name: GetPinChangesSince :many
-SELECT sequence, assignment_id, generation, kind, cid, byte_size
+SELECT sequence, assignment_id, generation, kind, cid, byte_size, source_node_id
 FROM pin_changes
 WHERE node_id = $1 AND sequence > $2
 ORDER BY sequence
@@ -319,8 +319,12 @@ type GetPinChangesSinceRow struct {
 	Kind         string
 	Cid          string
 	ByteSize     int64
+	SourceNodeID pgtype.UUID
 }
 
+// source_node_id (M5, D-M5-8a) is the durable repair source copied in at assign
+// time: NULL ⇒ coordinator-as-source, a node id ⇒ donor-as-source (late-bound to
+// the source's current address at serve time).
 func (q *Queries) GetPinChangesSince(ctx context.Context, arg GetPinChangesSinceParams) ([]GetPinChangesSinceRow, error) {
 	rows, err := q.db.Query(ctx, getPinChangesSince, arg.NodeID, arg.Sequence, arg.Limit)
 	if err != nil {
@@ -337,6 +341,7 @@ func (q *Queries) GetPinChangesSince(ctx context.Context, arg GetPinChangesSince
 			&i.Kind,
 			&i.Cid,
 			&i.ByteSize,
+			&i.SourceNodeID,
 		); err != nil {
 			return nil, err
 		}
@@ -349,7 +354,7 @@ func (q *Queries) GetPinChangesSince(ctx context.Context, arg GetPinChangesSince
 }
 
 const getPinSnapshotPage = `-- name: GetPinSnapshotPage :many
-SELECT pa.cid, pa.assignment_id, pa.generation, m.envelope_size AS byte_size, pa.assigned_at
+SELECT pa.cid, pa.assignment_id, pa.generation, m.envelope_size AS byte_size, pa.assigned_at, pa.source_node_id
 FROM pin_assignments pa
 JOIN blob_manifests m ON m.cid = pa.cid
 WHERE pa.node_id = $1 AND pa.cid > $2
@@ -369,10 +374,13 @@ type GetPinSnapshotPageRow struct {
 	Generation   int64
 	ByteSize     int64
 	AssignedAt   time.Time
+	SourceNodeID pgtype.UUID
 }
 
 // Donor desired-assignment snapshot page: selects envelope_size (the actual
 // on-disk ciphertext size) aliased as byte_size for wire compatibility.
+// source_node_id (M5, D-M5-8a) lets snapshot recovery reconstruct the repair
+// source after the change log that carried it has been pruned.
 func (q *Queries) GetPinSnapshotPage(ctx context.Context, arg GetPinSnapshotPageParams) ([]GetPinSnapshotPageRow, error) {
 	rows, err := q.db.Query(ctx, getPinSnapshotPage, arg.NodeID, arg.Cid, arg.Limit)
 	if err != nil {
@@ -388,6 +396,7 @@ func (q *Queries) GetPinSnapshotPage(ctx context.Context, arg GetPinSnapshotPage
 			&i.Generation,
 			&i.ByteSize,
 			&i.AssignedAt,
+			&i.SourceNodeID,
 		); err != nil {
 			return nil, err
 		}
@@ -408,6 +417,38 @@ func (q *Queries) GetPruneWatermark(ctx context.Context) (int64, error) {
 	var pruned_through_seq int64
 	err := row.Scan(&pruned_through_seq)
 	return pruned_through_seq, err
+}
+
+const getRepairSource = `-- name: GetRepairSource :one
+SELECT n.source_nebula_addr, pa.assignment_id, pa.generation
+FROM nodes n
+JOIN pin_assignments pa ON pa.node_id = n.id
+WHERE n.id = $1 AND pa.cid = $2 AND pa.state = 'acked'
+  AND n.status IN ('active','suspect')
+  AND n.assignment_sync_state = 'current'
+  AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
+  AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
+`
+
+type GetRepairSourceParams struct {
+	ID  pgtype.UUID
+	Cid string
+}
+
+type GetRepairSourceRow struct {
+	SourceNebulaAddr pgtype.Text
+	AssignmentID     pgtype.UUID
+	Generation       int64
+}
+
+// Late-mint resolution: the source's CURRENT address + its acked assignment for
+// this CID, only while it is still repair-sourceable. No row ⇒ the stored source
+// is no longer usable ⇒ the caller requeues (D-M5-8a).
+func (q *Queries) GetRepairSource(ctx context.Context, arg GetRepairSourceParams) (GetRepairSourceRow, error) {
+	row := q.db.QueryRow(ctx, getRepairSource, arg.ID, arg.Cid)
+	var i GetRepairSourceRow
+	err := row.Scan(&i.SourceNebulaAddr, &i.AssignmentID, &i.Generation)
+	return i, err
 }
 
 const insertPinChange = `-- name: InsertPinChange :one
@@ -437,6 +478,66 @@ func (q *Queries) InsertPinChange(ctx context.Context, arg InsertPinChangeParams
 	var sequence int64
 	err := row.Scan(&sequence)
 	return sequence, err
+}
+
+const insertPinChangeWithSource = `-- name: InsertPinChangeWithSource :one
+INSERT INTO pin_changes (node_id, assignment_id, generation, kind, cid, byte_size, source_node_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING sequence
+`
+
+type InsertPinChangeWithSourceParams struct {
+	NodeID       pgtype.UUID
+	AssignmentID pgtype.UUID
+	Generation   int64
+	Kind         string
+	Cid          string
+	ByteSize     int64
+	SourceNodeID pgtype.UUID
+}
+
+// Copies the repair source into the change log for incremental delivery + audit.
+func (q *Queries) InsertPinChangeWithSource(ctx context.Context, arg InsertPinChangeWithSourceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, insertPinChangeWithSource,
+		arg.NodeID,
+		arg.AssignmentID,
+		arg.Generation,
+		arg.Kind,
+		arg.Cid,
+		arg.ByteSize,
+		arg.SourceNodeID,
+	)
+	var sequence int64
+	err := row.Scan(&sequence)
+	return sequence, err
+}
+
+const isRepairSourceableForCID = `-- name: IsRepairSourceableForCID :one
+SELECT EXISTS (
+  SELECT 1 FROM nodes n
+  JOIN pin_assignments pa ON pa.node_id = n.id
+  WHERE n.id = $1 AND pa.cid = $2 AND pa.state = 'acked'
+    AND n.status IN ('active','suspect')
+    AND n.assignment_sync_state = 'current'
+    AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
+    AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
+) AS ok
+`
+
+type IsRepairSourceableForCIDParams struct {
+	ID  pgtype.UUID
+	Cid string
+}
+
+// Reservation-time guard: the chosen source must currently be repair-sourceable
+// (live, current-synced, advertises repair-stream/v1, addressed) AND hold an acked
+// copy of this CID (D-M5-8a/8c). A non-advertiser is read-sourceable but never
+// repair-sourceable (mixed-version safety).
+func (q *Queries) IsRepairSourceableForCID(ctx context.Context, arg IsRepairSourceableForCIDParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isRepairSourceableForCID, arg.ID, arg.Cid)
+	var ok bool
+	err := row.Scan(&ok)
+	return ok, err
 }
 
 const listAdmissionCandidates = `-- name: ListAdmissionCandidates :many
@@ -787,6 +888,28 @@ func (q *Queries) RegisterNode(ctx context.Context, arg RegisterNodeParams) (Nod
 	return i, err
 }
 
+const requeuePinAssignmentSource = `-- name: RequeuePinAssignmentSource :exec
+UPDATE pin_assignments
+SET source_node_id         = NULL,
+    source_attempts        = source_attempts + 1,
+    source_next_attempt_at = now() + make_interval(secs => LEAST(3600, 30 * power(2, LEAST(source_attempts, 7))::int))
+WHERE cid = $1 AND node_id = $2
+`
+
+type RequeuePinAssignmentSourceParams struct {
+	Cid    string
+	NodeID pgtype.UUID
+}
+
+// The stored source is no longer repair-sourceable: clear it (back to NULL /
+// coordinator-unbound), bump the attempt counter, and back off exponentially
+// (30s × 2^attempts, capped at 1h) so a flapping source does not tight-loop; the
+// Task 6 scheduler re-picks once the backoff elapses (D-M5-8a).
+func (q *Queries) RequeuePinAssignmentSource(ctx context.Context, arg RequeuePinAssignmentSourceParams) error {
+	_, err := q.db.Exec(ctx, requeuePinAssignmentSource, arg.Cid, arg.NodeID)
+	return err
+}
+
 const revokeNode = `-- name: RevokeNode :execrows
 UPDATE nodes
 SET status = 'revoked', cert_revoked_at = now(), last_status_change_at = now()
@@ -1027,6 +1150,42 @@ type UpsertPinAssignmentAssignRow struct {
 func (q *Queries) UpsertPinAssignmentAssign(ctx context.Context, arg UpsertPinAssignmentAssignParams) (UpsertPinAssignmentAssignRow, error) {
 	row := q.db.QueryRow(ctx, upsertPinAssignmentAssign, arg.Cid, arg.NodeID)
 	var i UpsertPinAssignmentAssignRow
+	err := row.Scan(&i.AssignmentID, &i.Generation)
+	return i, err
+}
+
+const upsertPinAssignmentAssignWithSource = `-- name: UpsertPinAssignmentAssignWithSource :one
+INSERT INTO pin_assignments (cid, node_id, state, generation, source_node_id)
+VALUES ($1, $2, 'pending', 1, $3)
+ON CONFLICT (cid, node_id) DO UPDATE SET
+    state                  = 'pending',
+    generation             = pin_assignments.generation + 1,
+    acked_at               = NULL,
+    assigned_at            = now(),
+    source_node_id         = EXCLUDED.source_node_id,
+    source_attempts        = 0,
+    source_next_attempt_at = NULL
+RETURNING assignment_id, generation
+`
+
+type UpsertPinAssignmentAssignWithSourceParams struct {
+	Cid          string
+	NodeID       pgtype.UUID
+	SourceNodeID pgtype.UUID
+}
+
+type UpsertPinAssignmentAssignWithSourceRow struct {
+	AssignmentID pgtype.UUID
+	Generation   int64
+}
+
+// M5 reservation primitive (D-M5-8a): like UpsertPinAssignmentAssign but binds a
+// durable repair source. source_node_id is NULL for coordinator-as-source (never
+// the synthetic CoordinatorSourceID — that lives only on the wire). A fresh assign
+// resets the late-bind backoff counters.
+func (q *Queries) UpsertPinAssignmentAssignWithSource(ctx context.Context, arg UpsertPinAssignmentAssignWithSourceParams) (UpsertPinAssignmentAssignWithSourceRow, error) {
+	row := q.db.QueryRow(ctx, upsertPinAssignmentAssignWithSource, arg.Cid, arg.NodeID, arg.SourceNodeID)
+	var i UpsertPinAssignmentAssignWithSourceRow
 	err := row.Scan(&i.AssignmentID, &i.Generation)
 	return i, err
 }

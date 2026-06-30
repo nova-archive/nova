@@ -2,12 +2,15 @@ package coordinator
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/federation/wire"
+	"github.com/nova-archive/nova/internal/orchestrator"
 )
 
 // Assignment is the result of a mutation: the immutable handle, its current
@@ -16,6 +19,64 @@ type Assignment struct {
 	AssignmentID uuid.UUID
 	Generation   int64
 	Sequence     int64
+}
+
+// Repair-source reservation errors (D-M5-8a). The caller re-picks a source.
+var (
+	ErrSourceIsDest        = errors.New("coordinator: repair source equals destination")
+	ErrSourceNotSourceable = errors.New("coordinator: repair source is not repair-sourceable")
+)
+
+// AssignPinWithSource is the M5 scheduler's reservation primitive (D-M5-8a): it
+// makes (cid,dest) a pending desired assignment bound to a durable repair source,
+// appends a source-bearing assign change, and recomputes the projection in-tx so
+// the new pending reservation lifts in_flight_count atomically. source == uuid.Nil
+// stores SQL NULL (coordinator-as-source — NEVER the synthetic CoordinatorSourceID,
+// which lives only on the wire). A non-Nil source must differ from dest
+// (ErrSourceIsDest) and be repair-sourceable + acked for this CID at reservation
+// time (ErrSourceNotSourceable). Acquires the global change-log lock (sequence
+// order) and, via RecomputeCID, the per-CID projection lock.
+func AssignPinWithSource(ctx context.Context, tx pgx.Tx, cid string, dest, source uuid.UUID, targets orchestrator.ReplicationTargets) (Assignment, error) {
+	if source != uuid.Nil && source == dest {
+		return Assignment{}, ErrSourceIsDest
+	}
+	q := gen.New(tx)
+	if err := q.AcquireChangeLogLock(ctx); err != nil {
+		return Assignment{}, err
+	}
+	size, err := q.GetBlobSize(ctx, cid)
+	if err != nil {
+		return Assignment{}, err // unknown blob ⇒ rollback, no orphan
+	}
+	var srcParam pgtype.UUID // zero value ⇒ SQL NULL (coordinator-as-source)
+	if source != uuid.Nil {
+		ok, err := q.IsRepairSourceableForCID(ctx, gen.IsRepairSourceableForCIDParams{ID: pgUUIDFrom(source), Cid: cid})
+		if err != nil {
+			return Assignment{}, err
+		}
+		if !ok {
+			return Assignment{}, ErrSourceNotSourceable
+		}
+		srcParam = pgUUIDFrom(source)
+	}
+	up, err := q.UpsertPinAssignmentAssignWithSource(ctx, gen.UpsertPinAssignmentAssignWithSourceParams{
+		Cid: cid, NodeID: pgUUIDFrom(dest), SourceNodeID: srcParam,
+	})
+	if err != nil {
+		return Assignment{}, err
+	}
+	seq, err := q.InsertPinChangeWithSource(ctx, gen.InsertPinChangeWithSourceParams{
+		NodeID: pgUUIDFrom(dest), AssignmentID: up.AssignmentID, Generation: up.Generation,
+		Kind: wire.ChangeKindAssign, Cid: cid, ByteSize: size, SourceNodeID: srcParam,
+	})
+	if err != nil {
+		return Assignment{}, err
+	}
+	if err := orchestrator.RecomputeCID(ctx, tx, cid, targets); err != nil {
+		return Assignment{}, err
+	}
+	slog.Info("fed.assign.source.txn", "cid", cid, "dest", dest, "source", source, "generation", up.Generation, "seq", seq)
+	return Assignment{AssignmentID: up.AssignmentID.Bytes, Generation: up.Generation, Sequence: seq}, nil
 }
 
 // AssignPin makes (cid,node) a desired assignment: it upserts pin_assignments

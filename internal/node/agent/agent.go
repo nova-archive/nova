@@ -68,6 +68,11 @@ type Agent struct {
 	// pubkeySink, when set, receives the coordinator repair pubkey from each
 	// heartbeat (M4.1 read-source). nil when the donor is not a read source.
 	pubkeySink PubKeySink
+
+	// nodeID is this donor's own federation node id (from registration), used to
+	// verify a donor↔donor repair grant is bound to THIS donor before fetching
+	// (M5, D-M5-8a). Empty until Run loads/obtains it.
+	nodeID string
 }
 
 // New constructs an Agent. hb/poll are the initial heartbeat + pins-poll cadences
@@ -99,7 +104,11 @@ func WithPubKeySink(a *Agent, sink PubKeySink) *Agent {
 func (a *Agent) registerReq() wire.RegisterRequest {
 	caps := []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer}
 	if a.cfg.SourceNebulaAddr != "" {
-		caps = append(caps, wire.CapReadSource)
+		// A donor that runs a source server can serve BOTH coordinator reads and
+		// donor↔donor repair from the same endpoint (D-M5-8c). Advertising
+		// repair-stream/v1 is what makes the coordinator eligible to pick this donor
+		// as a repair SOURCE; a non-advertiser stays read-sourceable only.
+		caps = append(caps, wire.CapReadSource, wire.CapRepairStream)
 	}
 	return wire.RegisterRequest{
 		SupportedProtocols:         []string{wire.ProtocolV1},
@@ -135,7 +144,7 @@ func (a *Agent) captureRepairPubKey(wireKey string) {
 
 // Run blocks until ctx is cancelled.
 func (a *Agent) Run(ctx context.Context) error {
-	if _, ok, err := a.reg.LoadRegistration(ctx); err != nil {
+	if existing, ok, err := a.reg.LoadRegistration(ctx); err != nil {
 		return err
 	} else if !ok {
 		resp, err := a.client.Register(ctx, a.registerReq())
@@ -149,7 +158,10 @@ func (a *Agent) Run(ctx context.Context) error {
 		}); err != nil {
 			return err
 		}
+		a.nodeID = resp.NodeID
 		slog.Info("nova-node registered", "node_id", resp.NodeID, "protocol", resp.SelectedProtocol)
+	} else {
+		a.nodeID = existing.NodeID
 	}
 
 	// M4: reconcile any verified-ack-pending state before the loop starts.
@@ -345,8 +357,40 @@ func (a *Agent) ReplicatePending(ctx context.Context) {
 	}
 }
 
+// destBindingOK reports whether a donor↔donor repair grant is bound to THIS donor
+// and the exact assignment being processed (Rev. 5 #4). Coordinator-as-source
+// grants (src.NodeID == CoordinatorSourceID) skip the check — the coordinator
+// binds the dest as the synthetic id and the M4 path is unchanged. A malformed
+// PARTIAL binding (one Dest* field set, the other zero) is treated as a mismatch.
+// The signature is NOT verified here (the source server does that); this only
+// avoids fetching under a misrouted grant, so there is no ack/fail ambiguity.
+func (a *Agent) destBindingOK(src *wire.ChangeSource, da state.DesiredAssignment) bool {
+	// Only a real donor source (a node uuid distinct from the synthetic coordinator
+	// id) carries a dest binding to check; the coordinator path (synthetic id, or an
+	// empty id in legacy callers) is unchanged.
+	if src.NodeID == wire.CoordinatorSourceID || src.NodeID == "" {
+		return true
+	}
+	claims, err := wire.DecodeClaimsUnverified(src.Token)
+	if err != nil {
+		return false
+	}
+	if (claims.DestAssignmentID == "") != (claims.DestGeneration == 0) {
+		return false // malformed partial binding
+	}
+	return claims.DestNodeID == a.nodeID &&
+		claims.DestAssignmentID == da.AssignmentID &&
+		claims.DestGeneration == da.Generation
+}
+
 // replicateOne runs the storage-cap check + Verify + persist + ack for one CID.
 func (a *Agent) replicateOne(ctx context.Context, da state.DesiredAssignment, src *wire.ChangeSource) {
+	// Donor↔donor: refuse a misrouted grant BEFORE fetching — it never started, so
+	// there is no ack/fail to send (D-M5-8a / Rev. 5 #4).
+	if !a.destBindingOK(src, da) {
+		slog.Warn("node.replicate.dest_binding_mismatch", "cid", da.CID, "source", src.NodeID)
+		return
+	}
 	// Storage cap check — only when a positive cap is configured (0 = uncapped).
 	if a.storageMax > 0 {
 		stored, err := a.pinner.RepoStoredBytes(ctx)

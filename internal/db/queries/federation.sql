@@ -132,7 +132,10 @@ VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING sequence;
 
 -- name: GetPinChangesSince :many
-SELECT sequence, assignment_id, generation, kind, cid, byte_size
+-- source_node_id (M5, D-M5-8a) is the durable repair source copied in at assign
+-- time: NULL ⇒ coordinator-as-source, a node id ⇒ donor-as-source (late-bound to
+-- the source's current address at serve time).
+SELECT sequence, assignment_id, generation, kind, cid, byte_size, source_node_id
 FROM pin_changes
 WHERE node_id = $1 AND sequence > $2
 ORDER BY sequence
@@ -146,7 +149,9 @@ SELECT EXISTS (
 -- name: GetPinSnapshotPage :many
 -- Donor desired-assignment snapshot page: selects envelope_size (the actual
 -- on-disk ciphertext size) aliased as byte_size for wire compatibility.
-SELECT pa.cid, pa.assignment_id, pa.generation, m.envelope_size AS byte_size, pa.assigned_at
+-- source_node_id (M5, D-M5-8a) lets snapshot recovery reconstruct the repair
+-- source after the change log that carried it has been pruned.
+SELECT pa.cid, pa.assignment_id, pa.generation, m.envelope_size AS byte_size, pa.assigned_at, pa.source_node_id
 FROM pin_assignments pa
 JOIN blob_manifests m ON m.cid = pa.cid
 WHERE pa.node_id = $1 AND pa.cid > $2
@@ -260,3 +265,65 @@ SELECT id FROM nodes WHERE status = 'revoked' AND revoked_signaled_at IS NULL;
 
 -- name: MarkRevokedSignaled :exec
 UPDATE nodes SET revoked_signaled_at = now() WHERE id = $1;
+
+-- name: UpsertPinAssignmentAssignWithSource :one
+-- M5 reservation primitive (D-M5-8a): like UpsertPinAssignmentAssign but binds a
+-- durable repair source. source_node_id is NULL for coordinator-as-source (never
+-- the synthetic CoordinatorSourceID — that lives only on the wire). A fresh assign
+-- resets the late-bind backoff counters.
+INSERT INTO pin_assignments (cid, node_id, state, generation, source_node_id)
+VALUES ($1, $2, 'pending', 1, $3)
+ON CONFLICT (cid, node_id) DO UPDATE SET
+    state                  = 'pending',
+    generation             = pin_assignments.generation + 1,
+    acked_at               = NULL,
+    assigned_at            = now(),
+    source_node_id         = EXCLUDED.source_node_id,
+    source_attempts        = 0,
+    source_next_attempt_at = NULL
+RETURNING assignment_id, generation;
+
+-- name: InsertPinChangeWithSource :one
+-- Copies the repair source into the change log for incremental delivery + audit.
+INSERT INTO pin_changes (node_id, assignment_id, generation, kind, cid, byte_size, source_node_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING sequence;
+
+-- name: IsRepairSourceableForCID :one
+-- Reservation-time guard: the chosen source must currently be repair-sourceable
+-- (live, current-synced, advertises repair-stream/v1, addressed) AND hold an acked
+-- copy of this CID (D-M5-8a/8c). A non-advertiser is read-sourceable but never
+-- repair-sourceable (mixed-version safety).
+SELECT EXISTS (
+  SELECT 1 FROM nodes n
+  JOIN pin_assignments pa ON pa.node_id = n.id
+  WHERE n.id = $1 AND pa.cid = $2 AND pa.state = 'acked'
+    AND n.status IN ('active','suspect')
+    AND n.assignment_sync_state = 'current'
+    AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
+    AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
+) AS ok;
+
+-- name: GetRepairSource :one
+-- Late-mint resolution: the source's CURRENT address + its acked assignment for
+-- this CID, only while it is still repair-sourceable. No row ⇒ the stored source
+-- is no longer usable ⇒ the caller requeues (D-M5-8a).
+SELECT n.source_nebula_addr, pa.assignment_id, pa.generation
+FROM nodes n
+JOIN pin_assignments pa ON pa.node_id = n.id
+WHERE n.id = $1 AND pa.cid = $2 AND pa.state = 'acked'
+  AND n.status IN ('active','suspect')
+  AND n.assignment_sync_state = 'current'
+  AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
+  AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> '';
+
+-- name: RequeuePinAssignmentSource :exec
+-- The stored source is no longer repair-sourceable: clear it (back to NULL /
+-- coordinator-unbound), bump the attempt counter, and back off exponentially
+-- (30s × 2^attempts, capped at 1h) so a flapping source does not tight-loop; the
+-- Task 6 scheduler re-picks once the backoff elapses (D-M5-8a).
+UPDATE pin_assignments
+SET source_node_id         = NULL,
+    source_attempts        = source_attempts + 1,
+    source_next_attempt_at = now() + make_interval(secs => LEAST(3600, 30 * power(2, LEAST(source_attempts, 7))::int))
+WHERE cid = $1 AND node_id = $2;

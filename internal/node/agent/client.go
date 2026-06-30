@@ -145,11 +145,17 @@ func (c *HTTPClient) Fail(ctx context.Context, cid string, f wire.Fail) error {
 	return c.post(ctx, "/fed/v1/pins/"+url.PathEscape(cid)+"/fail", f, nil, http.StatusNoContent)
 }
 
-// Fetch fetches ciphertext for cid from the source using its repair token.
-// In M4 the source is the coordinator so c.base/c.hc are reused.
+// Fetch fetches ciphertext for cid from the source using its repair token. For a
+// coordinator-as-source grant (M4) it targets c.base; for a donor↔donor grant (M5)
+// it targets the source donor's advertised address (src.NebulaAddr) over the same
+// federation mTLS client (the source donor presents a federation-CA server cert).
 // Returns transfer.ErrSourceMissing on 404, transfer.ErrSourceUnauthorized on 403.
 func (c *HTTPClient) Fetch(ctx context.Context, src wire.ChangeSource, cid string, _ int64) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/fed/v1/blob/"+url.PathEscape(cid), nil)
+	base := c.base
+	if src.NodeID != wire.CoordinatorSourceID && src.NebulaAddr != "" {
+		base = "https://" + src.NebulaAddr
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/fed/v1/blob/"+url.PathEscape(cid), nil)
 	if err != nil {
 		return nil, err
 	}

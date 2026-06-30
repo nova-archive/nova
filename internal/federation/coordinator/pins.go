@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/federation/tokens"
 	"github.com/nova-archive/nova/internal/federation/wire"
@@ -140,7 +141,7 @@ func (s *Server) handleChanges(w http.ResponseWriter, r *http.Request) {
 			Generation: row.Generation, Kind: row.Kind, CID: row.Cid, ByteSize: row.ByteSize,
 		}
 		if row.Kind == wire.ChangeKindAssign && s.signer != nil {
-			if src := s.mintSource(changes[i], node, now); src != nil {
+			if src := s.mintForChange(ctx, changes[i], row.SourceNodeID, node, now); src != nil {
 				changes[i].Source = src
 			}
 		}
@@ -210,11 +211,21 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "snapshot")
 		return
 	}
+	now := time.Now()
 	items := make([]wire.SnapshotItem, len(rows))
 	for i, row := range rows {
 		items[i] = wire.SnapshotItem{
 			CID: row.Cid, AssignmentID: uuid.UUID(row.AssignmentID.Bytes).String(),
 			Generation: row.Generation, ByteSize: row.ByteSize, AssignedAt: row.AssignedAt.Format(time.RFC3339),
+		}
+		// Snapshot recovery must learn the repair source too (D-M5-8a): a donor that
+		// recovers via snapshot after change-log retention would otherwise never know
+		// its source. Reuse the same late-mint as /pins/changes via a synthetic change.
+		if s.signer != nil {
+			synth := wire.PinChange{AssignmentID: items[i].AssignmentID, Generation: row.Generation, CID: row.Cid, ByteSize: row.ByteSize}
+			if src := s.mintForChange(ctx, synth, row.SourceNodeID, node, now); src != nil {
+				items[i].Source = src
+			}
 		}
 	}
 	nextCursor := ""
@@ -351,6 +362,72 @@ func (s *Server) setSyncState(ctx context.Context, node uuid.UUID, state string)
 	if err := s.q.SetNodeSyncState(ctx, gen.SetNodeSyncStateParams{ID: pgUUIDFrom(node), AssignmentSyncState: state}); err != nil {
 		slog.Warn("fed.syncstate.update_failed", "node_id", node, "state", state, "err", err)
 	}
+}
+
+// mintForChange builds the repair-source grant for an assign change (D-M5-8a). A
+// NULL stored source_node_id ⇒ coordinator-as-source (the D-M5-8b emergency path
+// also lands here, since a local-recoverable CID with no donor source is scheduled
+// with a NULL source); a non-NULL source ⇒ donor-as-source, late-bound to the
+// source's CURRENT address.
+func (s *Server) mintForChange(ctx context.Context, ch wire.PinChange, storedSource pgtype.UUID, dest uuid.UUID, now time.Time) *wire.ChangeSource {
+	if !storedSource.Valid {
+		return s.mintSource(ch, dest, now)
+	}
+	return s.mintDonorSource(ctx, ch, storedSource, dest, now)
+}
+
+// mintDonorSource resolves the donor source's current address + acked assignment
+// and mints a donor↔donor grant whose Source claim names the SOURCE's acked
+// assignment (D-M5-8e) and whose Dest* fields bind THIS pending assignment. If the
+// stored source is no longer repair-sourceable, it requeues with backoff (never
+// silently substitutes) and returns nil for this serve — the scheduler re-picks
+// once the backoff elapses (D-M5-8a).
+func (s *Server) mintDonorSource(ctx context.Context, ch wire.PinChange, storedSource pgtype.UUID, dest uuid.UUID, now time.Time) *wire.ChangeSource {
+	if s.cfg.RepairTokenTTL <= 0 {
+		return nil
+	}
+	src, err := s.q.GetRepairSource(ctx, gen.GetRepairSourceParams{ID: storedSource, Cid: ch.CID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		if rqErr := s.q.RequeuePinAssignmentSource(ctx, gen.RequeuePinAssignmentSourceParams{
+			Cid: ch.CID, NodeID: pgUUIDFrom(dest),
+		}); rqErr != nil {
+			slog.Warn("fed.repair.requeue_failed", "cid", ch.CID, "err", rqErr)
+		}
+		slog.Info("fed.repair.source_unsourceable_requeued", "cid", ch.CID, "dest", dest)
+		return nil
+	}
+	if err != nil {
+		slog.Warn("fed.repair.source_lookup_failed", "cid", ch.CID, "err", err)
+		return nil
+	}
+	jti, err := uuid.NewRandom()
+	if err != nil {
+		return nil
+	}
+	// Donor source: clamp NotBefore only to now-skew. The SOURCE donor enforces its
+	// OWN boot floor; the coordinator's sourceBootTime is irrelevant for a donor grant.
+	nb := now.Add(-5 * time.Second)
+	sourceID := uuid.UUID(storedSource.Bytes).String()
+	tok, err := s.signer.Mint(wire.Claims{
+		JTI:              jti.String(),
+		AssignmentID:     uuid.UUID(src.AssignmentID.Bytes).String(), // SOURCE's acked assignment
+		Generation:       src.Generation,
+		CID:              ch.CID,
+		SourceNodeID:     sourceID,
+		DestNodeID:       dest.String(),
+		NotBefore:        nb.Unix(),
+		NotAfter:         now.Add(s.cfg.RepairTokenTTL).Unix(),
+		MaxBytes:         ch.ByteSize,
+		ProtocolVersion:  wire.ProtocolV1,
+		DestAssignmentID: ch.AssignmentID, // THIS (destination's) pending assignment
+		DestGeneration:   ch.Generation,
+	})
+	if err != nil {
+		slog.Warn("fed.repair.mint_failed", "cid", ch.CID, "err", err)
+		return nil
+	}
+	slog.Info("fed.repair.minted", "cid", ch.CID, "source", sourceID, "dest", dest)
+	return &wire.ChangeSource{NodeID: sourceID, NebulaAddr: src.SourceNebulaAddr.String, Token: tok}
 }
 
 // mintSource builds a fresh coordinator-as-source grant for a pending assign
