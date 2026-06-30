@@ -372,6 +372,13 @@ type Querier interface {
 	// Throttled by caller; only update when last_accessed_at is stale or NULL.
 	TouchLastAccessed(ctx context.Context, arg TouchLastAccessedParams) error
 	TouchUploadTokenUsed(ctx context.Context, id pgtype.UUID) error
+	// Atomic once-per-window gate for a scoped webhook event (D-M5-9a). Returns a row
+	// (fired) iff no row existed or the window has elapsed since last_fired_at, recording
+	// the new fire time in the same statement; returns NO row (ErrNoRows ⇒ suppressed)
+	// when still inside the window. window_seconds=0 always fires (e.g. node_revoked,
+	// which is deduped upstream by revoked_signaled_at). Durable, so once-per-window
+	// survives a coordinator restart.
+	TryFireSuppression(ctx context.Context, arg TryFireSuppressionParams) (string, error)
 	// Heartbeat is the canonical liveness path (D-M5-4a-LIVENESS-SIGNAL): besides
 	// refreshing telemetry it reactivates a suspect/unreachable node. A node returning
 	// from unreachable had pending divergence, so it re-enters 'reconciling' and does

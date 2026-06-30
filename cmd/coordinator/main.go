@@ -490,7 +490,29 @@ func run() error {
 			EvictedAfter:       time.Duration(fed.EvictedAfterSeconds) * time.Second,
 		}
 		sched := orchestrator.NewScheduler(pool, orchestrator.SchedulerConfig{Targets: targets, ReputationFloor: 0.5})
-		orch := orchestrator.NewOrchestrator(pool, liveness, sched, notify.NoopNotifier{},
+
+		// Webhook dispatcher (P2-M5): best-effort, signed-when-configured, durably
+		// scoped-suppressed. Honored only when not paranoid (privacy posture).
+		var notifier notify.Notifier = notify.NoopNotifier{}
+		if len(opCfg.Webhooks) > 0 && !opCfg.Auth.Paranoid {
+			dests := make([]notify.Destination, 0, len(opCfg.Webhooks))
+			for _, wh := range opCfg.Webhooks {
+				var secret []byte
+				if wh.Secret != "" {
+					if b, rerr := os.ReadFile(wh.Secret); rerr != nil {
+						slog.Warn("webhook secret_file unreadable; sending unsigned", "url", wh.URL, "err", rerr)
+					} else {
+						secret = []byte(strings.TrimSpace(string(b)))
+					}
+				}
+				dests = append(dests, notify.Destination{URL: wh.URL, Events: wh.Events, Secret: secret})
+			}
+			notifier = notify.NewBestEffortHTTP(dests, notify.NewDBSuppressor(pool), notify.Options{
+				MassCasualtyWindow: time.Duration(opCfg.Orchestrator.MassCasualtyWindowSeconds) * time.Second,
+			})
+			slog.Info("federation webhook dispatcher enabled", "destinations", len(dests))
+		}
+		orch := orchestrator.NewOrchestrator(pool, liveness, sched, notifier,
 			time.Duration(opCfg.Orchestrator.TickIntervalSeconds)*time.Second)
 		return runBoth(ctx, c.Run, fedSrv.Run, func(ctx context.Context) error { orch.Run(ctx); return nil })
 	}
