@@ -583,3 +583,74 @@ unsourceable stored source is requeued with backoff (never silently substituted)
 so a long-offline donor recovering via snapshot after change-log retention still
 learns its repair source (`pin_assignments.source_node_id` is the durable binding;
 `pin_changes.source_node_id` is the incremental copy).
+
+---
+
+## P2-M6 amendment — possession audits (as-built, D-M6-4)
+
+### Audit endpoint (donor inbound — coordinator control traffic)
+
+The coordinator's possession-audit scheduler (`internal/audit/possession`) calls a
+new endpoint on the donor's inbound mTLS server (`internal/node/source/server.go`):
+
+```
+POST /fed/v1/audit/challenge          (coordinator → donor, mTLS)
+
+{
+  "challenge_id":   "<uuid>",         -- also the pin_audits.id (PK)
+  "challenge_kind": "block_hash",
+  "blob_cid":       "bafy...",
+  "assignment_id":  "<uuid>",
+  "generation":     7,
+  "block_index":    17,
+  "block_cid":      "bafkrei...",
+  "block_size":     262144,           -- bytes; donor length-checks the response
+  "nonce":          "<base64>"
+}
+
+200  <raw block bytes>                -- block present; length-capped at block_size
+404                                   -- block absent / assignment stale (clean fail)
+```
+
+**Authorization model — coordinator control traffic only.**
+Unlike `GET /fed/v1/blob/{cid}` (which accepts `RoleCoordinator` *or* `RoleNode`
+for donor↔donor repair), the audit route is **strictly coordinator-gated**:
+- Peer certificate role MUST be `RoleCoordinator`; `RoleNode` is refused.
+- **No repair token required or accepted** — mTLS coordinator identity plus
+  assignment binding is the full authorization. This is control traffic, not a
+  budgeted byte transfer.
+- A handler-level timeout shorter than the coordinator's deadline ensures the
+  coordinator's `received_at` stamp is the binding decision.
+- A per-node concurrency cap prevents audit amplification.
+- The donor-side **audit egress governor** (`possession_audit.audit_budget_fraction`,
+  default 1 % of daily budget) gates the block read before any bytes are served;
+  an over-budget audit returns an appropriate error and the coordinator records
+  `skip` with `audit_budget_exhausted`.
+
+**Verification.** The coordinator verifies the returned block bytes by
+reconstructing the CID from the stored prefix — codec/version/mhtype-agnostic,
+no coordinator local copy required (M4.1 removed that guarantee):
+
+```
+stored      := cid.Decode(block_cid)
+recomputed  := stored.Prefix().Sum(returnedBytes)
+pass        := recomputed == stored
+```
+
+**Capability.** Donors that implement this endpoint advertise
+**`audit-block-hash/v1`** in the `capabilities` field of `POST /fed/v1/register`
+(and in the register example above). The coordinator only issues challenges to
+donors advertising this capability. The whole-blob `envelope_round_trip` kind and
+its capability are **not implemented in M6** (deferred to P2-M7).
+
+**Assignment binding (D-M6-4-BIND).** The challenge carries `assignment_id` and
+`generation`; the donor verifies all of:
+1. Local `FileProgressStore` entry for `blob_cid` is `AckDelivered`.
+2. Progress `assignment_id` matches the challenge.
+3. Progress `generation` matches the challenge.
+4. `ipfsclient.Has(blob_cid)` — recursive pin, not stray blockstore residue.
+5. `BlockGetLocal(block_cid)` succeeds — local-only (`offline=true`; no Bitswap).
+6. Returned block length equals `block_size` from the challenge.
+
+Any failure of 1–4 or a clean block absence → `404`. Block present but conditions
+1–4 failing → `fail` for that pin (not a pass on orphaned residue).

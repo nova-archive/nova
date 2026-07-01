@@ -1,7 +1,9 @@
 # Possession Audit
 
-Status: **Phase 2 deliverable v2, normative.** `internal/audit/possession`
-must conform exactly when Phase 2 federation is implemented.
+Status: **Implemented (P2-M6, 2026-06-29).** `internal/audit/possession` is
+the normative implementation. Design:
+`docs/superpowers/specs/phase2/2026-06-29-phase2-m6-possession-audits-design.md`.
+Plan: `docs/superpowers/plans/phase2/2026-06-29-phase2-m6-possession-audits.md`.
 
 > **Amended by P2-M0 (2026-06-13)** — the challenge deadline is decided by
 > **coordinator receive-time**, not the donor-supplied `completed_at` (D10); a
@@ -9,6 +11,30 @@ must conform exactly when Phase 2 federation is implemented.
 > (the two-call form is a documented fallback); sampling is **weighted by
 > stored bytes / pin count / node age / risk**, not flat per node. See
 > `docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
+
+> **Amended by P2-M6 (2026-06-29) — implemented.** The response carries
+> **block bytes** (not a digest); verification is **CID reconstruction**
+> (`stored.Prefix().Sum(returnedBytes).Equals(stored)`) — M4.1 removed the
+> coordinator's guaranteed local copy so digest-only responses are unverifiable.
+> The challenge carries `assignment_id`/`generation`/`block_size` and is
+> **assignment-bound**: the donor verifies its local `FileProgressStore` entry +
+> recursive pin before returning the block (`BlockGetLocal`, local-only /
+> `offline=true`; no Bitswap fetch). A **domain-separated, length-prefixed
+> transcript digest** (`"NOVA-POSSESSION-AUDIT-v1" || 0x00 || lp(challenge_id)
+> || lp(blob_cid) || lp(assignment_id) || uint64be(generation) || lp(block_cid)
+> || uint64be(block_index) || uint64be(block_size) || lp(nonce) || lp(block_bytes)`)
+> is recorded in `pin_audits.transcript_hash` (D-M6-3a). `received_at` is the
+> coordinator receive-time (NULL on timeout; deadline basis; D10); `decided_at`
+> is always set (pass/fail/skip/timeout) and is the indexing/operator-query
+> column; both added by migration `0015`. **Synchronous-only is the final
+> design**: the two-call `/fed/v1/audit/response` form and `envelope_round_trip`
+> challenge kind are **not implemented** (deferred to P2-M7). A hard failure
+> (`404` / CID mismatch) **invalidates the specific `pin_assignments` row**
+> (`state='failed'`) and enqueues reconcile, correcting M5 acked-only durability;
+> a soft failure (deadline exceeded) does not. The donor has a **separate audit
+> egress governor** (default 1 % of daily budget; `possession_audit.audit_budget_fraction`);
+> governor exhaustion is a `skip`, never a `fail`. Canonical webhook event:
+> **`federation.node_suspect`** (this spec's `node.suspect` is the alias).
 
 ## Purpose
 
@@ -165,8 +191,8 @@ Each result updates the donor's `reputation_score` (column on the
 A node whose reputation drops below `reputation_floor` (default 0.5
 — operator configurable in `operator.yaml`) is excluded from new
 pin assignments. Persistent failures (e.g., score < 0.1 for 24
-hours) trigger a `node.suspect` webhook and may justify operator-
-initiated revocation.
+hours) trigger a `federation.node_suspect` webhook (alias: `node.suspect`)
+and may justify operator-initiated revocation.
 
 ## Anti-cheat: source-bound repair tokens
 
@@ -238,7 +264,9 @@ CREATE TABLE pin_audits (
     bytes_verified    bigint,
     error             text,
     challenged_at     timestamptz NOT NULL DEFAULT now(),
-    received_at       timestamptz,         -- P2-M0 D10: coordinator receive-time; AUTHORITATIVE for the deadline
+    received_at       timestamptz,         -- P2-M6 migration 0015: coordinator receive-time; NULL on timeout; AUTHORITATIVE for deadline (D10)
+    decided_at        timestamptz,         -- P2-M6 migration 0015: always set (pass/fail/skip/timeout); indexing / operator-query column (D-M6-2a)
+    transcript_hash   bytea,               -- P2-M6 migration 0015: domain-separated, length-prefixed audit digest (D-M6-3a)
     completed_at      timestamptz          -- donor-supplied; ADVISORY only, never the deadline basis (D10)
 );
 ```
@@ -246,8 +274,15 @@ CREATE TABLE pin_audits (
 > **P2-M0 note (D10).** `received_at` (coordinator receive-time) is the
 > authoritative deadline basis; donor `completed_at` is advisory. Sampling
 > weight (stored bytes / pin count / node age / risk) is computed from existing
-> `nodes` / `pin_assignments` counts, not new columns. The live DDL ships as a
-> new Phase 2 migration in P2-M3; Phase 1 migrations stay frozen.
+> `nodes` / `pin_assignments` counts, not new columns.
+>
+> **P2-M6 note (migration 0015).** `received_at`, `decided_at`, and
+> `transcript_hash` were added by migration `0015` (P2-M6). `decided_at` is
+> always set (unlike `received_at`, which is NULL on timeout) and is the
+> column to query for audit history. `transcript_hash` stores the
+> `"NOVA-POSSESSION-AUDIT-v1"` domain-separated digest (D-M6-3a). The
+> `nodes` table also received `trust_epoch_started_at`,
+> `trust_review_required_at`, and `trust_review_reason` in the same migration.
 
 ## What this does not protect against
 

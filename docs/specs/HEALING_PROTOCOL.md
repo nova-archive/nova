@@ -17,6 +17,22 @@ effectiveness) are baked into the parameters below.
 > projection instead of per-tick full scans. See
 > `docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
 
+> **Amended by P2-M6 (2026-06-29)** — `reputation_score` now **moves**:
+> possession audits (`internal/audit/possession`) increment it on pass,
+> decay it on soft failure (deadline), halve it on hard failure (404 /
+> not-present), and zero it on hash mismatch. Audit recency feeds into source
+> selection ordering only as a **bounded preference** (the existing
+> `reputation_score`-ordered `ListSourceableHolders` / `ListRepairSourceHolders`
+> queries already carry it; no new countability term, no direct audit-recency
+> term in the placement engine — D-M6-9). Acked-only countability
+> (`assignment_sync_state='current'`) is **unchanged** from M5. A node below
+> `reputation_floor` is excluded from new placement but its existing acked pins
+> remain countable unless a pin-specific hard audit failure explicitly invalidates
+> that row (`pin_assignments.state → 'failed'`); bulk re-replication of
+> below-floor replicas is **deferred to P2-M7**. See
+> `docs/superpowers/specs/phase2/2026-06-29-phase2-m6-possession-audits-design.md`
+> § D-M6-7 and D-M6-9.
+
 ## Purpose
 
 When a federation loses donor nodes — to a hosting provider purge, a
@@ -378,8 +394,8 @@ shows the runway sliding toward the floor.
 ## Reputation and audit-aware placement
 
 `reputation_score` (0.0 to 1.0) is updated by Phase 2 possession
-audits (see `POSSESSION_AUDIT.md`). The orchestrator uses it in two
-places:
+audits (implemented in P2-M6; `internal/audit/possession` —
+see `POSSESSION_AUDIT.md`). The orchestrator uses it in two places:
 
 1. **Source selection.** Higher-reputation holders are weighted
    more heavily. A node with score 0.5 carries half as much
@@ -416,8 +432,11 @@ replica purely for homogeneity — a hard ceiling could block healing into the
 only surviving capacity during a casualty.
 
 A node whose reputation drops below an operator-configured floor
-(default 0.5) is excluded from new assignments and any acked pins
-are scheduled for re-replication.
+(default 0.5) is excluded from new assignments. Existing acked pins
+on a below-floor node remain countable unless a pin-specific hard
+audit failure invalidates the individual `pin_assignments` row; bulk
+re-replication of below-floor replicas is deferred to P2-M7
+(D-M6-7).
 
 ## Empirical thresholds
 

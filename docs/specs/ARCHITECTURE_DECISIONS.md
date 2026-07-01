@@ -85,6 +85,7 @@ cannot opt out.
 | T1.14 | Tier 1 healing (CIDs at one **acked** pin) takes strict priority over Tier 2; no interleaving. **(P2-M0)** Durability is **acked-only** — pending assignments are never durable and never lift a CID out of Tier 1. | `HEALING_PROTOCOL.md` § "Why Tier 1 is strict" |
 | T1.29 | **(P2-M0)** Replica placement applies operator-verified **failure-domain anti-affinity** as a **soft preference (never a veto)**, and steady-state placement weight is **decoupled from donor bandwidth** (bandwidth governs repair-source selection only). Self-declared geo is informational. | `HEALING_PROTOCOL.md` § "Reputation and audit-aware placement"; phase6 resilience design |
 | T1.30 | **(P2-M0)** Donor `trust_state` (`probationary`/`trusted`/`suspended`), orthogonal to liveness and reputation, caps `placement_weight`; a **probationary node is never the sole or second copy of `important`-class data**. | `HEALING_PROTOCOL.md` § "Reputation and audit-aware placement" |
+| T1.32 | **(P2-M6)** **Trust-graduation policy.** `probationary→trusted` (automatic) iff epoch age ≥ `graduate_min_age` ∧ passed-audits ≥ `graduate_min_passed_audits` ∧ acked-transfers ≥ `graduate_min_acked_transfers` ∧ reputation ≥ `graduate_min_reputation` ∧ `trust_review_required_at IS NULL` — all counts since `trust_epoch_started_at`. `trusted→probationary` (automatic) when `reputation_score < reputation_floor`. **`suspended` is operator-controlled only** (`novactl node trust suspend\|unsuspend`; no single audit ever auto-suspends). A hash-mismatch sets `trust_review_required_at` and resets `trust_epoch_started_at = now()`, blocking auto-graduation until `novactl node trust clear-review` clears the marker. | `POSSESSION_AUDIT.md`; `docs/superpowers/specs/phase2/2026-06-29-phase2-m6-possession-audits-design.md` § D-M6-8 |
 
 ### IPFS hardening
 
@@ -130,6 +131,12 @@ v3 and `HEALING_PROTOCOL.md` v3 spec bumps as the implementation gates. See
 upload-token credential) as part of the off-origin widget work, alongside the
 first-class CORS layer and upload admission limits recorded in Tier 2. See
 `docs/superpowers/specs/phase2/2026-06-13-m0.3-offorigin-widget-design.md`.
+
+**P2-M6 (2026-06-29)** added `T1.32` (trust-graduation policy: automatic
+`probationary↔trusted` transitions driven by possession-audit evidence and
+reputation; operator-only `suspended`). See
+`docs/superpowers/specs/phase2/2026-06-29-phase2-m6-possession-audits-design.md`
+§ D-M6-8.
 
 **P2-M0.4 (2026-06-14)** added the runtime config backend to Tier 2: the
 operator-only `GET`/`PATCH`/`PUT /api/v1/admin/config` API, atomic

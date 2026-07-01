@@ -534,14 +534,24 @@ now specified, and records which earlier statements in this document it
   they graduate on age + successful transfers + passed audits. This corrects the
   `VOLUNTEER_DEPLOYMENT_GUIDANCE.md` claim that same-owner nodes are
   auto-anti-affined — the schema had no owner identifier; Phase 2 adds one.
-- **I. Audit collusion / backdating.** A lying donor satisfies a possession
-  challenge via a co-located cache, a colluding fast peer, or by backdating its
-  self-reported `completed_at`. *Mitigation:* the deadline uses **coordinator
-  receive-time**, not donor-supplied time; the challenge is a **synchronous**
-  single round-trip the coordinator times; the repair transport is Ed25519-token-
-  gated and Bitswap-disabled, so a donor under audit cannot lawfully fetch the
-  block in-window. Honest framing: audits prove **timely retrievability under the
-  node identity**, *not* unique physical residency or independent failure domains.
+- **I. Audit collusion / backdating / replay (P2-M6, implemented).** A lying
+  donor satisfies a possession challenge via a co-located cache, a colluding fast
+  peer, or by backdating its self-reported `completed_at`; or a stale
+  `challenge_id` is replayed. *Mitigations (as implemented):*
+  - **Collusion** — the donor's audit handler calls `BlockGetLocal` with
+    `offline=true` (no Bitswap fetch); a donor that lacks the block locally
+    returns `404` even when a colluding peer holds it. The repair transport is
+    also Ed25519-token-gated and Bitswap-disabled, so in-window fetches are
+    structurally impossible on the authorized path.
+  - **Backdating** — structurally impossible in the synchronous design: the
+    donor sends no timestamp; the coordinator stamps `received_at` after reading
+    the full bounded response body, never using the donor-supplied `completed_at`.
+  - **Replay** — `challenge_id == pin_audits.id` (primary key); the coordinator
+    inserts the row *before* dispatch (`result=NULL`) and resolves it with
+    `UPDATE … WHERE result IS NULL`, so a duplicate insert conflicts and a
+    re-used challenge id can never double-insert.
+  Honest framing: audits prove **timely retrievability under the node identity**,
+  *not* unique physical residency or independent failure domains.
 - **J. Bandwidth exhaustion.** A coordinator bug or hostile schedule overshoots a
   donor's agreed budget, tripping its ISP/provider commercial-use heuristics — the
   exact harm boundary E already worries about. *Mitigation:* Tier-1 "no doomsday
@@ -557,8 +567,10 @@ now specified, and records which earlier statements in this document it
                           self-asserted JSON); capability-negotiated at register
  ⑤ donor ↔ donor       : mTLS + Ed25519 token (single-use, max_bytes, src/dst/gen)
  ⑥ donor budget        : donor-local token-bucket is the AUTHORITATIVE enforcer
- ⑦ possession audit    : coordinator-receive-time deadline; synchronous; Bitswap-
-                          disabled; sampling weighted by stored bytes / age / risk
+ ⑦ possession audit    : coordinator-receive-time deadline; synchronous;
+                          BlockGetLocal (offline=true, no Bitswap fetch → 404);
+                          replay-safe (insert-before-dispatch, PK conflict on replay);
+                          sampling weighted by stored bytes / age / risk (P2-M6)
  Placement anti-affinity keys on operator-verified failure_domain_id /
  donor_principal_id (④), not self-declared geo. trust_state caps placement weight.
 ```

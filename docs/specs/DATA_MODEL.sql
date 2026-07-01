@@ -550,12 +550,13 @@ CREATE TABLE pin_audits (
 CREATE INDEX pin_audits_node_result_idx ON pin_audits (node_id, result, challenged_at DESC);
 CREATE INDEX pin_audits_blob_idx ON pin_audits (blob_cid, challenged_at DESC);
 
--- P2-M0 (D10) — Phase 2 pin_audits deltas (COMMENTARY; live DDL in P2-M3):
+-- P2-M0 (D10) — Phase 2 pin_audits deltas (COMMENTARY; live DDL shipped in migration 0015 / P2-M6):
 --   ALTER TABLE pin_audits ADD COLUMN received_at timestamptz;  -- coordinator receive-time; AUTHORITATIVE for the deadline
 --   -- completed_at (above) is donor-supplied and ADVISORY only; the pass/fail
 --   -- deadline decision uses received_at, never completed_at (POSSESSION_AUDIT.md).
 --   -- Sampling is weighted by stored bytes / pin count / node age / risk,
 --   -- computed from nodes + pin_assignments counts (no new columns required).
+--   -- P2-M6 (migration 0015) additionally added decided_at and transcript_hash; see P2-M6 section below.
 
 -- ----------------------------------------------------------------------------
 -- Integrity audits (v2 — Phase 1 local fixity)
@@ -789,3 +790,52 @@ ALTER TABLE pin_assignments
 
 -- pin_changes: incremental copy of the repair source for change-log delivery + audit.
 ALTER TABLE pin_changes ADD COLUMN source_node_id uuid REFERENCES nodes(id);
+
+-- ============================================================================
+-- P2-M6 (migration 0015) — possession audits & reputation (as-built, D-M6-2)
+-- ============================================================================
+
+-- pin_audits: received_at / decided_at / transcript_hash (D-M6-2a, D-M6-3a).
+--
+--   received_at    — coordinator response receive-time; NULL on timeout; AUTHORITATIVE
+--                    deadline basis (D10). Never used for failure history (cannot anchor
+--                    what was never received).
+--   decided_at     — always set (pass / fail / skip / timeout); the indexing and
+--                    operator-query column. Use this for audit history; never received_at.
+--   transcript_hash — domain-separated, length-prefixed SHA-256 over challenge + block:
+--                    sha256("NOVA-POSSESSION-AUDIT-v1" || 0x00
+--                           || lp(challenge_id) || lp(blob_cid) || lp(assignment_id)
+--                           || uint64be(generation) || lp(block_cid)
+--                           || uint64be(block_index) || uint64be(block_size)
+--                           || lp(nonce) || lp(block_bytes))
+--                    where lp(x) = uint32be(len(x)) || x  (D-M6-3a).
+ALTER TABLE pin_audits
+    ADD COLUMN received_at      timestamptz,   -- NULL on timeout (D10)
+    ADD COLUMN decided_at       timestamptz,   -- always set; use for indexing / queries (D-M6-2a)
+    ADD COLUMN transcript_hash  bytea;         -- domain-separated audit transcript digest (D-M6-3a)
+
+-- nodes: trust-epoch and review marker for graduation evidence (D-M6-2b, D-M6-8).
+--
+--   trust_epoch_started_at   — evidence-counting anchor; graduation counts only
+--                              audits/transfers with timestamp ≥ this value.
+--                              Backfilled to joined_at for existing donors at M6
+--                              deploy (tenure is not restarted retroactively).
+--                              Reset to now() on hash-mismatch (trust clock restarts).
+--   trust_review_required_at — set by a hash-mismatch; blocks auto-graduation until
+--                              an operator runs `novactl node trust clear-review`.
+--   trust_review_reason      — human-readable reason surfaced to the operator.
+ALTER TABLE nodes
+    ADD COLUMN trust_epoch_started_at   timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN trust_review_required_at timestamptz,
+    ADD COLUMN trust_review_reason      text;
+
+-- Backfill: existing donors keep their tenure; epoch anchors to join time.
+-- UPDATE nodes SET trust_epoch_started_at = joined_at;  (executed in migration; shown for reference)
+
+-- EXPLAIN-gated indexes (D-M6-2c):
+CREATE INDEX pin_assignments_acked_at_idx
+    ON pin_assignments (acked_at) WHERE state = 'acked';         -- new-ack fast lane (D-M6-5b)
+CREATE INDEX pin_audits_recent_pass_node_blob_idx
+    ON pin_audits (node_id, blob_cid, received_at DESC) WHERE result = 'pass'; -- recent-pass tie-breaker (D-M6-9)
+CREATE INDEX pin_audits_recent_fail_node_idx
+    ON pin_audits (node_id, decided_at DESC) WHERE result = 'fail'; -- decided_at always set even on timeout (D-M6-2a)
