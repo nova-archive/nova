@@ -652,5 +652,5 @@ its capability are **not implemented in M6** (deferred to P2-M7).
 5. `BlockGetLocal(block_cid)` succeeds — local-only (`offline=true`; no Bitswap).
 6. Returned block length equals `block_size` from the challenge.
 
-Any failure of 1–4 or a clean block absence → `404`. Block present but conditions
+Any clean local block absence → `404`. Block present but any of conditions
 1–4 failing → `fail` for that pin (not a pass on orphaned residue).

@@ -74,14 +74,13 @@ to make donor acks meaningful, no more.
 
 ## Challenge protocol
 
-**Synchronous single-round-trip is the primary design (D10).** The coordinator
-issues the challenge and the donor returns `result_hash` **in the same HTTP
-response**; the coordinator measures latency and decides the deadline from its
+**Synchronous single-round-trip is the implemented design (D-M6-3).** The coordinator
+issues the challenge and the donor returns the **raw block bytes** in the same HTTP
+response; the coordinator measures latency and decides the deadline from its
 **own receive-time**, never from a donor-supplied timestamp (a lying donor would
-backdate it). The two-call form below (a separate `/audit/response` POST) is
-kept only as a documented fallback; even there, the deadline is decided by the
-coordinator's receive-time of the response, and any donor `completed_at` is
-advisory.
+backdate it). The two-call form (a separate `/audit/response` POST) is a
+**design-only fallback, not implemented in M6** (deferred to P2-M7); any
+donor `completed_at` is advisory and is never the deadline basis (D10).
 
 ### Challenge
 
@@ -95,48 +94,52 @@ Authorization: <coordinator's federation cert via mTLS>
 Content-Type: application/json
 
 {
-  "challenge_id": "01H8XYAB7KMQQ2GAQX1234567",
-  "blob_cid": "bafy...",
-  "block_index": 17,
-  "block_cid": "bafkrei...",
-  "nonce": "Bm7WkE2vQX5fK9aPzL3hYr6tNcU8sJoG",
-  "deadline": "2026-05-09T12:35:00Z"
+  "challenge_id":  "01H8XYAB7KMQQ2GAQX1234567",
+  "challenge_kind": "block_hash",
+  "blob_cid":      "bafy...",
+  "assignment_id": "7c9e...",
+  "generation":    1,
+  "block_index":   17,
+  "block_cid":     "bafkrei...",
+  "block_size":    262144,
+  "nonce":         "Bm7WkE2vQX5fK9aPzL3hYr6tNcU8sJoG"
 }
 ```
 
-`challenge_kind` (one of `block_hash`, `envelope_round_trip`):
+`challenge_kind`:
 
-- `block_hash` (default): donor returns `sha256(block_bytes || nonce)`.
-- `envelope_round_trip` (rarer; for whole-blob spot-checks): donor
-  returns the envelope bytes themselves; coordinator verifies the
-  CID matches.
+- `block_hash` (default; implemented): donor returns the **raw block bytes**;
+  coordinator verifies by CID reconstruction
+  (`stored.Prefix().Sum(returnedBytes).Equals(stored)`).
+- `envelope_round_trip` — **design-only, not implemented in M6** (deferred to P2-M7).
 
 ### Response
 
-The donor MUST respond from its local Kubo blockstore only:
+The donor responds **synchronously** to the `POST /fed/v1/audit/challenge`
+request with the raw block bytes:
 
 ```
-POST /fed/v1/audit/response
-Authorization: <donor's federation cert via mTLS>
-
-{
-  "challenge_id": "01H8XYAB7KMQQ2GAQX1234567",
-  "result_hash": "8e4c2a9f...",
-  "completed_at": "2026-05-09T12:34:42Z"
-}
+200  <raw block bytes>               # block present and assignment-bound; length == block_size
+404                                  # block absent, or assignment/generation stale (clean fail)
 ```
 
 Implementation requirements on the donor:
 
-- The audit handler MUST query its local Kubo blockstore directly.
-  It MUST NOT trigger a Bitswap fetch.
-- If the local blockstore does not have the block, the donor
-  responds with `404` and no `result_hash`. This is a clean
-  failure indication.
-- The donor's HTTP server returns the response within the deadline
-  or the coordinator times out. **The coordinator stamps the response
-  receive-time itself**; any donor-supplied `completed_at` is advisory and is
-  never used for the pass/fail deadline decision (D10).
+- The audit handler MUST query its local Kubo blockstore directly
+  (`BlockGetLocal`, `offline=true`). It MUST NOT trigger a Bitswap fetch.
+- If the block is absent locally, or if any of the assignment-binding checks
+  (conditions 1–6 in "Assignment Binding" above) fail, the donor responds
+  with `404`. This is the clean failure indication.
+- The donor's HTTP server returns within its handler timeout; the coordinator
+  stamps `received_at` after the full body read. **The coordinator uses its own
+  `received_at` for the deadline decision**; any donor-supplied `completed_at`
+  is advisory and is never the deadline basis (D10).
+
+> **Design-only fallback (not implemented in M6).** The original two-call form —
+> a separate `POST /fed/v1/audit/response` carrying `result_hash` — and the
+> `envelope_round_trip` challenge kind are **not implemented in M6** (deferred
+> to P2-M7). The synchronous single-round-trip on `POST /fed/v1/audit/challenge`
+> is the sole implemented protocol.
 
 ### Verification
 
@@ -146,19 +149,24 @@ The coordinator records the result in `pin_audits`:
 INSERT INTO pin_audits (
     blob_cid, node_id, challenge_kind, nonce, deadline,
     result, latency_ms, bytes_verified, error,
-    challenged_at, completed_at
+    challenged_at, received_at, decided_at, transcript_hash
 ) VALUES (...);
 ```
 
 `result`:
 
-- `pass` — `result_hash` matches `sha256(block_bytes || nonce)` AND the
-  coordinator **received** the response before the deadline (coordinator
-  receive-time, not the donor-supplied `completed_at`; D10).
-- `fail` — hash mismatch, deadline exceeded, donor returned 404, or
-  donor returned an error.
-- `skip` — the audit could not run (e.g., donor was `unreachable`
-  before challenge dispatch).
+- `pass` — CID reconstruction succeeds
+  (`stored.Prefix().Sum(returnedBytes).Equals(stored)`) AND the coordinator
+  **received** the full response before the deadline (`received_at ≤ deadline`;
+  coordinator receive-time, not the donor-supplied `completed_at`; D10). On a
+  pass, the domain-separated, length-prefixed transcript digest
+  (`"NOVA-POSSESSION-AUDIT-v1" || …`) is stored in `transcript_hash`; it is
+  **not** the wire response — it is computed coordinator-side for the audit record.
+- `fail` — CID mismatch, deadline exceeded, or donor returned `404`
+  (block absent or assignment stale). `received_at` is NULL on deadline
+  timeout; `decided_at` is always set.
+- `skip` — the audit could not run (e.g., donor was `unreachable` before
+  challenge dispatch, or the donor's audit governor was exhausted).
 
 ## Schedule and sampling
 
