@@ -249,6 +249,7 @@ func (s *Scheduler) auditOne(ctx context.Context, q *gen.Queries, nodeIDStr, cid
 		slog.Warn("audit.possession.insert_failed", "cid", cid, "err", err)
 		return
 	}
+	slog.Info("audit.possession.challenged", "node", nodeIDStr, "cid", target.BlobCID, "block", target.BlockCID)
 
 	// Dispatch with per-challenge timeout.
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.Deadline)
@@ -285,7 +286,23 @@ func (s *Scheduler) donorAddr(ctx context.Context, q *gen.Queries, nodeIDStr str
 }
 
 func (s *Scheduler) logOutcome(cid, nodeID string, res DispatchResult) {
-	slog.Info("audit.possession.outcome", "cid", cid, "node", nodeID, "outcome", res.Outcome)
+	switch res.Outcome {
+	case OutcomePass:
+		slog.Info("audit.possession.passed", "node", nodeID, "cid", cid)
+	case OutcomeFailDeadline:
+		slog.Info("audit.possession.failed", "node", nodeID, "cid", cid, "reason", "deadline")
+	case OutcomeFailNotPresent:
+		slog.Info("audit.possession.failed", "node", nodeID, "cid", cid, "reason", "not_present")
+	case OutcomeFailMismatch:
+		slog.Info("audit.possession.failed", "node", nodeID, "cid", cid, "reason", "mismatch")
+	case OutcomeSkipBudget:
+		slog.Info("audit.possession.skipped", "node", nodeID, "cid", cid, "reason", "budget_exhausted")
+		slog.Info("audit.governor.exhausted", "node", nodeID, "cid", cid)
+	case OutcomeSkipUnreachable:
+		slog.Info("audit.possession.skipped", "node", nodeID, "cid", cid, "reason", "unreachable")
+	default:
+		slog.Info("audit.possession.skipped", "node", nodeID, "cid", cid, "reason", "unknown")
+	}
 }
 
 // uuidNew generates a new random UUID string.

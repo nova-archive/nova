@@ -2,8 +2,10 @@ package possession
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/nova-archive/nova/internal/db/gen"
 )
@@ -35,10 +37,15 @@ func (a *Auditor) applyTrust(ctx context.Context, q *gen.Queries, nodeID pgtype.
 	if err != nil {
 		return err
 	}
+	nodeStr := uuid.UUID(nodeID.Bytes).String()
 	switch n.TrustState {
 	case "trusted":
 		if score < floor {
-			return q.SetTrustState(ctx, gen.SetTrustStateParams{ID: nodeID, TrustState: "probationary"})
+			if err := q.SetTrustState(ctx, gen.SetTrustStateParams{ID: nodeID, TrustState: "probationary"}); err != nil {
+				return err
+			}
+			slog.Info("audit.trust.demoted", "node", nodeStr, "reason", "below_floor", "score", score, "floor", floor)
+			return nil
 		}
 	case "probationary":
 		if n.TrustReviewRequiredAt.Valid {
@@ -60,7 +67,11 @@ func (a *Auditor) applyTrust(ctx context.Context, q *gen.Queries, nodeID pgtype.
 			return err
 		}
 		if passed >= a.trust.MinPassedAudits && xfers >= a.trust.MinAckedXfers {
-			return q.SetTrustState(ctx, gen.SetTrustStateParams{ID: nodeID, TrustState: "trusted"})
+			if err := q.SetTrustState(ctx, gen.SetTrustStateParams{ID: nodeID, TrustState: "trusted"}); err != nil {
+				return err
+			}
+			slog.Info("audit.trust.graduated", "node", nodeStr, "score", score)
+			return nil
 		}
 	}
 	return nil
