@@ -46,7 +46,10 @@ it claimed.
 Possession audits are challenge-response spot-checks. The
 coordinator picks a random recently-acked pin, designates a random
 block within the blob, sends a nonce, and demands the donor return
-the block's bytes hashed with the nonce within a tight deadline.
+the block's raw bytes within a tight deadline; the coordinator then
+verifies them by reconstructing the block CID (and records a
+domain-separated transcript hash over the exchange, computed
+coordinator-side — see D-M6-3/D-M6-3a).
 
 A donor that lies (acked but doesn't actually hold) cannot fetch
 the block on-demand from another peer fast enough to meet the
