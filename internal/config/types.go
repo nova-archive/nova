@@ -22,6 +22,19 @@ func (c *Config) DeprecationWarnings() []string {
 	return w
 }
 
+// EffectiveMetricsListenAddr resolves the D-M7-1 tri-state: nil → default
+// loopback listener enabled; explicit "" → disabled; otherwise that address.
+func (c *Config) EffectiveMetricsListenAddr() (string, bool) {
+	v := c.Coordinator.MetricsListenAddr
+	if v == nil {
+		return "127.0.0.1:2112", true
+	}
+	if *v == "" {
+		return "", false
+	}
+	return *v, true
+}
+
 type Config struct {
 	Operator       Operator       `yaml:"operator"`
 	TLS            TLS            `yaml:"tls"`
@@ -335,6 +348,13 @@ type Coordinator struct {
 	// paranoid preset fills it false). An explicit value always wins over the
 	// preset — see ApplyPrivacyPreset and docs/PRIVACY_AUDIT.md.
 	RecordSourceIP *bool `yaml:"record_source_ip,omitempty"`
+
+	// MetricsListenAddr (P2-M7, D-M7-1) binds the coordinator-only Prometheus
+	// /metrics listener — its own plane, never the public/admin/federation mux.
+	// Tri-state: nil = default 127.0.0.1:2112 (enabled, loopback); explicit ""
+	// = disabled (a deliberate operator act); any other value = that address.
+	// A bind failure while enabled is startup-fatal.
+	MetricsListenAddr *string `yaml:"metrics_listen_addr,omitempty"`
 
 	// CoordinatorStorageMode (P2-M4.1, D-M4.1-9) selects how the coordinator
 	// treats donor-fetched blobs on the read path:

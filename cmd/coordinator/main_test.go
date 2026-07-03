@@ -96,3 +96,43 @@ func TestApplyEnvOverridesAssemblyConcurrency(t *testing.T) {
 	_, ok := pins["uploads.max_concurrent_assembly"]
 	require.True(t, ok)
 }
+
+// TestResolveMetricsListenAddr pins the D-M7-1 runtime resolution across BOTH
+// config sources: env NOVA_METRICS_LISTEN_ADDR (LookupEnv — empty is a
+// meaningful "disabled") wins over yaml; the yaml tri-state applies when the
+// env is unset; the env-only deployment (opCfg == nil) gets the default.
+func TestResolveMetricsListenAddr(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+	cfgWith := func(v *string) *config.Config {
+		return &config.Config{Coordinator: config.Coordinator{MetricsListenAddr: v}}
+	}
+	envWith := func(v string, set bool) func(string) (string, bool) {
+		return func(k string) (string, bool) {
+			if k == "NOVA_METRICS_LISTEN_ADDR" && set {
+				return v, true
+			}
+			return "", false
+		}
+	}
+	cases := []struct {
+		name    string
+		cfg     *config.Config
+		env     func(string) (string, bool)
+		want    string
+		enabled bool
+	}{
+		{"env empty disables", cfgWith(strPtr("127.0.0.1:8888")), envWith("", true), "", false},
+		{"env addr wins over yaml", cfgWith(strPtr("127.0.0.1:8888")), envWith("127.0.0.1:9999", true), "127.0.0.1:9999", true},
+		{"yaml empty disables", cfgWith(strPtr("")), envWith("", false), "", false},
+		{"yaml addr", cfgWith(strPtr("127.0.0.1:8888")), envWith("", false), "127.0.0.1:8888", true},
+		{"env-only deployment defaults", nil, envWith("", false), "127.0.0.1:2112", true},
+		{"yaml key absent defaults", cfgWith(nil), envWith("", false), "127.0.0.1:2112", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			addr, enabled := resolveMetricsListenAddr(c.cfg, c.env)
+			require.Equal(t, c.want, addr)
+			require.Equal(t, c.enabled, enabled)
+		})
+	}
+}

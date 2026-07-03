@@ -77,6 +77,7 @@ import (
 	fedtransport "github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/federation/wire"
 	"github.com/nova-archive/nova/internal/ipfs"
+	"github.com/nova-archive/nova/internal/metrics"
 	"github.com/nova-archive/nova/internal/notify"
 	"github.com/nova-archive/nova/internal/orchestrator"
 	"github.com/nova-archive/nova/internal/secret"
@@ -393,6 +394,30 @@ func run() error {
 		}
 	}
 
+	// P2-M7 (D-M7-1): coordinator-only Prometheus plane on its OWN listener.
+	// Built as a runs slice so /metrics serves regardless of whether the
+	// federation listener is enabled (appending it only inside the federation
+	// branch would silently federation-gate observability). Bind happens HERE,
+	// synchronously — a bind failure while enabled is startup-fatal.
+	runs := []func(context.Context) error{c.Run}
+	var mtr *metrics.Metrics
+	if addr, enabled := resolveMetricsListenAddr(opCfg, os.LookupEnv); enabled {
+		floor := config.DefaultReputationFloor
+		if opCfg != nil {
+			floor = opCfg.Orchestrator.EffectiveReputationFloor()
+		}
+		mtr = metrics.New(pool, floor)
+		mln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("metrics_listen_addr: %w", err)
+		}
+		slog.Info("metrics listener bound", "listen", mln.Addr().String())
+		runs = append(runs, func(ctx context.Context) error {
+			return metrics.ServeListener(ctx, mln, mtr.Handler())
+		})
+	}
+	_ = mtr // event-site hook wiring consumes mtr below (Task 5)
+
 	// Federation control channel (P2-M2). Enabled when operator.yaml sets
 	// federation.listen_addr. Bound BEFORE serving so a dead federation listener
 	// fails startup rather than leaving the public coordinator silently up.
@@ -580,9 +605,25 @@ func run() error {
 			})
 			go psched.Run(ctx) // Run() already calls ReconcileOnStartup internally.
 		}
-		return runBoth(ctx, c.Run, fedSrv.Run, func(ctx context.Context) error { orch.Run(ctx); return nil })
+		runs = append(runs, fedSrv.Run, func(ctx context.Context) error { orch.Run(ctx); return nil })
 	}
-	return c.Run(ctx)
+	return runBoth(ctx, runs...)
+}
+
+// resolveMetricsListenAddr resolves the D-M7-1 listener across the env-only and
+// operator.yaml paths (loadOperatorConfigFile returns (nil, nil) on the env-only
+// deployment, so a Config method alone cannot decide). Precedence:
+// NOVA_METRICS_LISTEN_ADDR (LookupEnv — empty means DISABLED, which Getenv
+// cannot distinguish from unset) > yaml metrics_listen_addr (tri-state) >
+// default 127.0.0.1:2112 enabled.
+func resolveMetricsListenAddr(opCfg *config.Config, lookupEnv func(string) (string, bool)) (string, bool) {
+	if v, ok := lookupEnv("NOVA_METRICS_LISTEN_ADDR"); ok {
+		return v, v != ""
+	}
+	if opCfg != nil {
+		return opCfg.EffectiveMetricsListenAddr()
+	}
+	return "127.0.0.1:2112", true
 }
 
 // runBoth runs each function concurrently under a derived context. The exit of
