@@ -12,9 +12,11 @@
 operational drills with runbooks, the `drain`/`undrain` lifecycle primitive, and the
 final volunteer docs — no new replication policy.
 
-**Architecture:** Everything lands coordinator-side (plus docs). One forward-only
-migration (`0016`, `nodes.draining_at`); query edits split rigidly into safety-count
-vs placement vs selection; a new `internal/metrics` package on its own listener with
+**Architecture:** All new lifecycle/metrics/benchmark policy lands
+coordinator-side; donor-side work is limited to operational drill coverage and any
+required existing-fail-reason classification fix. One forward-only migration
+(`0016`, `nodes.draining_at`); query edits split rigidly into safety-count vs
+placement vs selection; a new `internal/metrics` package on its own listener with
 hook-based instrumentation seams; a `internal/benchcorpus` test-gated bench harness
 over the existing `dbtest` testcontainers substrate; drills extend the existing
 orchestrator/e2e test patterns.
@@ -54,7 +56,11 @@ Non-negotiable (ratified with Bug, 2026-07-03 review):
 House-wide invariants:
 
 - Donor dependency boundary: `scripts/check_node_deps.sh` stays green (and gains the
-  explicit prometheus deny, Task 6). **No new donor code in this milestone.**
+  explicit prometheus deny, Task 6). **No new donor protocol surface, donor metrics
+  dependency, or donor steady-state replication behavior.** Donor-side changes are
+  limited to release-hardening tests and, if required by the disk-full drill, a
+  narrow error-classification fix that maps ENOSPC to the already-defined wire
+  `out_of_space` reason (Task 10, caution 3).
 - Shipped migrations are frozen: never edit `internal/db/migrations/0001–0015`;
   `0016` is a new forward-only file appended to `MANIFEST.sha256`
   (`(cd internal/db/migrations && sha256sum 0016_node_draining.sql >> MANIFEST.sha256)`).
@@ -1072,45 +1078,55 @@ func resolveMetricsListenAddr(opCfg *config.Config, lookupEnv func(string) (stri
 }
 ```
 
-Wiring (next to the orchestrator/possession block; the pool and `opCfg` are in
-scope there). The reputation floor comes from `Orchestrator.EffectiveReputationFloor()`
-(the field is `Orchestrator.ReputationFloor` — NOT under `Replication`), with the
+Wiring uses the repo's ACTUAL concurrency idiom — `runBoth(ctx, runs...)`
+(`cmd/coordinator/main.go`: each runner in a goroutine, any exit cancels the rest).
+Build a runs slice so `/metrics` serves **regardless of whether the federation
+listener is enabled** (appending it only inside the federation branch would
+silently federation-gate observability). The reputation floor comes from
+`Orchestrator.EffectiveReputationFloor()` (the field is
+`Orchestrator.ReputationFloor` — NOT under `Replication`), with the
 `config.DefaultReputationFloor` fallback on the env-only path:
 
 ```go
 	// P2-M7 (D-M7-1): coordinator-only Prometheus plane. Bind failure is fatal.
-	var mtr *metrics.Metrics
+	// Bind BEFORE any goroutine; error out of startup on bind failure.
+	var runs []func(context.Context) error
+	runs = append(runs, c.Run)
+
 	if addr, enabled := resolveMetricsListenAddr(opCfg, os.LookupEnv); enabled {
 		floor := config.DefaultReputationFloor
 		if opCfg != nil {
 			floor = opCfg.Orchestrator.EffectiveReputationFloor()
 		}
-		mtr = metrics.New(pool, floor)
+		mtr := metrics.New(pool, floor)
 		mln, err := net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("metrics_listen_addr: %w", err)
 		}
-		g.Go(func() error { return metrics.ServeListener(ctx, mln, mtr.Handler()) })
+		runs = append(runs, func(ctx context.Context) error {
+			return metrics.ServeListener(ctx, mln, mtr.Handler())
+		})
+		// hook wiring (Task 5) references mtr here
 	}
-```
 
-> **Implementation note (caution 1):** match `main.go`'s actual error/goroutine
-> idiom — if it uses `errc <- run(ctx)` rather than an errgroup, expose
-> `metrics.ServeListener(ctx, ln, h)` (same as `ListenAndServe` but taking the
-> pre-bound listener) and start it the way the federation listener is started.
-> The invariant to preserve is only: **bind before any goroutine; error out of
-> startup on bind failure.**
+	// federation-enabled path: ALSO append fedSrv.Run + the orchestrator runner
+	// (today main.go:583 calls runBoth(ctx, c.Run, fedSrv.Run, ...) directly —
+	// refactor that call site onto the runs slice);
+	// non-federation path: still return runBoth(ctx, runs...) so /metrics serves.
+	return runBoth(ctx, runs...)
+```
 
 - [ ] **Step 5: Run to verify tests pass**
 
-Run: `go mod tidy && go test ./internal/metrics/ ./internal/config/ -v -count=1 && go build ./...`
-Expected: PASS; `go.mod` now lists `prometheus/client_golang` as direct.
+Run: `go mod tidy && go test ./internal/metrics/ ./internal/config/ ./cmd/coordinator/ -v -count=1 && go build ./...`
+Expected: PASS (including `TestResolveMetricsListenAddr` in `cmd/coordinator`);
+`go.mod` now lists `prometheus/client_golang` as direct.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add internal/metrics internal/config/types.go internal/config/operator_yaml.go \
-        cmd/coordinator/main.go go.mod go.sum
+        cmd/coordinator/main.go cmd/coordinator/main_test.go go.mod go.sum
 git commit -m "feat(p2-m7): coordinator-only Prometheus /metrics — dedicated loopback listener, DB-derived + process-local families, fatal bind (P2-M7)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -1338,10 +1354,17 @@ make bench-corpus                     # the real gate: fails on threshold miss
 committed `profiles["release"]` values are therefore always real, measured numbers,
 and the plain run is the enforceable gate.
 
-- [ ] **Step 5: Implement `explain_test.go`** — deterministic, small fixture, no
-  timing: for each hot query above, run `EXPLAIN (FORMAT JSON)` and assert the plan
-  uses an index (reject `Seq Scan` on `pin_assignments`/`blob_blocks`/`pin_audits`
-  for the keyed lookups; assert `nodes_draining_idx` serves `ListDrainingNodes`).
+- [ ] **Step 5: Implement `explain_test.go`** — deterministic, no timing: for each
+  hot query above, run `EXPLAIN (FORMAT JSON)` and assert the plan uses the
+  expected index (assert `nodes_draining_idx` serves `ListDrainingNodes`; reject
+  seq scans on `pin_assignments`/`blob_blocks`/`pin_audits` keyed lookups).
+  **Brittleness guard:** Postgres may legitimately choose a Seq Scan on a tiny
+  table even when the index is correct — seed enough rows to make the index path
+  plausible; accept `Index Scan` OR `Bitmap Index Scan` using the expected index
+  (never assert a single exact plan node); and if a tiny deterministic fixture
+  still seq-scans, either enlarge the fixture or use `SET LOCAL
+  enable_seqscan=off` inside the EXPLAIN-only test — with a comment that this
+  proves **index availability**, not planner cost.
 
 - [ ] **Step 6: Makefile + CI**
 
@@ -1528,10 +1551,16 @@ run_pairing() { # $1=coord-side (head|old) $2=donor-side (head|old)
   "$WORK/bin/$2-node" --config "$WORK/donor/node.yaml" & DONOR=$!
   # join:
   wait_sql "SELECT count(*) FROM nodes WHERE status='active' AND assignment_sync_state='current'" 1
-  # serve: assign one pin via the coordinator-side novactl and await the ack
-  seed_one_blob                                            # psql INSERT of a tiny fixture blob (helper below)
+  # replicate: assign one pin via the coordinator-side novactl and await the ack
+  seed_one_blob                                            # REAL readable object, not just SQL rows (see below)
   "$WORK/bin/$1-novactl" pin assign --cid "$XV_CID" --node "$XV_NODE"
   wait_sql "SELECT count(*) FROM pin_assignments WHERE state='acked'" 1
+  # serve: an ack is DB choreography, not proof the donor can serve bytes across
+  # the mixed-version path. Fetch the object through the coordinator read path,
+  # forcing/observing donor-backed read-source (prune the coordinator-local copy
+  # or run coordinator_storage_mode=transient so the read MUST come from the
+  # donor), and verify the returned bytes hash-match the seeded object:
+  serve_proof "$XV_CID" "$XV_SHA256"
   # audit: short cadence → one pass row
   wait_sql "SELECT count(*) FROM pin_audits WHERE result='pass'" 1
   if [ "$1" = head ]; then                                 # drain: HEAD coordinator ONLY
@@ -1549,8 +1578,18 @@ esac
 echo "OK: crossversion pairing(s) $PAIRING passed"
 ```
 
-> **Implementation note (caution 2):** `write_configs` and `seed_one_blob` are the
-> two helpers that must be filled against the REAL config schemas — generate each
+`seed_one_blob` must create a **real readable object, not just SQL rows**: the blob
+row, its manifest/envelope metadata, its `blob_blocks` rows, AND the actual bytes
+available to the coordinator/Kubo source path — exporting `XV_CID` and `XV_SHA256`
+(the expected content hash) for the `serve_proof` assertion. `serve_proof` fetches
+through the coordinator read path (or, alternatively, calls the donor read-source
+endpoint under a valid coordinator read grant) and fails unless the returned bytes
+match `XV_SHA256`. Otherwise the script can pass while proving only database
+choreography.
+
+> **Implementation note (caution 2):** `write_configs`, `seed_one_blob`, and
+> `serve_proof` are the helpers that must be filled against the REAL config
+> schemas and read path — generate each
 > side's `node.yaml`/compose from **that side's own** `novactl node nebula-template`
 > output (version-correct fields by construction) and sed in: loopback
 > `coordinator_url`, the Kubo API address, the issued cert paths, and a writable

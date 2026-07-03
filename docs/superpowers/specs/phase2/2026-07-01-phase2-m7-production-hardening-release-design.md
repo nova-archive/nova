@@ -11,7 +11,10 @@ cleanly.** The load-bearing work is *operational*: observability (Prometheus
 tests, failure drills with runbooks, and the final volunteer documentation. The
 **only new federation-lifecycle primitive** is `novactl node drain` (with its tiny
 inverse, `undrain`) — it exists because the existing revoke path is a safe
-*involuntary-loss* response but an unsafe *voluntary* decommission primitive.
+*involuntary-loss* response but an unsafe *voluntary* decommission primitive. All
+new lifecycle, metrics, and replacement policy is coordinator-side; donor-side
+work, if any, is limited to operational hardening tests and existing error-path
+classification needed for the disk-full drill.
 
 Normative floor: the P2-M0-amended specs in `docs/specs/` (`FEDERATION_PROTOCOL.md`,
 `HEALING_PROTOCOL.md`, `POSSESSION_AUDIT.md`, `DATA_MODEL.sql`,
