@@ -22,7 +22,7 @@ var nodeTemplates embed.FS
 // (revoke/rotate-cert/list) are added in a later task.
 func cmdNode(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: novactl node <ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|set-domain|nebula-template|trust>")
+		return fmt.Errorf("usage: novactl node <ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|set-domain|nebula-template|trust|drain|undrain>")
 	}
 	switch args[0] {
 	case "ca-init":
@@ -43,6 +43,10 @@ func cmdNode(args []string) error {
 		return cmdNodeNebulaTemplate(args[1:])
 	case "trust":
 		return cmdNodeTrust(args[1:])
+	case "drain":
+		return cmdNodeDrain(args[1:])
+	case "undrain":
+		return cmdNodeUndrain(args[1:])
 	default:
 		return fmt.Errorf("novactl node: unknown subcommand %q", args[0])
 	}
