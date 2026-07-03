@@ -34,6 +34,7 @@ type Querier interface {
 	// are held until commit. Served by dek_master_version_idx.
 	ClaimDEKsForRewrap(ctx context.Context, arg ClaimDEKsForRewrapParams) ([]ClaimDEKsForRewrapRow, error)
 	ClearModerationLegalHold(ctx context.Context, cid string) error
+	ClearNodeDraining(ctx context.Context, id pgtype.UUID) (int64, error)
 	ClearScheduledTombstone(ctx context.Context, cid string) error
 	// Operator clear-review: restart the epoch, drop the marker (D-M6-8).
 	ClearTrustReview(ctx context.Context, id pgtype.UUID) error
@@ -41,10 +42,28 @@ type Querier interface {
 	CountActiveSessionsByToken(ctx context.Context, uploadTokenID pgtype.UUID) (int64, error)
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
+	// Below-floor replica debt (D-M7-1a): acked replicas on live nodes below the
+	// reputation floor whose pins have not hard-failed. Mirrors healthy_acked
+	// COUNTABILITY (active/suspect + sync-current) — deliberately NO trust_state
+	// filter, because healthy_acked_count does not exclude suspended either; this
+	// metric is "still countable despite below-floor reputation", not read-source
+	// eligibility. Observability only — the automated remedy is P2-M6.1, NOT M7.
+	CountBelowFloorReplicas(ctx context.Context, floor float64) ([]CountBelowFloorReplicasRow, error)
 	CountBlobs(ctx context.Context, arg CountBlobsParams) (int64, error)
 	CountBlocklist(ctx context.Context) (int64, error)
 	CountDEKsForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
 	CountDMCACases(ctx context.Context) (int64, error)
+	// Replacement in progress but not acked: lets an operator distinguish "stuck"
+	// from "working" (D-M7-6f). Counts pending replacements ONLY on eligible
+	// destinations (non-draining, live/current, non-suspended, not the draining
+	// node itself) — a stale/dead pending row must not read as drain progress
+	// (the same reason liveness fails dead pendings). Pending still never reduces
+	// safe-to-revoke debt; this is "work in flight" only.
+	CountDrainInflightCIDs(ctx context.Context, nodeID pgtype.UUID) (int64, error)
+	// Drain debt (D-M7-6f): CIDs acked on the draining node whose count of acked,
+	// live, sync-current, NON-draining holders is below target_count. Pending
+	// reservations are NOT safe and do not reduce debt.
+	CountDrainPendingCIDs(ctx context.Context, nodeID pgtype.UUID) (int64, error)
 	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
 	CountModerationDecisions(ctx context.Context) (int64, error)
 	CountPassedAuditsSince(ctx context.Context, arg CountPassedAuditsSinceParams) (int64, error)
@@ -54,6 +73,8 @@ type Querier interface {
 	CountSigningKeysForVersion(ctx context.Context, masterKeyVersionID pgtype.UUID) (int64, error)
 	// Sourceable-holder count: acked pin + reachable + trusted + fresh + has read-source/v1 cap + has nebula addr.
 	// Called by commit/prune/read tiers to determine if donor-backed reads are viable.
+	// P2-M7 (D-M7-6b): a SAFETY count — draining nodes are excluded (they are
+	// leaving; commit/prune decisions must not lean on them).
 	CountSourceableHolders(ctx context.Context, arg CountSourceableHoldersParams) (int64, error)
 	// Creates a collection (owner_id must reference an existing user; the
 	// public_archival CHECK requires visibility='public'). Backs
@@ -148,6 +169,7 @@ type Querier interface {
 	GetManifestSize(ctx context.Context, cid string) (int64, error)
 	GetMasterVersionByLabel(ctx context.Context, versionLabel string) (MasterKeyVersion, error)
 	GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
+	GetNodeDrainState(ctx context.Context, id pgtype.UUID) (GetNodeDrainStateRow, error)
 	// The donor's inbound source address to POST the challenge to.
 	GetNodeSourceAddr(ctx context.Context, id pgtype.UUID) (pgtype.Text, error)
 	GetNodeTrust(ctx context.Context, id pgtype.UUID) (GetNodeTrustRow, error)
@@ -240,6 +262,7 @@ type Querier interface {
 	ListDerivativeCIDs(ctx context.Context, parentCid pgtype.Text) ([]string, error)
 	ListDesiredAssignmentsByCID(ctx context.Context, cid string) ([]ListDesiredAssignmentsByCIDRow, error)
 	ListDesiredAssignmentsByNode(ctx context.Context, nodeID pgtype.UUID) ([]ListDesiredAssignmentsByNodeRow, error)
+	ListDrainingNodes(ctx context.Context) ([]ListDrainingNodesRow, error)
 	// SLRU/2Q drain order: probationary oldest-first (false < true in Postgres boolean sort),
 	// then protected oldest-first. Limit provided by caller.
 	ListEvictionCandidates(ctx context.Context, lim int32) ([]ListEvictionCandidatesRow, error)
@@ -277,6 +300,8 @@ type Querier interface {
 	// be orphaned if left under the retiring version.
 	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
 	// Best-link sourceable holders: reputation desc, then id for stable rotation.
+	// P2-M7 (D-M7-6c): SELECTION, not a safety count — a draining node stays
+	// eligible while live, deprioritized by the prepended drain sort key.
 	ListSourceableHolders(ctx context.Context, arg ListSourceableHoldersParams) ([]ListSourceableHoldersRow, error)
 	// Reconciler input: staging rows + the blob's product, ordered oldest-first.
 	ListStagingBlobs(ctx context.Context, lim int32) ([]ListStagingBlobsRow, error)
@@ -410,6 +435,11 @@ type Querier interface {
 	// operator_verified_at=now() so the placement engine + concentration metrics trust
 	// its declared dimensions. DB-direct (novactl node set-domain).
 	SetNodeDomain(ctx context.Context, arg SetNodeDomainParams) (int64, error)
+	// P2-M7 (D-M7-6): voluntary graceful drain — marker + debt queries. Drain debt
+	// deliberately queries pin_assignments ⨝ nodes directly; it does NOT overload
+	// blob_replication_state.sourceable_acked_count (that is a safety count).
+	// One-shot; a second drain is a no-op here (idempotency: timestamp preserved).
+	SetNodeDraining(ctx context.Context, id pgtype.UUID) (int64, error)
 	SetNodeStatus(ctx context.Context, arg SetNodeStatusParams) error
 	SetNodeSyncState(ctx context.Context, arg SetNodeSyncStateParams) error
 	// Hash-mismatch path: reset epoch + mark for operator review (D-M6-2b).

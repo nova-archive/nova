@@ -40,6 +40,7 @@ const countSourceableHolders = `-- name: CountSourceableHolders :one
 SELECT count(*) FROM pin_assignments pa JOIN nodes n ON n.id = pa.node_id
 WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.status IN ('active','suspect') AND n.trust_state <> 'suspended'
+  AND n.draining_at IS NULL
   AND n.last_seen_at > now() - make_interval(secs => $2::float)
   AND n.advertised_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
@@ -52,6 +53,8 @@ type CountSourceableHoldersParams struct {
 
 // Sourceable-holder count: acked pin + reachable + trusted + fresh + has read-source/v1 cap + has nebula addr.
 // Called by commit/prune/read tiers to determine if donor-backed reads are viable.
+// P2-M7 (D-M7-6b): a SAFETY count — draining nodes are excluded (they are
+// leaving; commit/prune decisions must not lean on them).
 func (q *Queries) CountSourceableHolders(ctx context.Context, arg CountSourceableHoldersParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countSourceableHolders, arg.Cid, arg.StaleSecs)
 	var count int64
@@ -192,7 +195,7 @@ WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.last_seen_at > now() - make_interval(secs => $2::float)
   AND n.advertised_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
-ORDER BY n.reputation_score DESC, n.id
+ORDER BY (n.draining_at IS NOT NULL), n.reputation_score DESC, n.id
 `
 
 type ListSourceableHoldersParams struct {
@@ -209,6 +212,8 @@ type ListSourceableHoldersRow struct {
 }
 
 // Best-link sourceable holders: reputation desc, then id for stable rotation.
+// P2-M7 (D-M7-6c): SELECTION, not a safety count — a draining node stays
+// eligible while live, deprioritized by the prepended drain sort key.
 func (q *Queries) ListSourceableHolders(ctx context.Context, arg ListSourceableHoldersParams) ([]ListSourceableHoldersRow, error) {
 	rows, err := q.db.Query(ctx, listSourceableHolders, arg.Cid, arg.StaleSecs)
 	if err != nil {

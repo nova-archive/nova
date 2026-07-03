@@ -1054,6 +1054,7 @@ type Node struct {
 	TrustEpochStartedAt        time.Time
 	TrustReviewRequiredAt      pgtype.Timestamptz
 	TrustReviewReason          pgtype.Text
+	DrainingAt                 pgtype.Timestamptz
 }
 
 type PinAssignment struct {

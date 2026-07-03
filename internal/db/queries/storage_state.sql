@@ -1,15 +1,20 @@
 -- name: CountSourceableHolders :one
 -- Sourceable-holder count: acked pin + reachable + trusted + fresh + has read-source/v1 cap + has nebula addr.
 -- Called by commit/prune/read tiers to determine if donor-backed reads are viable.
+-- P2-M7 (D-M7-6b): a SAFETY count — draining nodes are excluded (they are
+-- leaving; commit/prune decisions must not lean on them).
 SELECT count(*) FROM pin_assignments pa JOIN nodes n ON n.id = pa.node_id
 WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.status IN ('active','suspect') AND n.trust_state <> 'suspended'
+  AND n.draining_at IS NULL
   AND n.last_seen_at > now() - make_interval(secs => sqlc.arg(stale_secs)::float)
   AND n.advertised_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> '';
 
 -- name: ListSourceableHolders :many
 -- Best-link sourceable holders: reputation desc, then id for stable rotation.
+-- P2-M7 (D-M7-6c): SELECTION, not a safety count — a draining node stays
+-- eligible while live, deprioritized by the prepended drain sort key.
 SELECT n.id AS node_id, pa.assignment_id, pa.generation, n.source_nebula_addr, n.reputation_score
 FROM pin_assignments pa JOIN nodes n ON n.id = pa.node_id
 WHERE pa.cid = $1 AND pa.state = 'acked'
@@ -17,7 +22,7 @@ WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.last_seen_at > now() - make_interval(secs => sqlc.arg(stale_secs)::float)
   AND n.advertised_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
-ORDER BY n.reputation_score DESC, n.id;
+ORDER BY (n.draining_at IS NOT NULL), n.reputation_score DESC, n.id;
 
 -- name: UpsertStorageStateStaging :exec
 -- Gate-on Put: insert staging row; ON CONFLICT re-opens a previously failed row.
