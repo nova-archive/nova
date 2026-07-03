@@ -20,11 +20,21 @@ ALLOWED=(
   "gopkg.in/yaml.v3"   # donor config parsing — the only third-party runtime dep
 )
 
+# P2-M7 (D-M7-1): metrics are coordinator-only. HARD DENY — even a future
+# allowlist broadening must not admit a metrics stack into the donor graph.
+DENIED_PREFIXES=("github.com/prometheus")
+
 deps="$(go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{end}}' ./cmd/node)"
 
 violations=()
 while IFS= read -r p; do
   [ -z "$p" ] && continue
+  for d in "${DENIED_PREFIXES[@]}"; do
+    case "$p" in "$d"|"$d"/*)
+      echo "FAIL: cmd/node imports HARD-DENIED package: $p (metrics are coordinator-only, D-M7-1)" >&2
+      exit 1 ;;
+    esac
+  done
   ok=0
   for a in "${ALLOWED[@]}"; do
     case "$p" in "$a"|"$a"/*) ok=1; break ;; esac
