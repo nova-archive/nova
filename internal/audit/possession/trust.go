@@ -45,6 +45,9 @@ func (a *Auditor) applyTrust(ctx context.Context, q *gen.Queries, nodeID pgtype.
 				return err
 			}
 			slog.Info("audit.trust.demoted", "node", nodeStr, "reason", "below_floor", "score", score, "floor", floor)
+			if a.obs != nil {
+				a.obs.TrustTransition("trusted", "probationary", "below_floor")
+			}
 			return nil
 		}
 	case "probationary":
@@ -71,6 +74,9 @@ func (a *Auditor) applyTrust(ctx context.Context, q *gen.Queries, nodeID pgtype.
 				return err
 			}
 			slog.Info("audit.trust.graduated", "node", nodeStr, "score", score)
+			if a.obs != nil {
+				a.obs.TrustTransition("probationary", "trusted", "graduated")
+			}
 			return nil
 		}
 	}

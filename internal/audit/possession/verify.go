@@ -29,7 +29,20 @@ type Auditor struct {
 	pool     *pgxpool.Pool
 	notifier notify.Notifier
 	trust    TrustConfig
+	obs      Observer
 }
+
+// Observer receives audit observability events (P2-M7, D-M7-1). Nil-safe
+// seam — this package never imports a metrics stack; cmd/coordinator adapts
+// it onto the Prometheus surface.
+type Observer interface {
+	TrustTransition(from, to, reason string)
+	ReputationMoved(direction string)
+	AuditLatency(seconds float64)
+}
+
+// SetObserver installs the observability hook (nil clears it).
+func (a *Auditor) SetObserver(o Observer) { a.obs = o }
 
 func NewAuditor(pool *pgxpool.Pool, n notify.Notifier, tc TrustConfig) *Auditor {
 	if n == nil {
@@ -115,6 +128,17 @@ func (a *Auditor) Record(ctx context.Context, t AuditTarget, res DispatchResult,
 			return err
 		}
 		slog.Info("audit.reputation.moved", "node", t.NodeID, "from", cur.ReputationScore, "to", newScore, "outcome", result)
+		if a.obs != nil {
+			switch {
+			case newScore > cur.ReputationScore:
+				a.obs.ReputationMoved("up")
+			case newScore < cur.ReputationScore:
+				a.obs.ReputationMoved("down")
+			}
+			if res.LatencyMS > 0 {
+				a.obs.AuditLatency(float64(res.LatencyMS) / 1000)
+			}
+		}
 
 		if hard {
 			// FailAckedPinAssignmentForAudit fails ONLY the acked row for this exact
@@ -140,9 +164,11 @@ func (a *Auditor) Record(ctx context.Context, t AuditTarget, res DispatchResult,
 			suspect = true
 		}
 		// Below-floor BULK re-replication is intentionally NOT done here (deferred to
-		// P2-M7, D-M6-7): below-floor excludes new placement + deprioritizes source
+		// P2-M6.1, D-M6-7): below-floor excludes new placement + deprioritizes source
 		// ordering, but present acked pins stay countable unless a pin-specific hard
-		// failure invalidated one above.
+		// failure invalidated one above. P2-M7 adds only observability
+		// (nova_below_floor_replica_debt), the runbook, and the explicit drain
+		// primitive — never an automated remedy.
 		return a.applyTrust(ctx, q, nodeID, float64(newScore), reputationFloor)
 	})
 	if err != nil {

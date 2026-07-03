@@ -52,6 +52,10 @@ type Service struct {
 	// EnableDonorReadSource. Set once at construction/boot; read-only thereafter.
 	donor *donorReadSource
 
+	// readObs is the P2-M7 (D-M7-1) donor-read observability seam. nil ⇒ no-op.
+	// Installed via SetReadObserver at boot; read-only thereafter.
+	readObs ReadObserver
+
 	// cache is the P2-M4.1 coordinator_storage_mode policy (size-aware SLRU/2Q
 	// bounded cache + transient unpin-on-close). nil ⇒ legacy behavior:
 	// donor-fetched bytes are admitted via the donor tier's AdmitToCache and

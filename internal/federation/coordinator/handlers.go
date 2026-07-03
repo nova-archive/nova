@@ -52,11 +52,17 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !slices.Contains(req.SupportedProtocols, wire.ProtocolV1) {
+		if s.cfg.OnRegisterFailure != nil {
+			s.cfg.OnRegisterFailure("incompatible_protocol")
+		}
 		writeError(w, http.StatusBadRequest, "incompatible_protocol", "no common fed/v1")
 		return
 	}
 	required := s.cfg.RequiredCapabilities
 	if missing, ok := wire.NegotiateCapabilities(req.Capabilities, required); !ok {
+		if s.cfg.OnRegisterFailure != nil {
+			s.cfg.OnRegisterFailure("missing_capability")
+		}
 		writeError(w, http.StatusBadRequest, "missing_capability", strings.Join(missing, ","))
 		return
 	}

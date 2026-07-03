@@ -246,6 +246,37 @@ func (s *Service) EnableDonorReadSource(clientTLS *tls.Config, signer *tokens.Si
 	s.donor = newDonorReadSource(newHTTPDonorFetcher(clientTLS), signer, s.q, cfg)
 }
 
+// ReadObserver receives donor-read observability events (P2-M7, D-M7-1).
+// Nil-safe seam — this package never imports a metrics stack; cmd/coordinator
+// adapts it onto the Prometheus surface. Reasons are the same bounded strings
+// the slog evidence set already uses.
+type ReadObserver interface {
+	Fetch(result, reason string, seconds float64)
+	EgressRefusal(reason string)
+	SelectionFailure(reason string)
+}
+
+// SetReadObserver installs the observability hook (nil clears it).
+func (s *Service) SetReadObserver(o ReadObserver) { s.readObs = o }
+
+func (s *Service) obsFetch(result, reason string, seconds float64) {
+	if s.readObs != nil {
+		s.readObs.Fetch(result, reason, seconds)
+	}
+}
+
+func (s *Service) obsEgressRefusal(reason string) {
+	if s.readObs != nil {
+		s.readObs.EgressRefusal(reason)
+	}
+}
+
+func (s *Service) obsSelectionFailure(reason string) {
+	if s.readObs != nil {
+		s.readObs.SelectionFailure(reason)
+	}
+}
+
 // setDonorReadSourceForTest installs a fully-faked donor tier (fetcher + signer
 // + querier) for white-box unit tests, with permissive containment defaults so
 // existing single-holder tests are unaffected. Production callers use
@@ -340,10 +371,12 @@ func (s *Service) selectAndFetch(ctx context.Context, v *BlobView) error {
 	})
 	if err != nil {
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "reason", "list_holders")
+		s.obsSelectionFailure("list_holders")
 		return ErrNoSourceableHolder
 	}
 	if len(holders) == 0 {
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "reason", "no_holders")
+		s.obsSelectionFailure("no_sourceable_holder")
 		return ErrNoSourceableHolder
 	}
 
@@ -387,6 +420,7 @@ func (s *Service) selectAndFetch(ctx context.Context, v *BlobView) error {
 	}
 
 	slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "reason", "all_holders_failed")
+	s.obsSelectionFailure("all_holders_failed")
 	return ErrNoSourceableHolder
 }
 
@@ -405,6 +439,7 @@ func (s *Service) attemptHolder(ctx context.Context, d *donorReadSource, v *Blob
 	grant, gerr := d.signer.MintReadGrant(nodeID, cidStr, assignmentID, h.Generation, envSize, d.cfg.TTL, now, now)
 	if gerr != nil {
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "mint_grant")
+		s.obsFetch("error", "mint_grant", time.Since(now).Seconds())
 		return gerr
 	}
 
@@ -415,6 +450,7 @@ func (s *Service) attemptHolder(ctx context.Context, d *donorReadSource, v *Blob
 	defer cancel()
 	if err := pdSem.Acquire(actx, 1); err != nil {
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "per_donor_limit")
+		s.obsFetch("error", "per_donor_limit", time.Since(now).Seconds())
 		return err
 	}
 	defer pdSem.Release(1)
@@ -422,7 +458,14 @@ func (s *Service) attemptHolder(ctx context.Context, d *donorReadSource, v *Blob
 	start := time.Now()
 	rc, ferr := d.fetcher.Fetch(actx, addr, cidStr, grant)
 	if ferr != nil {
+		if errors.Is(ferr, errDonorEgressRefused) {
+			slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "egress_refused")
+			s.obsEgressRefusal("egress_budget")
+			s.obsFetch("error", "egress_refused", time.Since(start).Seconds())
+			return ferr
+		}
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "fetch")
+		s.obsFetch("error", "fetch", time.Since(start).Seconds())
 		return ferr
 	}
 	// Bound the read at envelope_size+1 so an oversize body is detected (the
@@ -433,10 +476,12 @@ func (s *Service) attemptHolder(ctx context.Context, d *donorReadSource, v *Blob
 	rc.Close()
 	if rerr != nil {
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "read")
+		s.obsFetch("error", "read", time.Since(start).Seconds())
 		return rerr
 	}
 	if int64(len(body)) > envSize {
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "oversize")
+		s.obsFetch("error", "oversize", time.Since(start).Seconds())
 		return errors.New("donor body oversize")
 	}
 
@@ -449,11 +494,13 @@ func (s *Service) attemptHolder(ctx context.Context, d *donorReadSource, v *Blob
 	add, aerr := s.backend.AddDeterministic(ctx, body)
 	if aerr != nil {
 		slog.Info("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID, "reason", "import")
+		s.obsFetch("error", "import", time.Since(start).Seconds())
 		return aerr
 	}
 	if add.CID.String() != cidStr {
 		slog.Warn("storage.read.donor_fetch_failed", "cid", cidStr, "holder", nodeID,
 			"reason", "cid_mismatch", "got_cid", add.CID.String())
+		s.obsFetch("error", "cid_mismatch", time.Since(start).Seconds())
 		return errors.New("donor cid mismatch")
 	}
 
@@ -476,6 +523,7 @@ func (s *Service) attemptHolder(ctx context.Context, d *donorReadSource, v *Blob
 
 	slog.Info("storage.read.donor_fetch", "cid", cidStr, "holder", nodeID,
 		"bytes", len(body), "dur_ms", time.Since(start).Milliseconds())
+	s.obsFetch("ok", "none", time.Since(start).Seconds())
 	return nil
 }
 
@@ -494,6 +542,11 @@ func newHTTPDonorFetcher(clientTLS *tls.Config) *httpDonorFetcher {
 	}
 }
 
+// errDonorEgressRefused marks a donor 429 (egress budget exhausted) so the
+// read path can classify the refusal for observability (P2-M7, D-M7-1);
+// selection simply advances to the next holder as with any fetch failure.
+var errDonorEgressRefused = errors.New("donor egress refused")
+
 func (f *httpDonorFetcher) Fetch(ctx context.Context, addr, cidStr, grant string) (io.ReadCloser, error) {
 	u := "https://" + addr + "/fed/v1/blob/" + url.PathEscape(cidStr)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -504,6 +557,10 @@ func (f *httpDonorFetcher) Fetch(ctx context.Context, addr, cidStr, grant string
 	resp, err := f.hc.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp.Body.Close()
+		return nil, fmt.Errorf("donor fetch %s: %w", cidStr, errDonorEgressRefused)
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()

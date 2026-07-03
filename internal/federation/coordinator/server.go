@@ -40,6 +40,11 @@ type Config struct {
 	RepairTokenTTL       time.Duration
 	MaxTransferBytes     int64
 	SourceNebulaAddr     string
+
+	// OnRegisterFailure (P2-M7, D-M7-1) fires with the wire error code on each
+	// register rejection (incompatible_protocol / missing_capability). Nil-safe
+	// observability seam — this package never imports a metrics stack.
+	OnRegisterFailure func(reason string)
 }
 
 // TLSMaterial holds the PEM bytes for the federation listener.

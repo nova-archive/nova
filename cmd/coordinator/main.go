@@ -416,7 +416,9 @@ func run() error {
 			return metrics.ServeListener(ctx, mln, mtr.Handler())
 		})
 	}
-	_ = mtr // event-site hook wiring consumes mtr below (Task 5)
+	if mtr != nil {
+		c.Storage().SetReadObserver(metricsReadObserver{mtr})
+	}
 
 	// Federation control channel (P2-M2). Enabled when operator.yaml sets
 	// federation.listen_addr. Bound BEFORE serving so a dead federation listener
@@ -441,7 +443,7 @@ func run() error {
 		}
 		hb, poll, conc := fed.FederationTimers()
 		retention, prunePoll := fed.FederationRetention()
-		fedSrv := fedcoord.New(gen.New(pool), fedcoord.Config{
+		fedCfg := fedcoord.Config{
 			ListenAddr:           fed.ListenAddr,
 			RequiredCapabilities: []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer},
 			Timers:               wire.ConfigUpdates{HeartbeatIntervalSeconds: hb, PinsPollIntervalSeconds: poll, MaxPinConcurrency: conc},
@@ -451,7 +453,11 @@ func run() error {
 			RepairTokenTTL:       fed.RepairTokenTTL(),
 			MaxTransferBytes:     fed.MaxTransfer(),
 			SourceNebulaAddr:     fed.SourceNebulaAddr,
-		})
+		}
+		if mtr != nil {
+			fedCfg.OnRegisterFailure = mtr.ObserveRegisterFailure
+		}
+		fedSrv := fedcoord.New(gen.New(pool), fedCfg)
 		// Coordinator-as-source (P2-M4): load the Ed25519 repair-token signer and
 		// wire the origin backend. Graceful degradation — a federation upgraded
 		// from M3 may not have a key yet; without it the control plane (register/
@@ -593,6 +599,9 @@ func run() error {
 				MinAckedXfers:   opCfg.PossessionAudit.EffectiveMinAckedTransfers(),
 				GraduateRep:     opCfg.PossessionAudit.EffectiveGraduateRep(),
 			})
+			if mtr != nil {
+				auditor.SetObserver(metricsAuditObserver{mtr})
+			}
 			psched := possession.NewScheduler(pool, possession.NewDispatcher(coordinatorClientTLS), auditor, possession.SchedulerConfig{
 				Deadline:          opCfg.PossessionAudit.EffectiveDeadline(),
 				MaxBlockBytes:     opCfg.PossessionAudit.EffectiveMaxBlockBytes(),
@@ -624,6 +633,27 @@ func resolveMetricsListenAddr(opCfg *config.Config, lookupEnv func(string) (stri
 		return opCfg.EffectiveMetricsListenAddr()
 	}
 	return "127.0.0.1:2112", true
+}
+
+// metricsAuditObserver / metricsReadObserver adapt *metrics.Metrics onto the
+// consuming packages' observer interfaces (P2-M7, D-M7-1) so those packages
+// stay prometheus-free — the adapters, not the packages, know the metric names.
+type metricsAuditObserver struct{ m *metrics.Metrics }
+
+func (o metricsAuditObserver) TrustTransition(from, to, reason string) {
+	o.m.ObserveTrustTransition(from, to, reason)
+}
+func (o metricsAuditObserver) ReputationMoved(direction string) { o.m.ObserveReputationMove(direction) }
+func (o metricsAuditObserver) AuditLatency(sec float64)         { o.m.ObserveAuditLatency(sec) }
+
+type metricsReadObserver struct{ m *metrics.Metrics }
+
+func (o metricsReadObserver) Fetch(result, reason string, sec float64) {
+	o.m.ObserveDonorFetch(result, reason, sec)
+}
+func (o metricsReadObserver) EgressRefusal(reason string) { o.m.ObserveEgressRefusal(reason) }
+func (o metricsReadObserver) SelectionFailure(reason string) {
+	o.m.ObserveSourceSelectionFailure(reason)
 }
 
 // runBoth runs each function concurrently under a derived context. The exit of
