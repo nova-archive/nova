@@ -257,9 +257,13 @@ Expected: FAIL — `column "draining_at" does not exist`.
 -- novactl node drain/undrain — never by register/heartbeat.
 ALTER TABLE nodes ADD COLUMN draining_at timestamptz;
 
--- Partial index: drain-debt queries and the metrics scrape enumerate draining
--- nodes; the population is tiny, keep the index tiny.
-CREATE INDEX nodes_draining_idx ON nodes (draining_at) WHERE draining_at IS NOT NULL;
+-- Partial covering index: ListDrainingNodes is `WHERE draining_at IS NOT NULL
+-- ORDER BY id`, so key on (id) with draining_at INCLUDEd — an index-only scan
+-- in id order (an index keyed on draining_at would NOT serve that ORDER BY,
+-- and the Task-7 EXPLAIN gate asserts this exact index is used). The draining
+-- population is tiny; the partial predicate keeps the index tiny.
+CREATE INDEX nodes_draining_idx ON nodes (id) INCLUDE (draining_at)
+    WHERE draining_at IS NOT NULL;
 -- +goose StatementEnd
 
 -- +goose Down
@@ -480,22 +484,40 @@ SELECT count(*) FROM (
 
 -- name: CountDrainInflightCIDs :one
 -- Replacement in progress but not acked: lets an operator distinguish "stuck"
--- from "working" (D-M7-6f).
+-- from "working" (D-M7-6f). Counts pending replacements ONLY on eligible
+-- destinations (non-draining, live/current, non-suspended, not the draining
+-- node itself) — a stale/dead pending row must not read as drain progress
+-- (the same reason liveness fails dead pendings). Pending still never reduces
+-- safe-to-revoke debt; this is "work in flight" only.
 SELECT count(DISTINCT pa.cid)
 FROM pin_assignments pa
 WHERE pa.node_id = $1 AND pa.state = 'acked'
-  AND EXISTS (SELECT 1 FROM pin_assignments p3
-              WHERE p3.cid = pa.cid AND p3.state = 'pending');
+  AND EXISTS (
+      SELECT 1
+      FROM pin_assignments p3
+      JOIN nodes n3 ON n3.id = p3.node_id
+      WHERE p3.cid = pa.cid
+        AND p3.state = 'pending'
+        AND p3.node_id <> $1
+        AND n3.status IN ('active','suspect')
+        AND n3.assignment_sync_state = 'current'
+        AND n3.trust_state <> 'suspended'
+        AND n3.draining_at IS NULL
+  );
 
 -- name: CountBelowFloorReplicas :many
 -- Below-floor replica debt (D-M7-1a): acked replicas on live nodes below the
--- reputation floor whose pins have not hard-failed. Observability only — the
--- automated remedy is P2-M6.1, NOT this milestone.
+-- reputation floor whose pins have not hard-failed. Mirrors healthy_acked
+-- COUNTABILITY (active/suspect + sync-current) — deliberately NO trust_state
+-- filter, because healthy_acked_count does not exclude suspended either; this
+-- metric is "still countable despite below-floor reputation", not read-source
+-- eligibility. Observability only — the automated remedy is P2-M6.1, NOT M7.
 SELECT n.id AS node_id, count(*) AS acked_replicas
 FROM pin_assignments pa
 JOIN nodes n ON n.id = pa.node_id
 WHERE pa.state = 'acked'
   AND n.status IN ('active','suspect')
+  AND n.assignment_sync_state = 'current'
   AND n.reputation_score < sqlc.arg(floor)::float8
 GROUP BY n.id
 ORDER BY n.id;
@@ -647,8 +669,18 @@ func drainNode(ctx context.Context, pool *pgxpool.Pool, id pgtype.UUID, force bo
 		return res, err
 	}
 
-	res.PendingCIDs, _ = q.CountDrainPendingCIDs(ctx, id)
-	res.InflightCIDs, _ = q.CountDrainInflightCIDs(ctx, id)
+	// The command just changed lifecycle state; if it cannot report debt, the
+	// operator must know — never swallow these errors.
+	pending, err := q.CountDrainPendingCIDs(ctx, id)
+	if err != nil {
+		return res, fmt.Errorf("count drain debt: %w", err)
+	}
+	inflight, err := q.CountDrainInflightCIDs(ctx, id)
+	if err != nil {
+		return res, fmt.Errorf("count drain inflight: %w", err)
+	}
+	res.PendingCIDs = pending
+	res.InflightCIDs = inflight
 	return res, nil
 }
 
@@ -767,7 +799,9 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - Create: `internal/metrics/metrics.go`, `internal/metrics/collector.go`,
   `internal/metrics/server.go`, `internal/metrics/metrics_test.go`
 - Modify: `internal/config/types.go`, `internal/config/operator_yaml.go`,
-  `cmd/coordinator/main.go`, `go.mod` (client_golang → direct via `go mod tidy`)
+  `cmd/coordinator/main.go`, `cmd/coordinator/main_test.go`
+  (`TestResolveMetricsListenAddr` lives here — it tests a main.go function),
+  `go.mod` (client_golang → direct via `go mod tidy`)
 
 **Interfaces:**
 - Produces:
@@ -795,6 +829,18 @@ func TestConfigMetricsListenAddr(t *testing.T) {
 	// absent key            → ("127.0.0.1:2112", true)
 	// metrics_listen_addr: ""      → ("", false)   — explicit disable
 	// metrics_listen_addr: "127.0.0.1:9999" → ("127.0.0.1:9999", true)
+}
+
+func TestResolveMetricsListenAddr(t *testing.T) {
+	// The RUNTIME resolver in cmd/coordinator (see Step 4a) — the coordinator
+	// has a full env-only back-compat path where loadOperatorConfigFile()
+	// returns (nil, nil), so a Config method alone is not enough. Table:
+	//   env NOVA_METRICS_LISTEN_ADDR set to ""        → disabled  (LookupEnv: empty is meaningful)
+	//   env set "127.0.0.1:9999"                      → that addr (env wins over yaml)
+	//   env unset, yaml metrics_listen_addr: ""       → disabled
+	//   env unset, yaml "127.0.0.1:8888"              → that addr
+	//   env unset, cfg == nil (env-only deployment)   → ("127.0.0.1:2112", true)
+	//   env unset, yaml key absent                    → ("127.0.0.1:2112", true)
 }
 
 func TestScrapeFamiliesAndValues(t *testing.T) {
@@ -1004,14 +1050,42 @@ func ListenAndServe(ctx context.Context, addr string, h http.Handler) error {
 }
 ```
 
-`cmd/coordinator/main.go` wiring (next to the orchestrator/possession block; the
-pool and cfg are in scope there):
+**Step 4a — the runtime resolver in `cmd/coordinator/main.go`.** The coordinator
+has an env-only back-compat path: `loadOperatorConfigFile()` returns `(nil, nil)`
+when `NOVA_CONFIG_FILE`/`$NOVA_CONFIG_DIR/operator.yaml` is absent — so metrics
+resolution must be a main.go-level resolver over BOTH sources, not only a Config
+method. Env wins over yaml; **use `os.LookupEnv`, not `os.Getenv`**, because an
+empty env value means "disabled", which Getenv cannot distinguish from unset:
+
+```go
+// resolveMetricsListenAddr resolves the D-M7-1 listener across the env-only and
+// operator.yaml paths. Precedence: NOVA_METRICS_LISTEN_ADDR (empty = disabled) >
+// yaml metrics_listen_addr (tri-state) > default 127.0.0.1:2112 enabled.
+func resolveMetricsListenAddr(opCfg *config.Config, lookupEnv func(string) (string, bool)) (string, bool) {
+	if v, ok := lookupEnv("NOVA_METRICS_LISTEN_ADDR"); ok {
+		return v, v != ""
+	}
+	if opCfg != nil {
+		return opCfg.EffectiveMetricsListenAddr()
+	}
+	return "127.0.0.1:2112", true
+}
+```
+
+Wiring (next to the orchestrator/possession block; the pool and `opCfg` are in
+scope there). The reputation floor comes from `Orchestrator.EffectiveReputationFloor()`
+(the field is `Orchestrator.ReputationFloor` — NOT under `Replication`), with the
+`config.DefaultReputationFloor` fallback on the env-only path:
 
 ```go
 	// P2-M7 (D-M7-1): coordinator-only Prometheus plane. Bind failure is fatal.
 	var mtr *metrics.Metrics
-	if addr, enabled := cfg.EffectiveMetricsListenAddr(); enabled {
-		mtr = metrics.New(pool, cfg.Orchestrator.Replication.ReputationFloor)
+	if addr, enabled := resolveMetricsListenAddr(opCfg, os.LookupEnv); enabled {
+		floor := config.DefaultReputationFloor
+		if opCfg != nil {
+			floor = opCfg.Orchestrator.EffectiveReputationFloor()
+		}
+		mtr = metrics.New(pool, floor)
 		mln, err := net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("metrics_listen_addr: %w", err)
@@ -1093,6 +1167,11 @@ Expected: FAIL — fields undefined.
   - `possession/trust.go` `applyTrust`: where graduation/demotion commit → observer
     `TrustTransition(...)`; `verify.go` `Record`: reputation write → `ReputationMoved`,
     outcome timing → `AuditLatency`.
+  - **While editing `verify.go`, fix the stale D-M6-7 deferral comments** — the
+    code drift this milestone exists to eliminate: `verify.go:143` and
+    `trust_test.go:17` both say below-floor bulk re-replication is "deferred to
+    P2-M7"; change both to **P2-M6.1**, noting M7 adds only observability
+    (`nova_below_floor_replica_debt`) + runbook + the explicit drain primitive.
   - `readsource.go` `attemptHolder`/`selectAndFetch`: outcome → `Fetch(...)`;
     donor 429/budget refusal branch → `EgressRefusal`; "no sourceable holder" →
     `SelectionFailure("no_sourceable_holder")`.
@@ -1242,10 +1321,22 @@ func TestCorpusBench(t *testing.T) {
 }
 ```
 
-Thresholds live in one map (`profiles = map[string]map[string]time.Duration`);
-release values are the gate (fill with the measured M6-era baselines ×2 headroom on
-first release run — the FIRST full run records baselines, the artifact documents
-them, and the committed map is updated in the same task).
+Thresholds live in one map (`profiles = map[string]map[string]time.Duration`), and
+their lifecycle is explicit — never "fill on first run":
+
+```
+BENCH_CALIBRATE=1 make bench-corpus   # calibration run: writes the artifact +
+                                      # a suggested-thresholds block (measured
+                                      # p95 ×2 headroom); NEVER fails on a
+                                      # threshold miss.
+# → commit the chosen release thresholds into the profiles map
+make bench-corpus                     # the real gate: fails on threshold miss
+# → commit the final artifact
+```
+
+`bench_test.go` honors `BENCH_CALIBRATE=1` by reporting instead of asserting; the
+committed `profiles["release"]` values are therefore always real, measured numbers,
+and the plain run is the enforceable gate.
 
 - [ ] **Step 5: Implement `explain_test.go`** — deterministic, small fixture, no
   timing: for each hot query above, run `EXPLAIN (FORMAT JSON)` and assert the plan
@@ -1344,7 +1435,7 @@ func TestCanonicalRequiredProfileDisjointFromRouteGated(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run FAIL** — `go test ./internal/federation/coordinator/ -run TestRequired -run TestRouteGated -v` (file doesn't exist).
+- [ ] **Step 2: Run FAIL** — `go test ./internal/federation/coordinator/ -run 'TestRequired|TestRouteGated|TestCanonical' -v` (file doesn't exist; note: ONE `-run` with an alternation — repeated `-run` flags overwrite each other).
 
 - [ ] **Step 3: Implement** — the two profile vars at the top of the test file:
 
@@ -1420,8 +1511,21 @@ run_pairing() { # $1=coord-side (head|old) $2=donor-side (head|old)
   # ($2-novactl node nebula-template), then sed the loopback addrs + short
   # possession cadence (possession_audit.base_interval_seconds: 5).
   write_configs "$1" "$2"
-  "$WORK/bin/$1-coordinator" --config "$WORK/operator.yaml" & COORD=$!
-  "$WORK/bin/$2-node"        --config "$WORK/donor/node.yaml" & DONOR=$!
+  # cmd/coordinator has NO --config flag: it resolves operator.yaml via
+  # NOVA_CONFIG_FILE (or $NOVA_CONFIG_DIR/operator.yaml) and takes its secrets
+  # and floors from env — set EVERY env-only requirement explicitly here
+  # (DATABASE_URL, Kubo repo, swarm key, OIDC signing key, the M4.1 federation
+  # client cert/key, the repair-token signing key; write_configs generates the
+  # key material it needs). cmd/node DOES take --config.
+  NOVA_CONFIG_FILE="$WORK/operator.yaml" \
+  DATABASE_URL="$DSN" \
+  NOVA_KUBO_REPO="$WORK/kubo-repo" \
+  IPFS_SWARM_KEY_FILE="$WORK/swarm.key" \
+  NOVA_OIDC_SIGNING_KEY="$OIDC_KEY" \
+  NOVA_FEDERATION_CLIENT_KEY_FILE="$WORK/coordinator-client/federation-client.key" \
+  NOVA_REPAIR_SIGNING_KEY_FILE="$WORK/repair-signing.key" \
+    "$WORK/bin/$1-coordinator" & COORD=$!
+  "$WORK/bin/$2-node" --config "$WORK/donor/node.yaml" & DONOR=$!
   # join:
   wait_sql "SELECT count(*) FROM nodes WHERE status='active' AND assignment_sync_state='current'" 1
   # serve: assign one pin via the coordinator-side novactl and await the ack
@@ -1452,8 +1556,12 @@ echo "OK: crossversion pairing(s) $PAIRING passed"
 > `coordinator_url`, the Kubo API address, the issued cert paths, and a writable
 > `storage_dir`. If a field the template emits is Nebula-specific, point it at the
 > loopback equivalents the e2e Go tests use (`internal/federation/e2e` shows the
-> loopback-mTLS posture — no real Nebula needed). Expect this step to need 2–3
-> iterations against real binaries; that is the point of the drill.
+> loopback-mTLS posture — no real Nebula needed). For the coordinator env block:
+> verify each variable name against `cmd/coordinator/main.go`'s actual env reads
+> at execution time (the names above were taken from the current tree; the
+> invariant is "every env-only secret/floor the coordinator requires is set —
+> never assume a flag exists"). Expect this step to need 2–3 iterations against
+> real binaries; that is the point of the drill.
 
 Makefile:
 
@@ -1716,8 +1824,9 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   6 (donor deny) + 2 (`CountBelowFloorReplicas` feeding the debt gauge).
 - **D-M7-1a** (type/source/reset): the Task-4 table comment in `metrics.go` is the
   normative in-code record; `TestScrapeFamiliesAndValues` pins the DB-derived set.
-- **D-M7-2** (bench): Task 7. The FIRST full `make bench-corpus` run (release
-  profile) happens at Final Verification and its artifact is committed.
+- **D-M7-2** (bench): Task 7. Lifecycle at Final Verification: calibration run
+  (`BENCH_CALIBRATE=1`) → commit measured thresholds → plain `make bench-corpus`
+  gate run → commit the final artifact.
 - **D-M7-3** (compat): Tasks 8 (matrix) + 9 (cross-version). DB-upgrade coverage:
   Task 1's migration test (0001→0016 forward + the re-register semantics).
 - **D-M7-4** (drills): Task 10 (proofs) + Task 11 (runbooks).
@@ -1738,8 +1847,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] `./scripts/check_node_deps.sh` — clean; prometheus deny demonstrated red in Task 6
 - [ ] `gofmt -l $(git diff --name-only main -- '*.go')` — empty
 - [ ] `make bench-corpus-explain && make bench-corpus-ci` — green
-- [ ] `make bench-corpus` — full release run; commit the
-      `reports/benchmarks/p2-m7-corpus-<date>.{json,md}` artifact
+- [ ] `BENCH_CALIBRATE=1 make bench-corpus` — calibration run; commit the
+      measured release thresholds into `profiles["release"]`
+- [ ] `make bench-corpus` — the real full-scale gate against the committed
+      thresholds; commit the `reports/benchmarks/p2-m7-corpus-<date>.{json,md}`
+      artifact
 - [ ] `make crossversion-e2e PAIRING=all` — three pairings green
 - [ ] `python3 scripts/check_doc_links.py` — all links resolve
 - [ ] Finish per the milestone workflow: local fast-forward merge to `main` +
