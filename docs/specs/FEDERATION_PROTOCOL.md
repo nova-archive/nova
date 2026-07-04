@@ -12,6 +12,24 @@ side) and `cmd/node` (donor side) must conform exactly.
 > on the change log + ack/fail (D6). See
 > `docs/superpowers/specs/phase2/2026-06-13-phase2-m0-spec-reconciliation-design.md`.
 
+> **Amended by P2-M7 (2026-07-01) — implemented.** (1) **Drain lifecycle**
+> (D-M7-6): voluntary decommission is an operator-side primitive
+> (`novactl node drain|undrain` sets/clears `nodes.draining_at`), NOT a wire
+> message — a donor cannot set or observe drain over the protocol, and
+> register/heartbeat never touch the marker. A draining donor keeps serving
+> its `read-source/v1`/`repair-stream/v1`/`audit-block-hash/v1` endpoints
+> unchanged while its replicas are re-homed. (2) **Capability
+> classification** (D-M7-3): "required" is the coordinator's CONFIGURED
+> `RequiredCapabilities` set (register fails closed with
+> `missing_capability`); everything else is route/scheduler-gated — a donor
+> not advertising `read-source/v1` / `repair-stream/v1` /
+> `audit-block-hash/v1` registers fine and is simply never selected for
+> that role. (3) **Coordinator→donor server verification**: outbound
+> connections to donor read-source/audit endpoints verify the donor's
+> serving cert by federation-CA chain + `nova://` URI SAN identity (donor
+> federation certs carry no host SANs by design). See
+> `docs/superpowers/specs/phase2/2026-07-01-phase2-m7-production-hardening-release-design.md`.
+
 ## Purpose
 
 The federation protocol is how a donor's pinning node — running

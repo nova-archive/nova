@@ -23,7 +23,7 @@ This master plan summarizes all milestones with goals and exit criteria. **Only 
 | P2-M4 | v1 opaque replication vertical slice | pending | tbd | — |
 | P2-M5 | Liveness & healing | pending | tbd | — |
 | P2-M6 | Possession audits & reputation | pending | tbd | — |
-| P2-M7 | Production hardening & donor release | pending | tbd | — |
+| P2-M7 | Production hardening & donor release | **done** (tag `p2-m7-production-hardening-release`) | [design](../../specs/phase2/2026-07-01-phase2-m7-production-hardening-release-design.md) · [plan](2026-07-01-phase2-m7-production-hardening-release.md) | — |
 | P2-M8 | Authoritative streaming-envelope design | pending | tbd | **Yes** |
 | P2-M9 | Streaming write path | pending | tbd | — |
 | P2-M10 | Range read path | pending | tbd | — |

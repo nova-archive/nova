@@ -839,3 +839,27 @@ CREATE INDEX pin_audits_recent_pass_node_blob_idx
     ON pin_audits (node_id, blob_cid, received_at DESC) WHERE result = 'pass'; -- recent-pass tie-breaker (D-M6-9)
 CREATE INDEX pin_audits_recent_fail_node_idx
     ON pin_audits (node_id, decided_at DESC) WHERE result = 'fail'; -- decided_at always set even on timeout (D-M6-2a)
+
+-- ============================================================================
+-- P2-M7 (migration 0016) — voluntary graceful drain (as-built, D-M7-6a)
+-- ============================================================================
+
+-- nodes.draining_at: the AUTHORITATIVE voluntary-departure marker (NULL = not
+-- draining). Distinct from placement_weight = 0 (a placement throttle that
+-- still counts toward durability). Set/cleared ONLY by `novactl node
+-- drain|undrain` — never by register/heartbeat (the RegisterNode upsert does
+-- not touch it; the 0016 migration test proves re-register preserves it).
+-- Safety counts (healthy_acked / sourceable_acked / CountSourceableHolders)
+-- exclude draining nodes; read/repair SELECTION keeps them, deprioritized
+-- (D-M7-6b/6c).
+ALTER TABLE nodes
+    ADD COLUMN draining_at timestamptz;
+
+-- Partial covering index: ListDrainingNodes is `WHERE draining_at IS NOT NULL
+-- ORDER BY id`, so key on (id) with draining_at INCLUDEd — an index-only scan
+-- in id order (an index keyed on draining_at would NOT serve that ORDER BY;
+-- the benchcorpus EXPLAIN gate asserts this exact index). The draining
+-- population is operator-initiated and tiny; the partial predicate keeps the
+-- index tiny.
+CREATE INDEX nodes_draining_idx ON nodes (id) INCLUDE (draining_at)
+    WHERE draining_at IS NOT NULL;

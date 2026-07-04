@@ -86,6 +86,8 @@ cannot opt out.
 | T1.29 | **(P2-M0)** Replica placement applies operator-verified **failure-domain anti-affinity** as a **soft preference (never a veto)**, and steady-state placement weight is **decoupled from donor bandwidth** (bandwidth governs repair-source selection only). Self-declared geo is informational. | `HEALING_PROTOCOL.md` § "Reputation and audit-aware placement"; phase6 resilience design |
 | T1.30 | **(P2-M0)** Donor `trust_state` (`probationary`/`trusted`/`suspended`), orthogonal to liveness and reputation, caps `placement_weight`; a **probationary node is never the sole or second copy of `important`-class data**. | `HEALING_PROTOCOL.md` § "Reputation and audit-aware placement" |
 | T1.32 | **(P2-M6)** **Trust-graduation policy.** `probationary→trusted` (automatic) iff epoch age ≥ `graduate_min_age` ∧ passed-audits ≥ `graduate_min_passed_audits` ∧ acked-transfers ≥ `graduate_min_acked_transfers` ∧ hash_mismatch_count = 0 ∧ reputation ≥ `graduate_min_reputation` ∧ `trust_review_required_at IS NULL` — all counts since `trust_epoch_started_at`. `trusted→probationary` (automatic) when `reputation_score < reputation_floor`. **`suspended` is operator-controlled only** (`novactl node trust suspend\|unsuspend`; no single audit ever auto-suspends). A hash-mismatch sets `trust_review_required_at` and resets `trust_epoch_started_at = now()`, blocking auto-graduation until `novactl node trust clear-review` clears the marker. | `POSSESSION_AUDIT.md`; `docs/superpowers/specs/phase2/2026-06-29-phase2-m6-possession-audits-design.md` § D-M6-8 |
+| T1.33 | **(P2-M7)** **Metrics are a coordinator-only plane.** Prometheus `/metrics` binds its own operator-side listener (`metrics_listen_addr`, default loopback; explicit `""` disables; bind failure is startup-fatal) — never the public/admin/federation mux. Label sets are bounded (`node_id`/`tier`/`state`/`reason`/`capability`-class only; never per-CID/blob/path). The donor build graph is `github.com/prometheus/*`-free — hard-denied in `scripts/check_node_deps.sh` on top of the deny-by-default allowlist; donor-local metrics are a later opt-in, not M7. | `internal/metrics`; `scripts/check_node_deps.sh`; `docs/superpowers/specs/phase2/2026-07-01-phase2-m7-production-hardening-release-design.md` § D-M7-1 |
+| T1.34 | **(P2-M7)** **Voluntary vs involuntary departure are distinct lifecycles.** `drain` (voluntary, `nodes.draining_at`, operator CLI only, never wire-settable) keeps the node serving as a deprioritized read/repair source while excluding it from safety counts and placement, and gates `revoke` behind zero drain debt; `revoke` (involuntary) drops countability instantly and refuses the cert. A "draining" claim can never inflate durability accounting — draining only ever REMOVES countability. | `novactl node drain\|undrain\|revoke`; `HEALING_PROTOCOL.md` P2-M7 amendment; `docs/superpowers/specs/phase2/2026-07-01-phase2-m7-production-hardening-release-design.md` § D-M7-6 |
 
 ### IPFS hardening
 
@@ -143,6 +145,13 @@ operator-only `GET`/`PATCH`/`PUT /api/v1/admin/config` API, atomic
 reputation; operator-only `suspended`). See
 `docs/superpowers/specs/phase2/2026-06-29-phase2-m6-possession-audits-design.md`
 § D-M6-8.
+
+**P2-M7 (2026-07-01)** added `T1.33` (coordinator-only metrics plane with a
+donor-graph prometheus hard-deny) and `T1.34` (drain-vs-revoke: voluntary and
+involuntary departure as distinct lifecycles; drain only ever removes
+countability). See
+`docs/superpowers/specs/phase2/2026-07-01-phase2-m7-production-hardening-release-design.md`
+§ D-M7-1 and D-M7-6.
 
 `T1.27` and `T1.28` were **reframed** (not relaxed) by the second-pass
 resilience analysis in

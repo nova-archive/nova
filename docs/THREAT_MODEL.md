@@ -589,6 +589,27 @@ now specified, and records which earlier statements in this document it
     a donor correlate pin timing against publicly-visible uploads (boundary-A
     residual risk), now across a larger node set.
 
+### P2-M7 additions (production hardening, 2026-07-01)
+
+- **Metrics exposure.** The Prometheus `/metrics` plane (D-M7-1) is
+  coordinator-only, binds **loopback by default** (`metrics_listen_addr`;
+  explicit `""` disables), and never shares a mux with the public, admin, or
+  federation listeners. Label discipline is enforced by test: bounded label
+  sets only, never per-CID/blob/path/filename labels — a scrape leaks
+  federation *shape* (tier counts, node states, drain debt), never content
+  identifiers. An operator who rebinds the listener off loopback owns the
+  network exposure of that shape data. The donor build graph is
+  `prometheus`-free (hard-denied in CI), so a compromised metrics stack can
+  never ride the donor image.
+- **Voluntary vs involuntary departure (D-M7-6).** Drain is an operator-CLI
+  primitive over the DB (`nodes.draining_at`); it is **not wire-settable** —
+  no donor message can mark itself (or another node) draining, and a
+  "draining" claim can never inflate durability accounting: draining only
+  ever REMOVES countability (safety counts exclude draining holders) while
+  keeping the node a deprioritized serve source. Revocation stays the
+  involuntary path for hostility; the drain runbook forbids draining a
+  compromised node precisely because a draining node keeps serving reads.
+
 ## Disclaimer
 
 This document is a description of the project's engineering choices
