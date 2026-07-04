@@ -1,0 +1,119 @@
+{
+  "date": "2026-07-04",
+  "profile": "release",
+  "calibrate": false,
+  "bench_rows": 9800000,
+  "blobs": 1225000,
+  "donors": 16,
+  "seed": 42,
+  "go_version": "go1.26.4-X:nodwarf5",
+  "num_cpu": 16,
+  "pg_version": "PostgreSQL 16.14 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+  "paths": [
+    {
+      "name": "recompute_counts",
+      "samples": 200,
+      "p50_ms": 0.753,
+      "p95_ms": 1.305,
+      "p99_ms": 1.846,
+      "threshold_ms": 4,
+      "suggested_threshold_ms": 2.61,
+      "pass": true,
+      "explain": "Aggregate  (cost=9.71..9.72 rows=1 width=8) (actual time=0.139..0.152 rows=1 loops=1)\n  Buffers: shared hit=5\n  -\u003e  Hash Join  (cost=8.49..9.70 rows=2 width=0) (actual time=0.092..0.140 rows=2 loops=1)\n        Hash Cond: (n.id = pa.node_id)\n        Buffers: shared hit=5\n        -\u003e  Seq Scan on nodes n  (cost=0.00..1.16 rows=16 width=16) (actual time=0.006..0.026 rows=16 loops=1)\n              Buffers: shared hit=1\n        -\u003e  Hash  (cost=8.46..8.46 rows=2 width=16) (actual time=0.066..0.070 rows=2 loops=1)\n              Buckets: 1024  Batches: 1  Memory Usage: 9kB\n              Buffers: shared hit=4\n              -\u003e  Index Only Scan using pin_assignments_pkey on pin_assignments pa  (cost=0.43..8.46 rows=2 width=16) (actual time=0.051..0.055 rows=2 loops=1)\n                    Index Cond: (cid = 'bench-cid-000000000'::text)\n                    Heap Fetches: 0\n                    Buffers: shared hit=4\nPlanning:\n  Buffers: shared hit=4\nPlanning Time: 0.236 ms\nExecution Time: 0.207 ms\n"
+    },
+    {
+      "name": "sourceable_holders",
+      "samples": 200,
+      "p50_ms": 0.215,
+      "p95_ms": 0.699,
+      "p99_ms": 1.516,
+      "threshold_ms": 1,
+      "suggested_threshold_ms": 1.398,
+      "pass": true,
+      "explain": "Hash Join  (cost=10.24..11.46 rows=2 width=16) (actual time=0.048..0.093 rows=2 loops=1)\n  Hash Cond: (n.id = pa.node_id)\n  Buffers: shared hit=5\n  -\u003e  Seq Scan on nodes n  (cost=0.00..1.16 rows=16 width=16) (actual time=0.003..0.025 rows=16 loops=1)\n        Buffers: shared hit=1\n  -\u003e  Hash  (cost=10.22..10.22 rows=2 width=16) (actual time=0.031..0.034 rows=2 loops=1)\n        Buckets: 1024  Batches: 1  Memory Usage: 9kB\n        Buffers: shared hit=4\n        -\u003e  Index Scan using pin_assignments_pkey on pin_assignments pa  (cost=0.43..10.22 rows=2 width=16) (actual time=0.017..0.021 rows=2 loops=1)\n              Index Cond: (cid = 'bench-cid-000000000'::text)\n              Filter: (state = 'acked'::pin_state)\n              Buffers: shared hit=4\nPlanning:\n  Buffers: shared hit=4\nPlanning Time: 0.185 ms\nExecution Time: 0.121 ms\n"
+    },
+    {
+      "name": "repair_source",
+      "samples": 200,
+      "p50_ms": 0.21,
+      "p95_ms": 0.455,
+      "p99_ms": 0.99,
+      "threshold_ms": 1,
+      "suggested_threshold_ms": 0.91,
+      "pass": true
+    },
+    {
+      "name": "placement_candidates",
+      "samples": 200,
+      "p50_ms": 0.228,
+      "p95_ms": 0.451,
+      "p99_ms": 0.689,
+      "threshold_ms": 1,
+      "suggested_threshold_ms": 0.902,
+      "pass": true,
+      "explain": "Hash Right Anti Join  (cost=1.83..9.87 rows=14 width=16) (actual time=0.094..0.122 rows=14 loops=1)\n  Hash Cond: (pa.node_id = n.id)\n  Buffers: shared hit=5\n  -\u003e  Index Only Scan using pin_assignments_pkey on pin_assignments pa  (cost=0.43..8.46 rows=2 width=16) (actual time=0.017..0.021 rows=2 loops=1)\n        Index Cond: (cid = 'bench-cid-000000000'::text)\n        Heap Fetches: 0\n        Buffers: shared hit=4\n  -\u003e  Hash  (cost=1.20..1.20 rows=16 width=16) (actual time=0.060..0.063 rows=16 loops=1)\n        Buckets: 1024  Batches: 1  Memory Usage: 9kB\n        Buffers: shared hit=1\n        -\u003e  Seq Scan on nodes n  (cost=0.00..1.20 rows=16 width=16) (actual time=0.005..0.026 rows=16 loops=1)\n              Filter: (status = 'active'::node_status)\n              Buffers: shared hit=1\nPlanning:\n  Buffers: shared hit=4\nPlanning Time: 0.201 ms\nExecution Time: 0.176 ms\n"
+    },
+    {
+      "name": "reconcile_batch",
+      "samples": 200,
+      "p50_ms": 17.273,
+      "p95_ms": 20.751,
+      "p99_ms": 21.813,
+      "threshold_ms": 41,
+      "suggested_threshold_ms": 41.502,
+      "pass": true,
+      "explain": "Limit  (cost=5911.09..5968.59 rows=500 width=28) (actual time=159.537..163.070 rows=500 loops=1)\n  Buffers: shared hit=1068\n  -\u003e  Gather Merge  (cost=5911.09..13369.19 rows=64853 width=28) (actual time=159.532..161.820 rows=500 loops=1)\n        Workers Planned: 1\n        Workers Launched: 1\n        Buffers: shared hit=1068\n        -\u003e  Sort  (cost=4911.08..5073.22 rows=64853 width=28) (actual time=156.754..157.410 rows=500 loops=2)\n              Sort Key: enqueued_at\n              Sort Method: top-N heapsort  Memory: 60kB\n              Buffers: shared hit=1068\n              Worker 0:  Sort Method: top-N heapsort  Memory: 60kB\n              -\u003e  Parallel Seq Scan on blob_replication_reconcile_queue  (cost=0.00..1679.53 rows=64853 width=28) (actual time=0.008..78.630 rows=55115 loops=2)\n                    Buffers: shared hit=1031\nPlanning Time: 0.048 ms\nExecution Time: 163.769 ms\n"
+    },
+    {
+      "name": "audit_select",
+      "samples": 100,
+      "p50_ms": 378.074,
+      "p95_ms": 801.285,
+      "p99_ms": 839.306,
+      "threshold_ms": 1634,
+      "suggested_threshold_ms": 1602.57,
+      "pass": true
+    },
+    {
+      "name": "drain_pending",
+      "samples": 20,
+      "p50_ms": 1905.526,
+      "p95_ms": 1924.931,
+      "p99_ms": 1924.931,
+      "threshold_ms": 4203,
+      "suggested_threshold_ms": 3849.862,
+      "pass": true
+    },
+    {
+      "name": "below_floor",
+      "samples": 20,
+      "p50_ms": 160.381,
+      "p95_ms": 166.051,
+      "p99_ms": 166.051,
+      "threshold_ms": 299,
+      "suggested_threshold_ms": 332.102,
+      "pass": true
+    },
+    {
+      "name": "delete_cascade",
+      "samples": 50,
+      "p50_ms": 0.489,
+      "p95_ms": 1.523,
+      "p99_ms": 1.723,
+      "threshold_ms": 2,
+      "suggested_threshold_ms": 3.046,
+      "pass": true
+    },
+    {
+      "name": "projection_rebuild_1k",
+      "samples": 1,
+      "p50_ms": 265.98,
+      "p95_ms": 265.98,
+      "p99_ms": 265.98,
+      "threshold_ms": 579,
+      "suggested_threshold_ms": 531.96,
+      "pass": true
+    }
+  ],
+  "all_pass": true
+}
