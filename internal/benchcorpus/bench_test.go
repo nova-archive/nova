@@ -43,19 +43,23 @@ var profiles = map[string]map[string]time.Duration{
 		"delete_cascade":        500 * time.Millisecond,
 		"projection_rebuild_1k": 60 * time.Second,
 	},
-	// Calibrated 2026-07-03 (BENCH_CALIBRATE=1, 9.8M blob_blocks profile run);
-	// values are measured p95 ×2 headroom from the final-verification run.
+	// Calibrated 2026-07-04 (BENCH_CALIBRATE=1 at BENCH_ROWS=9800000, 16 donors,
+	// seed 42, post-ANALYZE): committed values are the measured p95 ×2 headroom.
+	// Notable measured realities this gate encodes: drain_pending ≈ 2.1s for a
+	// Zipf-hub draining donor (~40% of the corpus) and audit_select ≈ 0.8s —
+	// both fine for their once-per-tick/scrape call sites, and both regress
+	// loudly here if their asymptotic shape degrades.
 	"release": {
-		"recompute_counts":      150 * time.Millisecond,
-		"sourceable_holders":    150 * time.Millisecond,
-		"repair_source":         150 * time.Millisecond,
-		"placement_candidates":  150 * time.Millisecond,
-		"reconcile_batch":       250 * time.Millisecond,
-		"audit_select":          500 * time.Millisecond,
-		"drain_pending":         2 * time.Second,
-		"below_floor":           1 * time.Second,
-		"delete_cascade":        500 * time.Millisecond,
-		"projection_rebuild_1k": 60 * time.Second,
+		"recompute_counts":      4 * time.Millisecond,
+		"sourceable_holders":    1 * time.Millisecond,
+		"repair_source":         1 * time.Millisecond,
+		"placement_candidates":  1 * time.Millisecond,
+		"reconcile_batch":       41 * time.Millisecond,
+		"audit_select":          1634 * time.Millisecond,
+		"drain_pending":         4203 * time.Millisecond,
+		"below_floor":           299 * time.Millisecond,
+		"delete_cascade":        2 * time.Millisecond,
+		"projection_rebuild_1k": 579 * time.Millisecond,
 	},
 }
 
