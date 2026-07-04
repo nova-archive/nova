@@ -2,6 +2,7 @@ package integrity
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -81,6 +82,48 @@ func TestMaintainer(t *testing.T) {
 		require.True(t, partitionExists(t, ctx, pool, "integrity_audits_2028_01"), "recent partition survives")
 		require.True(t, partitionExists(t, ctx, pool, "integrity_audits_default"), "default catch-all is never dropped")
 	})
+}
+
+// TestMaintainerJobsPartitions covers P2-M7.1 (D-M7.1-2): the Maintainer also
+// create-aheads jobs' monthly partitions — the "partition-rotation job" that
+// 0002_jobs.sql promised. Create-ahead only: the job reaper owns row
+// lifecycle, so maintain() must never prune or drop jobs partitions.
+func TestMaintainerJobsPartitions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping maintainer DB test in short mode")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+
+	// Clock 4 months past real now: migration 0017 provisions install-month +2
+	// at migrate time, so a clock inside that window would pass without the
+	// Maintainer. Month X = now+4 is provably the Maintainer's work, whatever
+	// the real date is when this test runs.
+	clk := monthStart(time.Now()).AddDate(0, 4, 14)
+	m := NewMaintainer(pool, 30*24*time.Hour, 365*24*time.Hour, nil,
+		WithMaintClock(func() time.Time { return clk }))
+
+	names := make([]string, 0, 3)
+	for i := 0; i <= 2; i++ {
+		mo := monthStart(clk).AddDate(0, i, 0)
+		names = append(names, fmt.Sprintf("jobs_%04d_%02d", mo.Year(), int(mo.Month())))
+	}
+	for _, name := range names {
+		require.False(t, partitionExists(t, ctx, pool, name),
+			"%s must not exist before maintain (0017 only provisions install-month+2)", name)
+	}
+
+	m.maintain(ctx)
+
+	for _, name := range names {
+		require.True(t, partitionExists(t, ctx, pool, name),
+			"maintain must create-ahead %s (month X..X+2)", name)
+	}
+
+	// An insert dated in month X lands in the fresh partition.
+	_, err := pool.Exec(ctx,
+		`INSERT INTO jobs (kind, created_at) VALUES ('noop', $1)`, clk)
+	require.NoError(t, err, "jobs insert in month X must succeed after create-ahead")
 }
 
 // TestMaintainerAuditLogPartitions covers M9: the Maintainer also create-aheads

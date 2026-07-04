@@ -28,10 +28,12 @@ const (
 // and deliberately excludes integrity_audits_default.
 var partitionMonthRe = regexp.MustCompile(`^integrity_audits_(\d{4})_(\d{2})$`)
 
-// Maintainer keeps integrity_audits' monthly partitions provisioned ahead of
-// time and enforces retention (pass rows pruned after passRet; whole partitions
-// dropped once older than failRet). The committed partitions stop at
-// 2026-07-01, so create-ahead is required for inserts to keep working.
+// Maintainer keeps the monthly partitions of all three partitioned parents
+// (jobs, integrity_audits, audit_log) provisioned ahead of time, and enforces
+// retention on integrity_audits only (pass rows pruned after passRet; whole
+// partitions dropped once older than failRet). Migration 0017 provisions the
+// install-time months (current + 2); this Maintainer sustains the window from
+// then on, so create-ahead is required for inserts to keep working.
 type Maintainer struct {
 	pool    *pgxpool.Pool
 	passRet time.Duration
@@ -88,6 +90,12 @@ func (m *Maintainer) Run(ctx context.Context) {
 }
 
 func (m *Maintainer) maintain(ctx context.Context) {
+	// jobs is monthly-partitioned too (0002_jobs.sql); the "partition-rotation
+	// job" that comment promised is this Maintainer (P2-M7.1). Create-ahead
+	// only — the job reaper owns row lifecycle, so there is no prune pass.
+	if err := m.ensureMonthlyPartitions(ctx, "jobs"); err != nil {
+		m.log.WarnContext(ctx, "jobs: ensure partitions", "err", err)
+	}
 	if err := m.ensurePartitions(ctx); err != nil {
 		m.log.WarnContext(ctx, "integrity: ensure partitions", "err", err)
 	}
@@ -108,7 +116,8 @@ func (m *Maintainer) maintain(ctx context.Context) {
 // ensureMonthlyPartitions creates the current month plus partitionLookahead
 // months ahead of parent, idempotently. Names are month-derived (no user input)
 // so the DDL is assembled with fmt.Sprintf; bounds are explicit-UTC to match
-// 0003_partitions.sql. Used for both integrity_audits and audit_log (M9).
+// 0003_partitions.sql. Used for integrity_audits, audit_log (M9) and jobs
+// (P2-M7.1).
 func (m *Maintainer) ensureMonthlyPartitions(ctx context.Context, parent string) error {
 	base := monthStart(m.now())
 	for i := 0; i <= partitionLookahead; i++ {
