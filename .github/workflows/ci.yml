@@ -279,3 +279,21 @@ jobs:
           syft "$DIGEST_REF" -o spdx-json=nova-coordinator.sbom.spdx.json
           cosign attest --yes --type spdxjson \
             --predicate nova-coordinator.sbom.spdx.json "$DIGEST_REF"
+
+  # P2-M7 (D-M7-2): corpus-bench regression signal. Gates on asymptotic shape
+  # + query plans (small corpus, generous ci-profile slack) — the full-scale
+  # release gate is the LOCAL `make bench-corpus` run, never a per-push job.
+  bench-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Query-plan gate
+        run: make bench-corpus-explain
+      - name: Corpus regression bench (small profile)
+        run: make bench-corpus-ci
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"

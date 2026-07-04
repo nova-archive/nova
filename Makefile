@@ -81,6 +81,16 @@ sqlc-generate:
 codegen-check: sqlc-generate
 	git diff --exit-code -- internal/db/gen || (echo "sqlc drift: run 'make sqlc-generate' and commit" && exit 1)
 
+.PHONY: bench-corpus bench-corpus-ci bench-corpus-explain
+# P2-M7 D-M7-2: full-scale LOCAL release gate (hours; scratch DB only).
+bench-corpus:
+	BENCH_ROWS=9800000 BENCH_PROFILE=release go test -v -timeout 240m -run TestCorpusBench ./internal/benchcorpus
+# CI regression profile: shape + plans, small corpus.
+bench-corpus-ci:
+	BENCH_ROWS=250000 BENCH_PROFILE=ci go test -v -timeout 30m -run TestCorpusBench ./internal/benchcorpus
+bench-corpus-explain:
+	go test -v -timeout 20m -run 'TestExplainPlans|TestScratchDSNGuard|TestSeedSkewedCorpus' ./internal/benchcorpus
+
 build-coordinator:
 	go build -ldflags "$(GO_LDFLAGS)" -o bin/coordinator ./cmd/coordinator
 
