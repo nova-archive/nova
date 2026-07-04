@@ -63,6 +63,11 @@ type Querier interface {
 	// Drain debt (D-M7-6f): CIDs acked on the draining node whose count of acked,
 	// live, sync-current, NON-draining holders is below target_count. Pending
 	// reservations are NOT safe and do not reduce debt.
+	// Shape: ONE hash-aggregated live-holder count over the node's held CIDs,
+	// not a correlated subquery per pin — the P2-M7 corpus bench measured the
+	// correlated shape at ~23 s for a hub donor holding ~500k pins (9.8M-block
+	// corpus), which starves the 3 s metrics scrape budget exactly when drain
+	// visibility matters most.
 	CountDrainPendingCIDs(ctx context.Context, nodeID pgtype.UUID) (int64, error)
 	CountIntegrityAudits(ctx context.Context, arg CountIntegrityAuditsParams) (int64, error)
 	CountModerationDecisions(ctx context.Context) (int64, error)

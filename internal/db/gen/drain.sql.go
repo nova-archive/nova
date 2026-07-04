@@ -99,24 +99,33 @@ func (q *Queries) CountDrainInflightCIDs(ctx context.Context, nodeID pgtype.UUID
 }
 
 const countDrainPendingCIDs = `-- name: CountDrainPendingCIDs :one
-SELECT count(*) FROM (
-    SELECT pa.cid
-    FROM pin_assignments pa
-    JOIN blob_replication_state brs ON brs.cid = pa.cid
-    WHERE pa.node_id = $1 AND pa.state = 'acked'
-      AND (SELECT count(*)
-           FROM pin_assignments pa2
-           JOIN nodes n2 ON n2.id = pa2.node_id
-           WHERE pa2.cid = pa.cid AND pa2.state = 'acked'
-             AND n2.status IN ('active','suspect')
-             AND n2.assignment_sync_state = 'current'
-             AND n2.draining_at IS NULL) < brs.target_count
-) debt
+SELECT count(*)
+FROM pin_assignments pa
+JOIN blob_replication_state brs ON brs.cid = pa.cid
+LEFT JOIN (
+    SELECT pa2.cid, count(*) AS live_holders
+    FROM pin_assignments pa2
+    JOIN nodes n2 ON n2.id = pa2.node_id
+    WHERE pa2.state = 'acked'
+      AND n2.status IN ('active','suspect')
+      AND n2.assignment_sync_state = 'current'
+      AND n2.draining_at IS NULL
+      AND pa2.cid IN (SELECT pa3.cid FROM pin_assignments pa3
+                      WHERE pa3.node_id = $1 AND pa3.state = 'acked')
+    GROUP BY pa2.cid
+) h ON h.cid = pa.cid
+WHERE pa.node_id = $1 AND pa.state = 'acked'
+  AND COALESCE(h.live_holders, 0) < brs.target_count
 `
 
 // Drain debt (D-M7-6f): CIDs acked on the draining node whose count of acked,
 // live, sync-current, NON-draining holders is below target_count. Pending
 // reservations are NOT safe and do not reduce debt.
+// Shape: ONE hash-aggregated live-holder count over the node's held CIDs,
+// not a correlated subquery per pin — the P2-M7 corpus bench measured the
+// correlated shape at ~23 s for a hub donor holding ~500k pins (9.8M-block
+// corpus), which starves the 3 s metrics scrape budget exactly when drain
+// visibility matters most.
 func (q *Queries) CountDrainPendingCIDs(ctx context.Context, nodeID pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countDrainPendingCIDs, nodeID)
 	var count int64
