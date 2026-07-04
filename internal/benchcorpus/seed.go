@@ -183,6 +183,15 @@ func SeedCorpus(ctx context.Context, pool *pgxpool.Pool, rows int64, donors int,
 		return st, fmt.Errorf("seed audits: %w", err)
 	}
 
+	// ANALYZE after the bulk load: the planner is stats-blind right after a
+	// mass CopyFrom, and the stats-sensitive plans (hash-aggregate joins) can
+	// go catastrophic on the first samples. Production reaches this state via
+	// autovacuum; the bench must not measure a stats-blind planner.
+	if _, err := pool.Exec(ctx, `ANALYZE nodes, blobs, blob_manifests, blob_blocks,
+		pin_assignments, blob_replication_state, blob_replication_reconcile_queue, pin_audits`); err != nil {
+		return st, fmt.Errorf("analyze: %w", err)
+	}
+
 	st.Blobs = numBlobs
 	st.Blocks = numBlobs * blocksPerBlob
 	step := numBlobs / 256
