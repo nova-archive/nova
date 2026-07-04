@@ -42,30 +42,42 @@ func NewScheduler(pool *pgxpool.Pool, cfg SchedulerConfig) *Scheduler {
 	return &Scheduler{pool: pool, cfg: cfg}
 }
 
-// Tick runs one healing pass: drain the reconcile queue (bounded), heal Tier-1
-// CIDs, and — only when Tier-1 was empty this tick (strict Tier-1) — heal Tier-2
-// toward target_count. Returns the number of reservations made.
+// Tick runs one healing pass: drain the reconcile queue (bounded), heal the
+// critical tiers — donor_lost first, then Tier-1 — and, only when NO critical
+// work existed this tick (strict criticality), heal Tier-2 toward target_count.
+// Returns the number of reservations made.
+//
+// donor_lost joined the walk in P2-M7 (D-M7-6c): draining a SOLE holder drops
+// the CID to zero countable copies (donor_lost) while the draining node stays
+// a repair source of last resort — without walking donor_lost, that CID would
+// strand and the drain's debt could never clear. A donor_lost CID with no
+// repair source and no local copy stays a cheap no-op inside healCID (the
+// existing do-not-spin guard), bounded by TierLimit per tick.
 func (s *Scheduler) Tick(ctx context.Context) (int, error) {
 	if _, err := DrainReconcile(ctx, s.pool, s.cfg.DrainBatch, s.cfg.Targets); err != nil {
 		return 0, err
 	}
 	q := gen.New(s.pool)
-	tier1, err := q.ListUnderReplicatedByTier(ctx, gen.ListUnderReplicatedByTierParams{SafetyTier: "tier1", Limit: int32(s.cfg.TierLimit)})
-	if err != nil {
-		return 0, err
-	}
-	healed := 0
-	for _, row := range tier1 {
-		ok, err := s.healCID(ctx, row.Cid)
+	healed, critical := 0, 0
+	for _, tier := range []string{"donor_lost", "tier1"} {
+		rows, err := q.ListUnderReplicatedByTier(ctx, gen.ListUnderReplicatedByTierParams{SafetyTier: tier, Limit: int32(s.cfg.TierLimit)})
 		if err != nil {
 			return healed, err
 		}
-		if ok {
-			healed++
+		critical += len(rows)
+		for _, row := range rows {
+			ok, err := s.healCID(ctx, row.Cid)
+			if err != nil {
+				return healed, err
+			}
+			if ok {
+				healed++
+			}
 		}
 	}
-	// Strict Tier-1: descend to Tier-2 only when no Tier-1 work existed this tick.
-	if len(tier1) == 0 {
+	// Strict criticality: descend to Tier-2 only when no donor_lost/Tier-1 work
+	// existed this tick.
+	if critical == 0 {
 		tier2, err := q.ListUnderReplicatedByTier(ctx, gen.ListUnderReplicatedByTierParams{SafetyTier: "tier2", Limit: int32(s.cfg.TierLimit)})
 		if err != nil {
 			return healed, err

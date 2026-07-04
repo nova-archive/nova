@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"syscall"
 
 	"github.com/nova-archive/nova/internal/federation/wire"
 )
@@ -68,6 +69,14 @@ func Verify(ctx context.Context, fetcher SourceFetcher, pinner Pinner, src wire.
 
 	root, err := pinner.AddDeterministic(ctx, envelope)
 	if err != nil {
+		// P2-M7 disk-full drill (D-M7-4): a full disk during the Kubo import is
+		// the already-defined wire out_of_space refusal, not a generic
+		// kubo_error — the coordinator's fail-reason accounting and the
+		// operator's disk-full runbook both key on it. Classification only; no
+		// state was written (progress is persisted only after Verify succeeds).
+		if errors.Is(err, syscall.ENOSPC) {
+			return &FailErr{Reason: wire.FailReasonOutOfSpace, Err: err}
+		}
 		return &FailErr{Reason: wire.FailReasonKuboError, Err: err}
 	}
 	// Donor verification uses canonical CID-string equality, not general
