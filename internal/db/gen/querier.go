@@ -47,7 +47,7 @@ type Querier interface {
 	// COUNTABILITY (active/suspect + sync-current) — deliberately NO trust_state
 	// filter, because healthy_acked_count does not exclude suspended either; this
 	// metric is "still countable despite below-floor reputation", not read-source
-	// eligibility. Observability only — the automated remedy is P2-M6.1, NOT M7.
+	// eligibility. Observability only — the automated remedy is P2-M7.1, NOT M7.
 	CountBelowFloorReplicas(ctx context.Context, floor float64) ([]CountBelowFloorReplicasRow, error)
 	CountBlobs(ctx context.Context, arg CountBlobsParams) (int64, error)
 	CountBlocklist(ctx context.Context) (int64, error)

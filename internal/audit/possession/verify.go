@@ -164,7 +164,7 @@ func (a *Auditor) Record(ctx context.Context, t AuditTarget, res DispatchResult,
 			suspect = true
 		}
 		// Below-floor BULK re-replication is intentionally NOT done here (deferred to
-		// P2-M6.1, D-M6-7): below-floor excludes new placement + deprioritizes source
+		// P2-M7.1, D-M6-7): below-floor excludes new placement + deprioritizes source
 		// ordering, but present acked pins stay countable unless a pin-specific hard
 		// failure invalidated one above. P2-M7 adds only observability
 		// (nova_below_floor_replica_debt), the runbook, and the explicit drain

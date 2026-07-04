@@ -34,7 +34,7 @@ cross-version script.
 
 Non-negotiable (ratified with Bug, 2026-07-03 review):
 
-- **Drain is not P2-M6.1.** Drain stays node-scoped, operator-initiated, one-shot,
+- **Drain is not P2-M7.1.** Drain stays node-scoped, operator-initiated, one-shot,
   non-hysteretic. No reputation-triggered scan, no below-floor replacement queue, no
   background policy loop.
 - **`draining_at` is authoritative.** `placement_weight = 0` stays semantically
@@ -517,7 +517,7 @@ WHERE pa.node_id = $1 AND pa.state = 'acked'
 -- COUNTABILITY (active/suspect + sync-current) — deliberately NO trust_state
 -- filter, because healthy_acked_count does not exclude suspended either; this
 -- metric is "still countable despite below-floor reputation", not read-source
--- eligibility. Observability only — the automated remedy is P2-M6.1, NOT M7.
+-- eligibility. Observability only — the automated remedy is P2-M7.1, NOT M7.
 SELECT n.id AS node_id, count(*) AS acked_replicas
 FROM pin_assignments pa
 JOIN nodes n ON n.id = pa.node_id
@@ -612,7 +612,7 @@ package main
 
 // P2-M7 (D-M7-6): voluntary graceful drain — the safe VOLUNTARY decommission
 // primitive. Node-scoped, operator-initiated, one-shot, non-hysteretic; it is
-// NOT the P2-M6.1 below-floor replacement queue. revoke stays the involuntary
+// NOT the P2-M7.1 below-floor replacement queue. revoke stays the involuntary
 // path. Steps 3–5 of the design (mark, fail pendings, enqueue) run in ONE
 // transaction — the same bulk-transition contract as the liveness sweeper.
 
@@ -1186,7 +1186,7 @@ Expected: FAIL — fields undefined.
   - **While editing `verify.go`, fix the stale D-M6-7 deferral comments** — the
     code drift this milestone exists to eliminate: `verify.go:143` and
     `trust_test.go:17` both say below-floor bulk re-replication is "deferred to
-    P2-M7"; change both to **P2-M6.1**, noting M7 adds only observability
+    P2-M7"; change both to **P2-M7.1**, noting M7 adds only observability
     (`nova_below_floor_replica_debt`) + runbook + the explicit drain primitive.
   - `readsource.go` `attemptHolder`/`selectAndFetch`: outcome → `Fetch(...)`;
     donor 429/budget refusal branch → `EgressRefusal`; "no sourceable holder" →
@@ -1776,7 +1776,7 @@ time, re-derive from the file, and verify the regexp against a real signature
   **graceful decommission** (drain → watch `nova_node_drain_pending_cids` +
   `nova_node_drain_inflight_cids` → the D-M7-6f "safe to revoke" 3-condition gate →
   revoke → teardown); **mistaken drain** (`undrain`); **below-floor debt** (what
-  `nova_below_floor_replica_debt` means, why replicas stay countable until P2-M6.1,
+  `nova_below_floor_replica_debt` means, why replicas stay countable until P2-M7.1,
   when to leave alone / drain / revoke).
 
 - [ ] **Step 4: Write `docs/runbooks/failure-drills.md`** — provider loss (triage,
@@ -1823,7 +1823,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   - `HEALING_PROTOCOL.md`: draining-node semantics — excluded from
     healthy/sourceable safety counts and placement; allowed, deprioritized, as
     read/repair source; drain-debt definition (D-M7-6b/6c/6f); explicit restatement
-    that below-floor bulk re-replication remains **P2-M6.1**.
+    that below-floor bulk re-replication remains **P2-M7.1**.
   - `DATA_MODEL.sql`: annotate `nodes.draining_at` + `nodes_draining_idx`.
   - `ARCHITECTURE_DECISIONS.md`: two rows — metrics plane (coordinator-only,
     dedicated listener, bounded labels; donor metrics deferred) and
@@ -1835,7 +1835,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 2: ROADMAP row.** Append the P2-M7 row to the additive-track table
   (mirror the M5/M6 row density): theme "Production hardening & donor release ✅",
   migration `0016`, tag `p2-m7-production-hardening-release`, design + plan paths,
-  and **Deferrals:** below-floor bulk re-replication queue → **P2-M6.1**;
+  and **Deferrals:** below-floor bulk re-replication queue → **P2-M7.1**;
   `envelope_round_trip` + two-call audit → **P2-M8+**; donor-local metrics → later
   opt-in; multi-coordinator fencing → **Phase 6**.
 

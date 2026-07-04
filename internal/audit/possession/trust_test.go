@@ -14,7 +14,7 @@ import (
 // TestRecordBelowFloorDoesNotBulkReplace verifies the D-M6-7 narrowing: a soft
 // fail that drops a trusted node below the reputation floor demotes it to
 // probationary, but it must NOT bulk-enqueue reconcile for the node's other
-// still-acked CIDs (below-floor bulk re-replication is deferred to P2-M6.1; P2-M7
+// still-acked CIDs (below-floor bulk re-replication is deferred to P2-M7.1; P2-M7
 // adds only the nova_below_floor_replica_debt observability + runbook). A soft
 // (deadline) fail is not pin-specific, so NO reconcile rows are enqueued at all.
 func TestRecordBelowFloorDoesNotBulkReplace(t *testing.T) {

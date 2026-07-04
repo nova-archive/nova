@@ -73,7 +73,7 @@ WHERE pa.node_id = $1 AND pa.state = 'acked'
 -- COUNTABILITY (active/suspect + sync-current) — deliberately NO trust_state
 -- filter, because healthy_acked_count does not exclude suspended either; this
 -- metric is "still countable despite below-floor reputation", not read-source
--- eligibility. Observability only — the automated remedy is P2-M6.1, NOT M7.
+-- eligibility. Observability only — the automated remedy is P2-M7.1, NOT M7.
 SELECT n.id AS node_id, count(*) AS acked_replicas
 FROM pin_assignments pa
 JOIN nodes n ON n.id = pa.node_id

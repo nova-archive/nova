@@ -156,7 +156,7 @@ existing `internal/db/queries/metrics.sql` queries where they already exist
 **Below-floor replica debt**, precisely: the count of **acked** replicas held on
 nodes whose `reputation_score` is below the configured `reputation_floor` but whose
 pins have **not** hard-failed — replicas that therefore remain present and countable
-until the P2-M6.1 queue lands. Making this debt *visible* (metric + runbook) while
+until the P2-M7.1 queue lands. Making this debt *visible* (metric + runbook) while
 deferring its *automated replacement* is the honest form of D-M6-7's narrowing: the
 operator can see the debt, decide, and act, without M7 shipping the bulk-replacement
 policy.
@@ -328,7 +328,7 @@ remains attributable to the departing node.
 **Below-floor debt** (observability drill — metric + runbook only, no automated
 re-replication in M7): the D-M7-1a metric surfaces non-zero debt when a node drops
 below the floor; the runbook explains why present-but-untrusted replicas remain
-countable until the P2-M6.1 queue lands, and when to leave the debt alone, drain, or
+countable until the P2-M7.1 queue lands, and when to leave the debt alone, drain, or
 revoke.
 
 Automated proofs extend the existing loopback-mTLS e2e capstones in
@@ -339,7 +339,7 @@ unit/integration test rather than a full-stack e2e.
 ### D-M7-5 — Deferrals, named with their owning milestone.
 
 - **Below-floor *bulk* re-replication queue** (hysteresis around the floor, rate
-  limits, a separate "untrusted replica replacement" queue) — **P2-M6.1**. M7 makes
+  limits, a separate "untrusted replica replacement" queue) — **P2-M7.1**. M7 makes
   the debt *observable* (D-M7-1a) and *actionable by runbook* (D-M7-4) but ships no
   automated whole-federation replacement policy. `novactl node drain` (D-M7-6) is
   **not** this queue: it is explicit, operator-initiated, node-scoped, one-shot, and
@@ -361,7 +361,7 @@ M7 adds **`novactl node drain <node_id>`** (and its inverse, **`undrain`**,
 D-M7-6e) — explicit, operator-initiated, one-shot, reusing the existing M5
 dirty/reconcile machinery (`MarkReplicationDirtyForNode` +
 `EnqueueReconcileForNode`, the same bulk-transition contract the liveness sweeper
-uses in `enqueueNodeCIDs`). It is **distinct from the deferred P2-M6.1 below-floor
+uses in `enqueueNodeCIDs`). It is **distinct from the deferred P2-M7.1 below-floor
 queue**: no reputation trigger, no hysteresis, no background scanning of all
 below-floor nodes, no automatic whole-federation replacement policy. It is the
 missing *lifecycle* primitive for donor participation — a system that invites
@@ -601,13 +601,13 @@ Cross-references).
 
 **Drain scope invariant (repeated deliberately):** drain is node-scoped and
 operator-initiated. It does not scan all below-floor nodes, does not trigger on
-reputation movement, does not add hysteresis, and does not implement the P2-M6.1
+reputation movement, does not add hysteresis, and does not implement the P2-M7.1
 untrusted-replica replacement queue.
 
 **Out (deferred, owning milestone named).**
 
 - Below-floor **bulk** re-replication queue (hysteresis / rate-limit / untrusted-
-  replacement) — **P2-M6.1** (D-M7-5).
+  replacement) — **P2-M7.1** (D-M7-5).
 - `envelope_round_trip` whole-blob audit kind + two-call `/fed/v1/audit/response` —
   **P2-M8+** (D-M7-5).
 - Donor-local metrics surface — **later opt-in**, once the donor artifact is stable
@@ -679,7 +679,7 @@ P2-M7 is done when, end to end and test-backed:
    fails safe and recovers; a **drained** donor is decommissioned with **zero
    durability loss** and zero residual drain debt before revoke; a mistaken drain is
    reversible via `undrain`. Drain remains node-scoped and operator-initiated — no
-   scanning, no hysteresis, no P2-M6.1 queue.
+   scanning, no hysteresis, no P2-M7.1 queue.
 5. **Shippable to a stranger.** A fresh host following `docs/quickstart/donor.md`
    digest-pins, `cosign verify`s against the workflow-extracted identity/issuer,
    verifies SBOM + provenance attestations, enrolls in the mesh, joins, serves, and

@@ -2,7 +2,7 @@ package main
 
 // P2-M7 (D-M7-6): voluntary graceful drain — the safe VOLUNTARY decommission
 // primitive. Node-scoped, operator-initiated, one-shot, non-hysteretic; it is
-// NOT the P2-M6.1 below-floor replacement queue. revoke stays the involuntary
+// NOT the P2-M7.1 below-floor replacement queue. revoke stays the involuntary
 // path. Steps 3–5 of the design (mark, fail pendings, enqueue) run in ONE
 // transaction — the same bulk-transition contract as the liveness sweeper.
 

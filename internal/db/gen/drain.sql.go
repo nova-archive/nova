@@ -46,7 +46,7 @@ type CountBelowFloorReplicasRow struct {
 // COUNTABILITY (active/suspect + sync-current) — deliberately NO trust_state
 // filter, because healthy_acked_count does not exclude suspended either; this
 // metric is "still countable despite below-floor reputation", not read-source
-// eligibility. Observability only — the automated remedy is P2-M6.1, NOT M7.
+// eligibility. Observability only — the automated remedy is P2-M7.1, NOT M7.
 func (q *Queries) CountBelowFloorReplicas(ctx context.Context, floor float64) ([]CountBelowFloorReplicasRow, error) {
 	rows, err := q.db.Query(ctx, countBelowFloorReplicas, floor)
 	if err != nil {

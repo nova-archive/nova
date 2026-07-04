@@ -87,7 +87,7 @@ held on live nodes whose reputation has sunk below the floor.
 **Why these replicas still count:** below-floor excludes a node from NEW
 placement and deprioritizes it as a read source, but present acked replicas
 stay durability-countable until a pin-specific hard failure invalidates them.
-The automated bulk replacement of below-floor replicas is **P2-M6.1** —
+The automated bulk replacement of below-floor replicas is **P2-M7.1** —
 deliberately NOT this release (D-M7-5); M7 gives you the number and this
 runbook.
 

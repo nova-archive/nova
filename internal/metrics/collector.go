@@ -57,7 +57,7 @@ func newDBCollector(pool *pgxpool.Pool, reputationFloor float64) *dbCollector {
 			"Nodes by status, trust state and assignment sync state.",
 			[]string{"status", "trust_state", "assignment_sync_state"}, nil),
 		belowFloorTotal: prometheus.NewDesc("nova_below_floor_replica_debt",
-			"Acked, countable replicas held on nodes below the reputation floor (observability only; remedy is P2-M6.1).", nil, nil),
+			"Acked, countable replicas held on nodes below the reputation floor (observability only; remedy is P2-M7.1).", nil, nil),
 		belowFloorPerNode: prometheus.NewDesc("nova_node_below_floor_replicas",
 			"Acked, countable replicas on this below-floor node.", []string{"node_id"}, nil),
 		draining: prometheus.NewDesc("nova_node_draining",

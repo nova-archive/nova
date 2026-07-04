@@ -47,7 +47,7 @@ effectiveness) are baked into the parameters below.
 > `CountDrainInflightCIDs`, surfaced as `nova_node_drain_*`). The healing
 > tick walks `donor_lost` before `tier1` so a drained SOLE holder's CIDs
 > re-replicate from the draining source instead of stranding. **Below-floor
-> bulk re-replication is P2-M6.1** (the M6 amendment above predates the
+> bulk re-replication is P2-M7.1** (the M6 amendment above predates the
 > renumbering) — M7 adds only the `nova_below_floor_replica_debt`
 > observability and the operator runbook, never an automated remedy. See
 > `docs/superpowers/specs/phase2/2026-07-01-phase2-m7-production-hardening-release-design.md`.
