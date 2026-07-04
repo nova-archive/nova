@@ -17,7 +17,13 @@ import (
 type Outcome int
 
 const (
-	OutcomePass Outcome = iota
+	// OutcomeUnknown is deliberately the ZERO VALUE and is never a decision:
+	// classify() records it as a skip. P2-M7 cross-version drill finding —
+	// OutcomePass used to be the zero value, so a discarded dispatch error
+	// left a zero DispatchResult that was recorded as a PASS (reputation up,
+	// transcript over nil bytes) without the donor ever being challenged.
+	OutcomeUnknown Outcome = iota
+	OutcomePass
 	OutcomeFailNotPresent
 	OutcomeFailMismatch
 	OutcomeFailDeadline
@@ -52,9 +58,14 @@ func (d *Dispatcher) Challenge(ctx context.Context, addr string, ch wire.AuditCh
 	}
 	ch.ChallengeKind = wire.AuditChallengeKindBlockHash
 	body, _ := json.Marshal(ch)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, addr+"/fed/v1/audit/challenge", bytes.NewReader(body))
+	// source_nebula_addr is host:port (what donors register/heartbeat) — the
+	// scheme is prepended HERE, matching the donor-read fetcher's convention.
+	// P2-M7 cross-version drill finding: building the URL from the bare
+	// host:port made NewRequest fail on EVERY production challenge, and the
+	// error path then fabricated passes (see the zero-value note on Outcome).
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+addr+"/fed/v1/audit/challenge", bytes.NewReader(body))
 	if err != nil {
-		return DispatchResult{}, err
+		return DispatchResult{Outcome: OutcomeSkipUnreachable}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	start := d.now()

@@ -105,7 +105,7 @@ func (n *capturingNotifier) count(typ string) int {
 // wired (POST /fed/v1/audit/challenge).
 type auditDonor struct {
 	nodeID uuid.UUID
-	addr   string // full https URL, e.g. https://127.0.0.1:NNNNN
+	addr   string // host:port — the PRODUCTION source_nebula_addr convention (the dispatcher prepends https://)
 	reader *fakeAuditReader
 	close  func()
 }
@@ -147,7 +147,7 @@ func startAuditDonor(t *testing.T, caPEM, caKeyPEM []byte, pub ed25519.PublicKey
 	go func() { _ = srv.Serve(ln) }()
 	return &auditDonor{
 		nodeID: nodeID,
-		addr:   "https://" + inner.Addr().String(),
+		addr:   inner.Addr().String(),
 		reader: reader,
 		close:  func() { _ = srv.Close(); _ = ln.Close() },
 	}

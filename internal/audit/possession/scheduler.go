@@ -251,10 +251,12 @@ func (s *Scheduler) auditOne(ctx context.Context, q *gen.Queries, nodeIDStr, cid
 	}
 	slog.Info("audit.possession.challenged", "node", nodeIDStr, "cid", target.BlobCID, "block", target.BlockCID)
 
-	// Dispatch with per-challenge timeout.
+	// Dispatch with per-challenge timeout. A dispatch error is surfaced (not
+	// silently discarded — the P2-M7 drill caught a discarded error recording
+	// a zero-value result); the returned outcome still decides the record.
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.Deadline)
 	defer cancel()
-	res, _ := s.dispatch.Challenge(cctx, addr, wire.AuditChallenge{
+	res, derr := s.dispatch.Challenge(cctx, addr, wire.AuditChallenge{
 		ChallengeID:  target.AuditID,
 		BlobCID:      cid,
 		AssignmentID: assignmentID,
@@ -264,6 +266,9 @@ func (s *Scheduler) auditOne(ctx context.Context, q *gen.Queries, nodeIDStr, cid
 		BlockSize:    int64(blk.BlockSize),
 		Nonce:        target.Nonce,
 	})
+	if derr != nil {
+		slog.Warn("audit.possession.dispatch_error", "node", nodeIDStr, "cid", cid, "err", derr)
+	}
 
 	if err := s.auditor.Record(ctx, target, res, s.cfg.ReputationFloor); err != nil {
 		slog.Warn("audit.possession.record_error", "cid", cid, "err", err)

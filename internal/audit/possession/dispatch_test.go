@@ -25,12 +25,12 @@ func rawLeafCID(t *testing.T, raw []byte) string {
 func TestDispatchVerifiesByCIDReconstruction(t *testing.T) {
 	raw := []byte("hello-block")
 	blkCID := rawLeafCID(t, raw)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(raw)
 	}))
 	defer srv.Close()
 	d := &Dispatcher{hc: srv.Client(), now: time.Now}
-	res, err := d.Challenge(context.Background(), srv.URL, wire.AuditChallenge{
+	res, err := d.Challenge(context.Background(), srv.Listener.Addr().String(), wire.AuditChallenge{
 		BlockCID:  blkCID,
 		BlockSize: int64(len(raw)),
 	})
@@ -46,12 +46,12 @@ func TestDispatchWrongBytesIsMismatch(t *testing.T) {
 	raw := []byte("hello-block")
 	tampered := []byte("HELLO-BLOCK") // same length, different content
 	blkCID := rawLeafCID(t, raw)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(tampered)
 	}))
 	defer srv.Close()
 	d := &Dispatcher{hc: srv.Client(), now: time.Now}
-	res, err := d.Challenge(context.Background(), srv.URL, wire.AuditChallenge{
+	res, err := d.Challenge(context.Background(), srv.Listener.Addr().String(), wire.AuditChallenge{
 		BlockCID:  blkCID,
 		BlockSize: int64(len(raw)),
 	})
@@ -66,12 +66,12 @@ func TestDispatchWrongBytesIsMismatch(t *testing.T) {
 func TestDispatch404IsNotPresent(t *testing.T) {
 	raw := []byte("hello-block")
 	blkCID := rawLeafCID(t, raw)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 	d := &Dispatcher{hc: srv.Client(), now: time.Now}
-	res, err := d.Challenge(context.Background(), srv.URL, wire.AuditChallenge{
+	res, err := d.Challenge(context.Background(), srv.Listener.Addr().String(), wire.AuditChallenge{
 		BlockCID:  blkCID,
 		BlockSize: int64(len(raw)),
 	})
@@ -86,12 +86,12 @@ func TestDispatch404IsNotPresent(t *testing.T) {
 func TestDispatch429IsSkipBudget(t *testing.T) {
 	raw := []byte("hello-block")
 	blkCID := rawLeafCID(t, raw)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
 	d := &Dispatcher{hc: srv.Client(), now: time.Now}
-	res, err := d.Challenge(context.Background(), srv.URL, wire.AuditChallenge{
+	res, err := d.Challenge(context.Background(), srv.Listener.Addr().String(), wire.AuditChallenge{
 		BlockCID:  blkCID,
 		BlockSize: int64(len(raw)),
 	})
