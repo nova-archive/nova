@@ -49,3 +49,8 @@ stamp nor the env var is present (e.g. `go run`), the binary reports
 - [ ] `ROADMAP.md` milestone row marked complete with the tag name.
 - [ ] Coordinator and `nova-node` images, if published, are tagged by
       digest and signed (cosign keyless) — see `.github/workflows/ci.yml`.
+- [ ] Cross-version gate green: `make crossversion-e2e PAIRING=all`
+      (N−1 × HEAD binary matrix, P2-M7 D-M7-3).
+- [ ] Corpus benchmark artifact recorded: `make bench-corpus` against the
+      committed release thresholds; commit the
+      `reports/benchmarks/p2-m7-corpus-<date>.{json,md}` artifact (D-M7-2).

@@ -11,15 +11,16 @@ Future product layers (`nova-video`, `nova-audio`, `nova-archive`,
 `nova-document`) will share the same storage core.
 
 > **Status:** Phase 1 (single-node MVP) is **complete** at
-> `v0.1.0-rc1` — all fourteen milestones (foundation through setup
-> wizard, Docker production, and release polish) are tagged. **Phase 2
-> (federation + streaming-AEAD envelope) is in progress:** the
-> operator-UX/privacy remediation track (P2-M0.1–M0.6) plus the first
-> federation milestones — build/repo separation (P2-M1) and live
-> identity/registration over mTLS (P2-M2) — are tagged; assignment
-> synchronization (P2-M3) is next. New operators: start at
-> [`docs/quickstart.md`](docs/quickstart.md). See
-> [`docs/ROADMAP.md`](docs/ROADMAP.md) for per-milestone status.
+> `v0.1.0-rc1` — all fourteen milestones are tagged. **Phase 2's donor
+> federation is volunteer-ready:** P2-M1 through P2-M7 are shipped —
+> build/repo separation, identity/registration over mTLS, assignment
+> sync, replication, donor-backed reads, liveness + healing, possession
+> audits, and the P2-M7 production-hardening release (coordinator
+> `/metrics`, drain lifecycle, cross-version gate, runbooks). The
+> streaming-AEAD envelope track (P2-M8+) is next. New operators: start
+> at [`docs/quickstart.md`](docs/quickstart.md); volunteers hosting a
+> donor node: [`docs/quickstart/donor.md`](docs/quickstart/donor.md).
+> See [`docs/ROADMAP.md`](docs/ROADMAP.md) for per-milestone status.
 
 ## Who is this for?
 
@@ -111,11 +112,13 @@ nginx/          reference reverse-proxy configuration
 
 Phase 0 (specifications) and Phase 1 (single-node MVP) are complete;
 Phase 1 closed at the `v0.1.0-rc1` release candidate (M1 through M14
-are tagged). **Phase 2 (federation + streaming-AEAD envelope) is in
-progress:** the P2-M0.x operator-UX/privacy remediation track and the
-first two federation milestones (P2-M1 build/repo separation, P2-M2
-identity/registration) are tagged; P2-M3 (assignment synchronization)
-is next. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the authoritative
+are tagged). **Phase 2's donor-federation track is complete through
+P2-M7 (production hardening & donor release)**: the P2-M0.x
+operator-UX/privacy remediation track plus P2-M1–M7 are tagged —
+identity, assignment sync, replication, donor-backed reads, healing,
+possession audits, and the volunteer-ready hardening release. The
+streaming-AEAD envelope milestones (P2-M8+) are next. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for the authoritative
 per-milestone status.
 
 ## Try Nova (developer setup)
@@ -244,8 +247,9 @@ modes (M13), and the operator quickstart + end-to-end CI smoke (M14).
 For a production-style first-run, use the setup wizard (`docker
 compose --profile setup up`; see the dev-walkthrough note above) and
 the operator quickstart at [`docs/quickstart.md`](docs/quickstart.md).
-Phase 2 (federation + streaming-AEAD) is in progress; see
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+Phase 2's donor federation is shipped through P2-M7 (volunteers: see
+[`docs/quickstart/donor.md`](docs/quickstart/donor.md)); the
+streaming-AEAD track is next — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Development MCP servers
 

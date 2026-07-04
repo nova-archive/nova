@@ -18,10 +18,13 @@ Nova has two distinct deployment roles; do not confuse them:
   master key, moderation, and the public read gateway). Operators follow
   [`quickstart.md`](quickstart.md), not this guide.
 - **Donor** — runs a `nova-node` that pins **opaque ciphertext** over the
-  operator's mesh. **That is you.** This guide is the donor pathway. The exact,
-  signed, tested install steps are formalized in `quickstart/donor.md` as part of
-  the Phase 2 donor release (P2-M7); the walkthrough below is the current
-  reference.
+  operator's mesh. **That is you.** This guide is the network-posture half of
+  the donor pathway. The signed, tested install walkthrough (image
+  verification, enrollment, running, upgrading, leaving) is
+  [`quickstart/donor.md`](quickstart/donor.md) — shipped with the P2-M7 donor
+  release — and the operational procedures live in
+  [`runbooks/donor-lifecycle.md`](runbooks/donor-lifecycle.md) and
+  [`runbooks/failure-drills.md`](runbooks/failure-drills.md).
 
 A donor never holds keys, never sees plaintext, and exposes no public ports.
 
