@@ -91,6 +91,11 @@ bench-corpus-ci:
 bench-corpus-explain:
 	go test -v -timeout 20m -run 'TestExplainPlans|TestScratchDSNGuard|TestSeedSkewedCorpus' ./internal/benchcorpus
 
+.PHONY: crossversion-e2e
+# P2-M7 D-M7-3: local gate; requires docker + libvips headers. PAIRING=all|head-head|head-coord-old-donor|old-coord-head-donor
+crossversion-e2e:
+	./scripts/crossversion_e2e.sh $(PAIRING)
+
 build-coordinator:
 	go build -ldflags "$(GO_LDFLAGS)" -o bin/coordinator ./cmd/coordinator
 
