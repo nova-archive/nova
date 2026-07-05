@@ -1,4 +1,4 @@
-.PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-down migrate-status clean docker-build migrations-frozen
+.PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-down migrate-status clean docker-build docker-refresh-digests migrations-frozen
 
 GOTEST    := go test ./...
 GOTESTV   := go test -v ./...
@@ -24,6 +24,7 @@ help:
 	@echo "  migrate-status    Show migration status"
 	@echo "  clean             Remove build artifacts"
 	@echo "  docker-build      Build the multi-stage Docker image (no push)"
+	@echo "  docker-refresh-digests  Re-resolve the digest pins in docker/*.Dockerfile"
 	@echo "  migrations-frozen Verify shipped migrations are unmodified (MANIFEST.sha256)"
 
 test:
@@ -69,6 +70,11 @@ clean:
 # Requires Docker 29+ with BuildKit enabled (the default).
 docker-build:
 	docker build -f docker/coordinator.Dockerfile -t nova-coordinator:dev .
+
+# P2-M7.1: base images are digest-pinned (FROM image:tag@sha256:...).
+# Re-resolves each tag's current manifest-list digest and rewrites the pins in place.
+docker-refresh-digests:
+	./scripts/refresh-docker-digests.sh
 
 migrations-frozen:
 	./scripts/check-migrations-frozen.sh

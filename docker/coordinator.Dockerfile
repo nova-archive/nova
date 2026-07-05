@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
+# Base images digest-pinned (P2-M7.1); resolved 2026-07-05. To bump: make docker-refresh-digests or docker buildx imagetools inspect.
+
 # ---- go-builder: coordinator + novactl + migrate (cgo libvips) ----
-FROM golang:1.26-bookworm AS go-builder
+FROM golang:1.26-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libvips-dev pkg-config gcc && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -14,7 +16,7 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/coordinator ./cmd/coordinator \
  && go build -trimpath -ldflags="-s -w" -o /out/migrate     ./cmd/migrate
 
 # ---- node-builder: admin + widget + setup hermetic bundles ----
-FROM node:22-bookworm AS node-builder
+FROM node:22-bookworm@sha256:c601a46abb4d2ab80a9dc3da208d50d1122642d53f17a101926ace71e5a9bf1c AS node-builder
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY web/admin/package.json  web/admin/package.json
@@ -30,7 +32,7 @@ RUN npm run -w @nova/admin build \
 # govips/libvips requires glibc — distroless/alpine will not link.
 # The entrypoint runs as root, chowns mounted volumes to the nova user,
 # then drops privileges via gosu for migrate + the final coordinator exec.
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
 # curl exists solely for the compose healthcheck probe of /health — the
 # image ships no other HTTP client (no wget, no busybox).
 RUN apt-get update && apt-get install -y --no-install-recommends \

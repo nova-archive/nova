@@ -1,4 +1,4 @@
-# Dependabot keeps the three ecosystems current. Alerts and update PRs are
+# Dependabot keeps the four ecosystems current. Alerts and update PRs are
 # triaged per-milestone (see CONTRIBUTING.md "Toolchain currency"), never
 # auto-merged.
 version: 2
@@ -21,5 +21,12 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    schedule:
+      interval: weekly
+
+  # Watches the digest-pinned FROM lines in docker/*.Dockerfile (P2-M7.1).
+  # Digest pins without a watcher rot silently.
+  - package-ecosystem: docker
+    directory: /docker
     schedule:
       interval: weekly
