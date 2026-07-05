@@ -53,8 +53,35 @@ func New(t *testing.T, ctx context.Context) *pgxpool.Pool {
 
 	pool, err := db.Open(ctx, dsn)
 	require.NoError(t, err)
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() { closeBounded(t, pool) })
 	return pool
+}
+
+// poolCloseGrace bounds how long a test cleanup will wait for
+// pgxpool.Pool.Close. Close blocks until every acquired connection is
+// released (puddle waits on a WaitGroup), so a test that t.Fatal's while
+// holding an open Tx/Conn would otherwise hang the whole package until
+// go test's timeout (default 10m) — the P2-M7.1 "2 packages hang 15m"
+// failure mode.
+const poolCloseGrace = 5 * time.Second
+
+// closeBounded closes the pool but gives up after poolCloseGrace,
+// logging loudly instead of hanging. On timeout the abandoned Close
+// goroutine unblocks moments later anyway: this cleanup was registered
+// after the container-terminate cleanup, so terminate runs next and
+// severs the leaked connection.
+func closeBounded(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		pool.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(poolCloseGrace):
+		t.Logf("dbtest: WARNING: pgxpool.Close still blocked after %s — this test leaked an acquired Tx/Conn (t.Fatal before Rollback/Release?). Abandoning the close so the test fails fast; the container terminate cleanup will sever the leaked connection.", poolCloseGrace)
+	}
 }
 
 func applyMigrations(t *testing.T, ctx context.Context, dsn string) {
