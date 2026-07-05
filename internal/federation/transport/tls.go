@@ -86,38 +86,90 @@ func CoordinatorClientTLS(caPEM, certPEM, keyPEM []byte) (*tls.Config, error) {
 	}, nil
 }
 
+// verifyFederationChain parses a presented peer chain, verifies it against the
+// federation CA, and extracts the leaf's nova:// federation identity. EKU is
+// deliberately unconstrained: donor federation certs carry ClientAuth only,
+// and this plane's authorization derives from the URI SAN identity plus
+// per-request signed grants, not from certificate EKU bits. Shared by every
+// outbound federation client that dials a peer serving with a federation cert
+// (coordinator→donor P2-M7; donor↔donor repair P2-M7.1).
+func verifyFederationChain(pool *x509.CertPool, rawCerts [][]byte) (Identity, error) {
+	if len(rawCerts) == 0 {
+		return Identity{}, fmt.Errorf("transport: peer presented no certificate")
+	}
+	leaf, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return Identity{}, fmt.Errorf("transport: peer leaf: %w", err)
+	}
+	inters := x509.NewCertPool()
+	for _, raw := range rawCerts[1:] {
+		if c, cerr := x509.ParseCertificate(raw); cerr == nil {
+			inters.AddCert(c)
+		}
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots:         pool,
+		Intermediates: inters,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	}); err != nil {
+		return Identity{}, fmt.Errorf("transport: peer server cert not signed by the federation CA: %w", err)
+	}
+	id, err := IdentityFromCert(leaf)
+	if err != nil {
+		return Identity{}, fmt.Errorf("transport: peer server cert has no federation identity: %w", err)
+	}
+	return id, nil
+}
+
 // verifyFederationServerChain verifies a donor server chain against the
 // federation CA and requires a nova:// federation URI SAN identity on the
-// leaf. EKU is deliberately unconstrained: donor federation certs carry
-// ClientAuth only, and this plane's authorization derives from the URI SAN
-// identity plus per-request signed grants, not from certificate EKU bits.
+// leaf (any federation identity — the coordinator's read/audit tiers pick
+// sources dynamically and bind authorization per request).
 func verifyFederationServerChain(pool *x509.CertPool) func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return fmt.Errorf("transport: donor presented no certificate")
-		}
-		leaf, err := x509.ParseCertificate(rawCerts[0])
+		_, err := verifyFederationChain(pool, rawCerts)
+		return err
+	}
+}
+
+// DonorRepairClientTLS derives the donor's mTLS client config for donor↔donor
+// repair fetches (P2-M7.1, D-M7.1-4) from its base federation client config
+// (ClientTLSConfig), pinning verification to the repair instruction's named
+// source holder.
+//
+// A source donor serves TLS with its FEDERATION cert — nova://node/<uuid> URI
+// SAN, ClientAuth EKU, NO host SANs — so standard hostname+ServerAuth
+// verification can never pass against a real source (the same defect class the
+// P2-M7 cross-version drill fixed on the coordinator→donor path). Verification
+// is therefore REPLACED (not removed): the chain must verify against the
+// federation CA and the leaf must carry EXACTLY nova://node/<expectedNodeID> —
+// the identity the repair instruction's source designation named. Any other
+// valid federation identity is refused: an enrolled-but-compromised donor must
+// not be able to impersonate the scheduled source. No hostname/ServerAuth
+// fallback exists. Byte integrity never rests on TLS here: the destination
+// re-imports the fetched envelope and requires canonical CID equality.
+func DonorRepairClientTLS(base *tls.Config, expectedNodeID string) (*tls.Config, error) {
+	if base == nil || base.RootCAs == nil {
+		return nil, fmt.Errorf("transport: donor repair TLS requires the federation client base config")
+	}
+	if expectedNodeID == "" {
+		return nil, fmt.Errorf("transport: donor repair TLS requires the expected source node_id")
+	}
+	pool := base.RootCAs
+	cfg := base.Clone()
+	cfg.InsecureSkipVerify = true // custom verification below — never a verification bypass
+	cfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		id, err := verifyFederationChain(pool, rawCerts)
 		if err != nil {
-			return fmt.Errorf("transport: donor leaf: %w", err)
+			return err
 		}
-		inters := x509.NewCertPool()
-		for _, raw := range rawCerts[1:] {
-			if c, cerr := x509.ParseCertificate(raw); cerr == nil {
-				inters.AddCert(c)
-			}
-		}
-		if _, err := leaf.Verify(x509.VerifyOptions{
-			Roots:         pool,
-			Intermediates: inters,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-		}); err != nil {
-			return fmt.Errorf("transport: donor server cert not signed by the federation CA: %w", err)
-		}
-		if _, err := IdentityFromCert(leaf); err != nil {
-			return fmt.Errorf("transport: donor server cert has no federation identity: %w", err)
+		if id.Role != RoleNode || id.NodeID != expectedNodeID {
+			return fmt.Errorf("transport: repair source presented federation identity nova://%s/%s, expected nova://%s/%s",
+				id.Role, id.NodeID, RoleNode, expectedNodeID)
 		}
 		return nil
 	}
+	return cfg, nil
 }
 
 // NewTLSListener wraps a net.Listener in a TLS listener using cfg. Used by both

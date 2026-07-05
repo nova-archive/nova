@@ -372,6 +372,19 @@ The destination donor:
 4. Sends `ack` with `fetched_from_node_id = source_node_id`, plus
    `assignment_id` and `generation`.
 
+**Transport identity (P2-M7.1).** The destination donor's repair client
+verifies the source donor's serving certificate identically to the
+coordinator→donor model (P2-M7): the presented chain must verify against the
+federation CA **and** the leaf must carry the `nova://node/<source_node_id>`
+URI SAN naming the **instruction-designated source** from the `assign`
+change's source designation — not merely *any* valid federation identity, and
+never hostname/ServerAuth verification (real donor federation certs carry a
+URI SAN only, no host SANs, so a hostname-verifying client cannot reach a
+production source at all). An enrolled-but-compromised donor therefore cannot
+impersonate a scheduled source. Byte integrity is independent of TLS either
+way: the destination still verifies by deterministic re-import + canonical
+CID equality (step 2 above).
+
 **This is the only sanctioned repair path in Phase 2.** Bitswap-
 backed `ipfs pin add` for repair is explicitly disabled by the donor
 implementation; the donor's only repair input is the coordinator's

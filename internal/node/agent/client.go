@@ -12,27 +12,61 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/federation/wire"
 	"github.com/nova-archive/nova/internal/node/transfer"
 )
 
 // HTTPClient is the donor's mTLS federation client.
 type HTTPClient struct {
-	base string
-	hc   *http.Client
+	base   string
+	hc     *http.Client
+	tlsCfg *tls.Config // base federation client config; seed for repair configs
+
+	mu       sync.Mutex
+	repairHC map[string]*http.Client // per-source-node repair clients, identity-pinned TLS (P2-M7.1)
 }
 
 // NewHTTPClient builds an mTLS client targeting coordinatorURL with tlsCfg.
 func NewHTTPClient(coordinatorURL string, tlsCfg *tls.Config) *HTTPClient {
 	return &HTTPClient{
-		base: coordinatorURL,
+		base:   coordinatorURL,
+		tlsCfg: tlsCfg,
 		hc: &http.Client{
 			Timeout:   15 * time.Second,
 			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		},
 	}
+}
+
+// repairClient returns the HTTP client for donor↔donor repair fetches from
+// source node nodeID: the base federation TLS config derived to verify the
+// peer's cert against the federation CA AND require exactly
+// nova://node/<nodeID> (transport.DonorRepairClientTLS — P2-M7.1, D-M7.1-4).
+// Clients are cached per source node so a healing batch reuses connections.
+// Fails closed: without a federation TLS base there is no donor↔donor path.
+func (c *HTTPClient) repairClient(nodeID string) (*http.Client, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if hc, ok := c.repairHC[nodeID]; ok {
+		return hc, nil
+	}
+	cfg, err := transport.DonorRepairClientTLS(c.tlsCfg, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("agent: repair tls for source %s: %w", nodeID, err)
+	}
+	hc := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: cfg},
+	}
+	if c.repairHC == nil {
+		c.repairHC = make(map[string]*http.Client)
+	}
+	c.repairHC[nodeID] = hc
+	return hc, nil
 }
 
 func (c *HTTPClient) post(ctx context.Context, path string, in, out any, okStatus int) error {
@@ -146,21 +180,28 @@ func (c *HTTPClient) Fail(ctx context.Context, cid string, f wire.Fail) error {
 }
 
 // Fetch fetches ciphertext for cid from the source using its repair token. For a
-// coordinator-as-source grant (M4) it targets c.base; for a donor↔donor grant (M5)
-// it targets the source donor's advertised address (src.NebulaAddr) over the same
-// federation mTLS client (the source donor presents a federation-CA server cert).
+// coordinator-as-source grant (M4) it targets c.base over the base federation
+// client. For a donor↔donor grant (M5) it targets the source donor's advertised
+// address (src.NebulaAddr) over an identity-pinned client that verifies the
+// peer's serving cert against the federation CA AND requires exactly the
+// nova://node/<src.NodeID> URI SAN the repair instruction named — never
+// hostname/ServerAuth (P2-M7.1, D-M7.1-4).
 // Returns transfer.ErrSourceMissing on 404, transfer.ErrSourceUnauthorized on 403.
 func (c *HTTPClient) Fetch(ctx context.Context, src wire.ChangeSource, cid string, _ int64) (io.ReadCloser, error) {
-	base := c.base
+	base, hc := c.base, c.hc
 	if src.NodeID != wire.CoordinatorSourceID && src.NebulaAddr != "" {
 		base = "https://" + src.NebulaAddr
+		var err error
+		if hc, err = c.repairClient(src.NodeID); err != nil {
+			return nil, err
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/fed/v1/blob/"+url.PathEscape(cid), nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("X-Nova-Repair-Token", src.Token)
-	resp, err := c.hc.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}
