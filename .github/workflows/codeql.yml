@@ -9,22 +9,26 @@ on:
     # Weekly, so newly-disclosed query packs run against unchanged code.
     - cron: "27 3 * * 1"
 
+# Least privilege by default; the analyze job widens for SARIF upload only.
+permissions:
+  contents: read
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
+      # Upload analysis results to the code-scanning dashboard.
       security-events: write
     strategy:
       fail-fast: false
       matrix:
         language: [go, javascript-typescript]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: matrix.language == 'go'
         with:
           go-version-file: go.mod
@@ -34,12 +38,12 @@ jobs:
         if: matrix.language == 'go'
         run: sudo apt-get update && sudo apt-get install -y libvips-dev libheif-dev libjxl-dev
 
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@411c4c9a36b3fca4d674f06b6396b2c6d23522c6 # v3.36.3
         with:
           languages: ${{ matrix.language }}
 
-      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/autobuild@411c4c9a36b3fca4d674f06b6396b2c6d23522c6 # v3.36.3
 
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@411c4c9a36b3fca4d674f06b6396b2c6d23522c6 # v3.36.3
         with:
           category: "/language:${{ matrix.language }}"
