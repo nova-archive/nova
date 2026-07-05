@@ -221,12 +221,12 @@ func startDonor(t *testing.T, caPEM []byte, pub ed25519.PublicKey, cid string, e
 	t.Helper()
 	nodeID := uuid.New()
 
-	serverCertPEM, serverKeyPEM, err := ca.IssueServerCert(caPEM, caKeyPEMForTest, ca.ServerCertOptions{
-		DNSNames:    []string{"localhost"},
-		IPAddresses: []string{"127.0.0.1"},
-	})
+	// The donor serves with its PRODUCTION federation cert (nova://node/<uuid>
+	// URI SAN, no host SANs): CoordinatorClientTLS verifies donor serving certs
+	// by federation-CA chain + URI SAN identity, never by hostname/ServerAuth.
+	donorCertPEM, donorKeyPEM, err := ca.IssueClientCert(caPEM, caKeyPEMForTest, nodeID, "donor")
 	require.NoError(t, err)
-	tlsCfg, err := transport.ServerTLSConfig(caPEM, serverCertPEM, serverKeyPEM)
+	tlsCfg, err := transport.ServerTLSConfig(caPEM, donorCertPEM, donorKeyPEM)
 	require.NoError(t, err)
 
 	pinner := newDonorPinner()
@@ -269,7 +269,7 @@ func startDonor(t *testing.T, caPEM []byte, pub ed25519.PublicKey, cid string, e
 	}
 }
 
-// caKeyPEMForTest is package-level so startDonor can mint server certs without
+// caKeyPEMForTest is package-level so startDonor can mint donor federation certs without
 // threading the CA key through every signature. Set once at the top of the test.
 var caKeyPEMForTest []byte
 
