@@ -14,11 +14,20 @@ import (
 func TestPinAssignListUnpin(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.New(t, ctx)
-	// seed node + blob
+	// seed node + blob + manifest (GetBlobSize reads blob_manifests.envelope_size,
+	// so AssignPin requires a manifest row for the CID)
 	node := uuid.New()
-	pool.Exec(ctx, `INSERT INTO nodes (id,nebula_cert_fingerprint,federation_cert_fingerprint,capacity_bytes,bandwidth_budget_bytes_per_day) VALUES ($1,$2,$3,0,0)`,
-		pgtype.UUID{Bytes: node, Valid: true}, "neb", "fed")
-	pool.Exec(ctx, `INSERT INTO blobs (cid,mime_type,byte_size) VALUES ('bafy1','application/octet-stream',5)`)
+	if _, err := pool.Exec(ctx, `INSERT INTO nodes (id,nebula_cert_fingerprint,federation_cert_fingerprint,capacity_bytes,bandwidth_budget_bytes_per_day) VALUES ($1,$2,$3,0,0)`,
+		pgtype.UUID{Bytes: node, Valid: true}, "neb", "fed"); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO blobs (cid,mime_type,byte_size) VALUES ('bafy1','application/octet-stream',5)`); err != nil {
+		t.Fatalf("seed blob: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO blob_manifests (cid,hash_alg,codec,chunker,plaintext_size,envelope_size,block_count)
+		VALUES ('bafy1','sha2-256','raw','size-262144',5,5,1)`); err != nil {
+		t.Fatalf("seed blob_manifest: %v", err)
+	}
 
 	q := gen.New(pool)
 	// assign via the same internal path the CLI uses

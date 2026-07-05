@@ -67,9 +67,12 @@ const poolCloseGrace = 5 * time.Second
 
 // closeBounded closes the pool but gives up after poolCloseGrace,
 // logging loudly instead of hanging. On timeout the abandoned Close
-// goroutine unblocks moments later anyway: this cleanup was registered
-// after the container-terminate cleanup, so terminate runs next and
-// severs the leaked connection.
+// goroutine does NOT recover: puddle's Close waits on a WaitGroup that
+// only decrements when the leaked resource is released or destroyed,
+// and the container terminate that runs next severs the TCP connection
+// without doing either — the goroutine stays blocked until the test
+// process exits. That is benign under `go test`, where each package
+// runs in its own short-lived process.
 func closeBounded(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	done := make(chan struct{})
