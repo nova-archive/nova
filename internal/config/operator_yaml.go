@@ -205,6 +205,10 @@ func validate(cfg *Config) error {
 		return err
 	}
 
+	if err := cfg.BelowFloorReplacement.Validate(); err != nil {
+		return err
+	}
+
 	// P2-M7 (D-M7-1): a non-empty metrics_listen_addr must parse as host:port
 	// (bind failure at runtime is startup-fatal; a malformed addr fails here).
 	if addr, enabled := cfg.EffectiveMetricsListenAddr(); enabled {

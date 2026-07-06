@@ -83,6 +83,13 @@ var fieldEffect = map[string]effect{
 	// remaining possession_audit.* fields default to restart via longest-prefix match).
 	"possession_audit.base_interval_seconds": effectRestart,
 	"possession_audit.deadline_seconds":      effectRestart,
+
+	// P2-M7.1 first-class below-floor replacement knobs (D-M7.1-3: the two
+	// /settings knobs are enabled + grace; hysteresis_margin/requeue_batch stay
+	// advanced via the unmatched-restart default). All are captured at
+	// coordinator construction (scheduler/commit-gate/pruner) — restart-effect.
+	"below_floor_replacement.enabled":       effectRestart,
+	"below_floor_replacement.grace_seconds": effectRestart,
 }
 
 func effectFor(dotted string) effect {

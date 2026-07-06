@@ -71,6 +71,12 @@ type Config struct {
 	// (means "unset") and rejects only invalid explicit values.
 	PossessionAudit PossessionAudit `yaml:"possession_audit,omitempty"`
 
+	// BelowFloorReplacement tunes the P2-M7.1 below-floor bulk re-replication
+	// sweep (D-M7.1-3). Same conventions as PossessionAudit: zero = unset,
+	// defaults via Effective* accessors, Validate() rejects only invalid
+	// explicit values.
+	BelowFloorReplacement BelowFloorReplacement `yaml:"below_floor_replacement,omitempty"`
+
 	// privacyWarnings holds consequence warnings produced by ApplyPrivacyPreset
 	// at load time (e.g. paranoid on but webhooks configured). Unexported so it
 	// is never (de)serialized; read via PrivacyWarnings().
@@ -303,6 +309,85 @@ func (p PossessionAudit) EffectiveMinAckedTransfers() int64 {
 		return DefaultPossessionMinAckedTransfers
 	}
 	return p.MinAckedTransfers
+}
+
+// BelowFloorReplacement tunes the P2-M7.1 below-floor bulk re-replication
+// sweep (D-M7.1-3): marker hysteresis, the sustained grace window, and the
+// per-tick requeue cap. The reputation floor itself stays
+// orchestrator.reputation_floor — this block only tunes the REMEDY.
+type BelowFloorReplacement struct {
+	// Enabled gates the requeue + replace-then-demote halves of the sweep.
+	// Tri-state pointer (the RecordSourceIP convention): nil = default ON.
+	// Marker maintenance ALWAYS runs regardless (observability — the
+	// nova_below_floor_nodes gauge stays truthful with the remedy off).
+	Enabled          *bool   `yaml:"enabled,omitempty"`
+	HysteresisMargin float64 `yaml:"hysteresis_margin,omitempty"`
+	GraceSeconds     int     `yaml:"grace_seconds,omitempty"`
+	RequeueBatch     int     `yaml:"requeue_batch,omitempty"`
+}
+
+// Default constants for BelowFloorReplacement zero-value accessors. These are
+// the SINGLE authority for the D-M7.1-3 defaults — the orchestrator sweep and
+// the storage commit/prune safety callers all normalize against these (they
+// replaced the two temporary Task-10 seam constants).
+const (
+	// DefaultBelowFloorHysteresisMargin: a marked node exits below-floor only
+	// at reputation >= floor + margin, so wobble near the floor never flaps
+	// counts or floods the reconcile queue.
+	DefaultBelowFloorHysteresisMargin = 0.05
+	// DefaultBelowFloorGraceSeconds (24h): a marker younger than this still
+	// counts toward safety and receives no replacement traffic.
+	DefaultBelowFloorGraceSeconds = 86400
+	// DefaultBelowFloorRequeueBatch caps below-floor reconcile enqueues per
+	// healing tick ACROSS ALL sustained nodes.
+	DefaultBelowFloorRequeueBatch = 500
+)
+
+// EffectiveEnabled returns the enabled flag, defaulting to true when unset.
+func (b BelowFloorReplacement) EffectiveEnabled() bool {
+	if b.Enabled == nil {
+		return true
+	}
+	return *b.Enabled
+}
+
+// EffectiveHysteresisMargin returns the exit-edge margin, defaulting to 0.05.
+func (b BelowFloorReplacement) EffectiveHysteresisMargin() float64 {
+	if b.HysteresisMargin <= 0 {
+		return DefaultBelowFloorHysteresisMargin
+	}
+	return b.HysteresisMargin
+}
+
+// EffectiveGrace returns the sustained grace window, defaulting to 24h.
+func (b BelowFloorReplacement) EffectiveGrace() time.Duration {
+	if b.GraceSeconds <= 0 {
+		return DefaultBelowFloorGraceSeconds * time.Second
+	}
+	return time.Duration(b.GraceSeconds) * time.Second
+}
+
+// EffectiveRequeueBatch returns the per-tick requeue cap, defaulting to 500.
+func (b BelowFloorReplacement) EffectiveRequeueBatch() int {
+	if b.RequeueBatch <= 0 {
+		return DefaultBelowFloorRequeueBatch
+	}
+	return b.RequeueBatch
+}
+
+// Validate returns an error for invalid explicit values. Zero means "unset"
+// (the Effective* accessors supply defaults), so a wholly-zero struct is valid.
+func (b BelowFloorReplacement) Validate() error {
+	if b.HysteresisMargin != 0 && (b.HysteresisMargin < 0 || b.HysteresisMargin > 1) {
+		return fmt.Errorf("config: below_floor_replacement.hysteresis_margin must be in [0,1], got %v", b.HysteresisMargin)
+	}
+	if b.GraceSeconds < 0 {
+		return fmt.Errorf("config: below_floor_replacement.grace_seconds must be >= 0, got %d", b.GraceSeconds)
+	}
+	if b.RequeueBatch < 0 {
+		return fmt.Errorf("config: below_floor_replacement.requeue_batch must be >= 0, got %d", b.RequeueBatch)
+	}
+	return nil
 }
 
 // Validate returns an error for invalid explicit values. Zero means "unset"
