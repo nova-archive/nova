@@ -52,6 +52,21 @@ effectiveness) are baked into the parameters below.
 > observability and the operator runbook, never an automated remedy. See
 > `docs/superpowers/specs/phase2/2026-07-01-phase2-m7-production-hardening-release-design.md`.
 
+> **Amended by P2-M7.1 (2026-07-06) — implemented.** The below-floor
+> deferral recorded in the M6/M7 amendments above has **landed**
+> (D-M7.1-3). The claim "existing acked pins on a below-floor node remain
+> countable until a pin-specific hard failure" is now **superseded**: once a
+> `nodes.below_floor_since` marker is SUSTAINED past the grace window
+> (default 24h) the node is excluded from the durability/safety counts and
+> placement, exactly like a draining node — with the composite selection
+> preference `healthy > draining > below-floor` (a distrusted replica is the
+> TRUE last resort). An automated sweep sets the marker hysteretically,
+> bounded-requeues sustained nodes' CIDs behind `donor_lost`/`tier1`, and
+> replaces-then-demotes without a durability dip. See the normative
+> "reputation floor" text below and
+> `docs/superpowers/specs/phase2/2026-07-04-phase2-m7.1-beta-readiness-design.md`
+> § D-M7.1-3.
+
 ## Purpose
 
 When a federation loses donor nodes — to a hosting provider purge, a
@@ -451,11 +466,41 @@ replica purely for homogeneity — a hard ceiling could block healing into the
 only surviving capacity during a casualty.
 
 A node whose reputation drops below an operator-configured floor
-(default 0.5) is excluded from new assignments. Existing acked pins
-on a below-floor node remain countable unless a pin-specific hard
-audit failure invalidates the individual `pin_assignments` row; bulk
-re-replication of below-floor replicas is deferred to P2-M7
-(D-M6-7).
+(default 0.5) is excluded from new assignments, and — once its
+`below_floor_since` marker has been **sustained** past the grace window
+(default 24h) — from the durability/safety counts
+(`healthy_acked` / `sourceable_acked` / `CountSourceableHolders`) and
+placement candidacy, mirroring the drain treatment (D-M7-6). This is the
+flip the P2-M7 runbook promised: present-but-untrusted replicas are no
+longer counted once sustained.
+
+The **P2-M7.1 below-floor replacement sweep** (D-M7.1-3) rides the
+existing healing machinery rather than adding a daemon:
+
+- **Hysteretic marker.** The sweep stamps `nodes.below_floor_since` when
+  `reputation_score < reputation_floor` and clears it only at
+  `reputation_score ≥ floor + hysteresis_margin` (default 0.05), so
+  wobble near the floor never flaps counts. Marker maintenance runs every
+  tick regardless of whether the remedy is enabled, keeping the
+  `nova_below_floor_nodes{state}` gauge truthful.
+- **Bounded requeue, lowest priority.** For each SUSTAINED node the sweep
+  enqueues its acked CIDs (`reason='below_floor'`, capped at
+  `requeue_batch`, default 500, across all such nodes), walked AFTER
+  `donor_lost` and `tier1` — a fresh emergency always outranks replacing a
+  replica that still exists. The Task-10 count exclusion makes those CIDs
+  recompute below target, so they heal onto trusted nodes normally.
+- **Replace, then demote — never a durability dip.** The untrusted replica
+  is not invalidated up front. Only once the blob's trusted-holder count
+  (computed from **authority**, not the possibly stale-high projection) is
+  restored does the sweep fail the assignment (`state='failed'`). A SOLE
+  below-floor holder is never demoted — it stays the repair source of last
+  resort (the drain self-sourcing principle). `pin_assignments` has no
+  reason column, so the demotion reason (`below_floor_replaced`) lives in
+  the sweep's structured log and the requeue counter.
+- **Operator-gated.** `below_floor_replacement.enabled` (default on) gates
+  the requeue + demote halves; `grace`, `hysteresis_margin`, and
+  `requeue_batch` tune the remedy. See `docs/runbooks/donor-lifecycle.md`
+  § below-floor for when to intervene anyway.
 
 ## Empirical thresholds
 

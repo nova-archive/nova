@@ -80,22 +80,60 @@ NOT actually leaving — never "undrain to make the metrics quiet".
 
 ## Below-floor replica debt
 
-`nova_below_floor_replica_debt` (total) and
-`nova_node_below_floor_replicas{node_id=...}` count acked, countable replicas
-held on live nodes whose reputation has sunk below the floor.
+**As of P2-M7.1 this is automated** (D-M7.1-3). The bulk replacement that was
+a manual runbook through P2-M7 is now a healing-tick sweep; the metrics below
+are for watching it work and deciding when to intervene anyway.
 
-**Why these replicas still count:** below-floor excludes a node from NEW
-placement and deprioritizes it as a read source, but present acked replicas
-stay durability-countable until a pin-specific hard failure invalidates them.
-The automated bulk replacement of below-floor replicas is **P2-M7.1** —
-deliberately NOT this release (D-M7-5); M7 gives you the number and this
-runbook.
+### The metrics
 
-When the debt is non-zero:
+- `nova_below_floor_replica_debt` (total) /
+  `nova_node_below_floor_replicas{node_id=...}` — acked replicas held on nodes
+  below the floor. With the sweep enabled this should **trend to zero** as
+  sustained nodes' replicas are replaced and demoted.
+- `nova_below_floor_nodes{state="sustained"|"in_grace"}` — nodes carrying a
+  below-floor marker. `in_grace` nodes still count toward durability (their
+  reputation dipped only recently); `sustained` nodes (marker older than
+  `grace`) are excluded from counts + placement and are being replaced.
+- `nova_below_floor_requeued_total` — CIDs the sweep has enqueued for
+  re-replication (process-local; resets on restart).
+- Queue pressure shows up as `nova_reconcile_queue_depth{reason="below_floor"}`.
 
-- **Leave alone** when the node is merely slow/flaky and audits still pass —
-  reputation recovers with passing audits.
-- **Drain** when you no longer want the node long-term but it is honest — the
-  graceful path above replaces its replicas from itself.
-- **Revoke** when audits show `mismatch` (`nova_audit_results_total{result="fail",reason="mismatch"}`)
-  or the trust review flags it — a lying node's replicas are already suspect.
+### How the automated sweep behaves
+
+Each healing tick the coordinator: (1) stamps `below_floor_since` on nodes that
+have just sunk below `orchestrator.reputation_floor` and clears it once a marked
+node recovers past `floor + hysteresis_margin` (default 0.05 — wobble near the
+floor never flaps); (2) once a marker is **sustained** past `grace` (default
+24h), bounded-requeues that node's CIDs (`requeue_batch`, default 500, walked
+**after** `donor_lost`/`tier1` so emergencies win); (3) fails the untrusted
+assignment only once a trusted replacement has restored the healthy count —
+**replace-then-demote, never a durability dip**, and a SOLE holder is never
+demoted (it stays the repair source of last resort).
+
+### Knobs (`below_floor_replacement` in operator.yaml; `enabled` + `grace` also on `/settings`)
+
+- `enabled` (default `true`) — set `false` to keep marker maintenance + the
+  gauges but pause the requeue/demote remedy (e.g. during a mass-reputation
+  event you want to hand-manage).
+- `grace` (default `24h`) — how long a node must stay below the floor before its
+  replicas are replaced. Raise it if reputation is noisy in your fleet.
+- `hysteresis_margin` (default `0.05`) — the recovery gap.
+- `requeue_batch` (default `500`) — per-tick requeue cap across all sustained
+  nodes; lower it to throttle re-replication bandwidth.
+
+### When to intervene anyway
+
+- **Leave the sweep to it** when the node is merely slow/flaky and audits still
+  pass — reputation recovers with passing audits and the marker clears before
+  grace even elapses.
+- **Drain** when you no longer want the node long-term but it is honest — drain
+  is the graceful, operator-initiated path and replaces its replicas from
+  itself; it outranks below-floor in selection.
+- **Revoke** when audits show `mismatch`
+  (`nova_audit_results_total{result="fail",reason="mismatch"}`) or the trust
+  review flags it — a lying node's replicas are already suspect; don't wait for
+  grace.
+- **Suspect a stuck sweep** if `nova_below_floor_replica_debt` is flat and
+  non-zero while `nova_reconcile_queue_depth{reason="below_floor"}` climbs:
+  usually there is nowhere trusted to place the replacements (check free
+  capacity and that other nodes are above the floor), or the remedy is disabled.
