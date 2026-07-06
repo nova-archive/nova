@@ -1,0 +1,15 @@
+<svg width="220" height="220" viewBox="0 0 64 64" aria-label="Federation glyph">
+              <g transform="translate(32 32)">
+                <!-- center -->
+                <circle r="6" fill="#111114"></circle>
+                <!-- ring of 6 -->
+                <g fill="none" stroke="#111114" stroke-width="1.6">
+                  <circle cx="22" cy="0" r="3"></circle>
+                  <circle cx="11" cy="-19.05" r="3"></circle>
+                  <circle cx="-11" cy="-19.05" r="3"></circle>
+                  <circle cx="-22" cy="0" r="3"></circle>
+                  <circle cx="-11" cy="19.05" r="3"></circle>
+                  <circle cx="11" cy="19.05" r="3"></circle>
+                </g>
+              </g>
+            </svg>

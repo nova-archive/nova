@@ -1,11 +1,12 @@
 # Quickstart screenshots — capture checklist
 
-`docs/quickstart.md` references five screenshots of the first-run setup
-wizard. They have not been captured yet (the doc's image links 404 until
-they land here). Capture them at the wizard (`http://127.0.0.1:8444/setup/`)
-against a **disposable** instance — the master-key screenshot necessarily
-shows key material, so the instance you photograph must never carry real
-data (tear it down with `--profile setup down -v` afterwards).
+`docs/quickstart.md` and the main `README.md` reference five screenshots of the
+first-run setup wizard. They are **captured and present** in this directory; this
+checklist is the recapture spec for when the wizard UI changes. Recapture at the
+wizard (`http://127.0.0.1:8444/setup/`) against a **disposable** instance — the
+master-key screenshot necessarily shows key material, so the instance you
+photograph must never carry real data (tear it down with
+`--profile setup down -v` afterwards).
 
 Required captures (PNG, light theme, full wizard card in frame):
 

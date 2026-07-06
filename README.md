@@ -1,79 +1,97 @@
-# Nova
+<div align="center">
 
-**Networked Object Versatile Archive** — a self-hostable, federated,
-content-addressed blob storage system for communities that need
-sovereign, durable, and privacy-respecting hosting of large binary
-objects.
+<img src="docs/images/brand/nova-hero.svg" alt="Nova — a federated archive for binary objects" width="820">
 
-Nova is an umbrella project. The first product layer, `nova-image`,
-provides drag-and-drop image hosting with on-the-fly transforms.
-Future product layers (`nova-video`, `nova-audio`, `nova-archive`,
-`nova-document`) will share the same storage core.
+<h3>Networked Object Versatile Archive</h3>
 
-> **Status:** Phase 1 (single-node MVP) is **complete** at
-> `v0.1.0-rc1` — all fourteen milestones are tagged. **Phase 2's donor
-> federation is volunteer-ready:** P2-M1 through P2-M7 are shipped —
-> build/repo separation, identity/registration over mTLS, assignment
-> sync, replication, donor-backed reads, liveness + healing, possession
-> audits, and the P2-M7 production-hardening release (coordinator
-> `/metrics`, drain lifecycle, cross-version gate, runbooks). The
-> streaming-AEAD envelope track (P2-M8+) is next. New operators: start
-> at [`docs/quickstart.md`](docs/quickstart.md); volunteers hosting a
-> donor node: [`docs/quickstart/donor.md`](docs/quickstart/donor.md).
-> See [`docs/ROADMAP.md`](docs/ROADMAP.md) for per-milestone status.
+<p><strong>A self-hostable, federated, content-addressed store for large binary objects</strong> —<br>
+for communities that need sovereign, durable, privacy-respecting hosting they control.</p>
 
-## Who is this for?
+<p>
+<img alt="License Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-B83A18?style=flat-square">
+<img alt="Status: private beta" src="https://img.shields.io/badge/status-private%20beta-E2502B?style=flat-square">
+<img alt="Go 1.26" src="https://img.shields.io/badge/go-1.26-3C4756?style=flat-square">
+<img alt="Node 22" src="https://img.shields.io/badge/node-22-3C4756?style=flat-square">
+<img alt="Donor-blind" src="https://img.shields.io/badge/storage-donor--blind-4A6B3A?style=flat-square">
+</p>
 
-- **Fediverse instances** (Mastodon, Pleroma, Misskey) that want to
-  shift media storage off the homeserver onto a federated pool of
-  donor-operated nodes.
-- **FOSS forums and community sites** that want drag-and-drop image
-  hosting without depending on a third-party host with unpredictable
-  longevity.
-- **Machine learning dataset hosts** distributing reproducible training
-  corpora to researchers via content-addressed URLs.
-- **Hardware preservation archives** keeping high-resolution scans of
-  PCBs, schematics, and obsolete documentation accessible long after
+<p>
+<a href="docs/quickstart.md"><b>Operator quickstart</b></a> ·
+<a href="docs/quickstart/donor.md"><b>Host a donor node</b></a> ·
+<a href="docs/ROADMAP.md"><b>Roadmap</b></a> ·
+<a href="docs/development.md"><b>Dev setup</b></a> ·
+<a href="docs/THREAT_MODEL.md"><b>Threat model</b></a>
+</p>
+
+</div>
+
+---
+
+## What is Nova?
+
+Nova lets you run **your own** durable object store and, optionally, pool storage
+across a federation of **donor-operated nodes** — without handing your data, your
+keys, or your uptime to a third party.
+
+A site **operator** runs a single coordinator process that speaks a plain HTTP
+API and content-addresses every object by the SHA-256 of its ciphertext. Volunteer
+**donor nodes** replicate that ciphertext over an authenticated mesh and serve it
+on read. Donors never see plaintext or keys — they pin **opaque ciphertext only**.
+
+Nova is an umbrella project. The first product layer, `nova-image`, is
+drag-and-drop image hosting with on-the-fly transforms; future layers
+(`nova-video`, `nova-audio`, `nova-archive`, `nova-document`) share the same
+storage core.
+
+### Why it's different
+
+- **Operator sovereignty.** You run the coordinator on your own infrastructure.
+  The project author cannot turn it off, observe it, or coerce it.
+- **Donor-blind storage.** Federated nodes pin ciphertext; encryption keys live
+  only on the coordinator. A donor can hold your data and learn nothing about it.
+- **No third-party traffic by default.** Reads are served from the coordinator;
+  donors replicate over an encrypted mesh; no CDN sits in the request path.
+  Optional CDN fronting is a documented, deliberate tradeoff — see
+  [`docs/recipes/CLOUDFLARE.md`](docs/recipes/CLOUDFLARE.md).
+- **Privacy-paranoid by default.** No phone-home, no analytics, no third-party
+  assets. A `paranoid: true` switch hardens further for adversarial environments.
+- **Framework-agnostic.** Anything that accepts an HTTP URL integrates by pointing
+  URLs at Nova. No deep integration required.
+- **Permissive licensing.** Apache-2.0 throughout the core, no copyleft deps.
+
+> **Trust-model note.** Nova is donor-blind, *not* operator-blind. The coordinator
+> decrypts on read and on transform; the operator's master key is process-resident.
+> Nova is the right architecture for "pick an operator you trust, or run your own"
+> — it is not end-to-end encrypted *from* the operator. See
+> [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
+
+## Who is it for?
+
+- **Fediverse instances** (Mastodon, Pleroma, Misskey) shifting media storage off
+  the homeserver onto a federated donor pool.
+- **FOSS forums & community sites** wanting drag-and-drop image hosting without a
+  third-party host of unpredictable longevity.
+- **ML dataset hosts** distributing reproducible corpora via content-addressed URLs.
+- **Preservation archives** keeping high-resolution scans accessible long after
   vendor sites disappear.
-- **Software release mirrors** distributing build artifacts, container
-  images, or signed packages with content-addressed integrity.
-- **Personal homelabs** running a private federation of friend or
-  family nodes for photo libraries, scanned documents, or backups.
+- **Release mirrors** distributing artifacts, images, or signed packages with
+  content-addressed integrity.
+- **Homelabs** running a private federation of friend/family nodes for photos,
+  scans, or backups.
 
-## Design priorities
+## See it
 
-1. **Operator sovereignty.** You run the coordinator on your own
-   infrastructure. The project author cannot turn it off, observe it,
-   or coerce its behavior.
-2. **Donor-blind storage.** Federated nodes pin opaque ciphertext, not
-   plaintext. Encryption keys are held only by the coordinator.
-3. **No third-party traffic intermediation by default.** A default
-   Nova deployment serves all reads from the coordinator; donor
-   nodes replicate over an encrypted mesh; no CDN is in the request
-   path. Optional CDN fronting is documented as a deliberate
-   tradeoff (CDN edges see plaintext); see `docs/recipes/CLOUDFLARE.md`.
-4. **Framework-agnostic integration.** Any system that accepts an HTTP
-   URL can integrate Nova by pointing URLs at it. No deep integration
-   required.
-5. **Privacy-paranoid by default.** No phone-home, no analytics, no
-   third-party assets. A `paranoid: true` switch hardens further for
-   adversarial environments.
-6. **Permissive licensing.** Apache-2.0 throughout the core, with no
-   copyleft dependencies.
+The production first run is a guided setup wizard — no config files to hand-write.
 
-> **Trust-model note.** Nova is donor-blind, not operator-blind.
-> The coordinator decrypts content on every read and on transform;
-> the operator's master key is process-resident. Nova is the right
-> architecture for "pick an operator you trust, or run your own."
-> It is not end-to-end encrypted from the operator. See
-> `docs/THREAT_MODEL.md` for the full framing.
+<div align="center">
+<img src="docs/images/quickstart/01-welcome.png" alt="Setup wizard — welcome step" width="46%">
+&nbsp;
+<img src="docs/images/quickstart/05-live.png" alt="Setup wizard — you're live" width="46%">
+</div>
+
+Full walkthrough with every step: [`docs/quickstart.md`](docs/quickstart.md).
 
 ## Architecture at a glance
-
-A site **operator** runs a single coordinator process, which embeds an
-IPFS daemon and exposes a simple HTTP API. Optional **federated
-storage nodes**, run by donors, replicate ciphertext blobs over an
-authenticated mesh and serve them on read.
 
 ```
    uploader / viewer
@@ -82,198 +100,87 @@ authenticated mesh and serve them on read.
    nginx (TLS, rate-limit)
          │
          ▼
-   Nova Coordinator ── Postgres
+   Nova Coordinator ── Postgres          keys + plaintext live here only
          │
          ├── embedded IPFS (hardened)
-         └── mesh ──► donor storage nodes (×N)
+         └── mesh ──► donor storage nodes (×N)   ciphertext-only, donor-blind
 ```
 
-Content is content-addressed: every blob is identified by the SHA-256
-of its ciphertext. Reads use plain HTTPS URLs and are aggressively
-CDN-cacheable.
+Every blob is identified by the SHA-256 of its **ciphertext**. Reads are plain
+HTTPS URLs and are aggressively cacheable. Donors authenticate to the coordinator
+(and to each other, for repair) over an mTLS mesh with `nova://` federation
+identities; a node that drops below its reputation floor is automatically excluded
+from durability counts and its replicas are re-replicated onto trusted nodes.
+
+Deeper: [`docs/specs/FEDERATION_PROTOCOL.md`](docs/specs/FEDERATION_PROTOCOL.md) ·
+[`docs/specs/HEALING_PROTOCOL.md`](docs/specs/HEALING_PROTOCOL.md) ·
+[`docs/specs/DATA_MODEL.sql`](docs/specs/DATA_MODEL.sql)
+
+## Getting started
+
+### Run a coordinator (operators)
+
+```sh
+cp docker/.env.example docker/.env
+# set POSTGRES_PASSWORD in docker/.env, then:
+cd docker && docker compose --profile setup up
+```
+
+Open the loopback-only wizard at `http://127.0.0.1:8444/setup/` (or run the
+headless `novactl setup`). When it writes `.bootstrap-complete`, switch to
+`docker compose --profile prod up -d`. The full path — TLS modes, the
+secrets-backup obligation, DNS — is in the
+[**operator quickstart**](docs/quickstart.md) and
+[`docs/legal/OPERATOR_CHECKLIST.md`](docs/legal/OPERATOR_CHECKLIST.md).
+
+### Host a donor node (volunteers)
+
+Donate storage to a federation you trust without ever seeing its data. Start at
+the [**donor quickstart**](docs/quickstart/donor.md).
+
+### Hack on Nova (developers)
+
+The lightest dev-test path — a single-node coordinator against a local Postgres +
+embedded IPFS — is in [**`docs/development.md`**](docs/development.md).
+
+## Development progress
+
+Phase 0 (specifications) and Phase 1 (single-node MVP) are **complete**; Phase 1
+closed at the `v0.1.0-rc1` release candidate (M1–M14 tagged). **Phase 2's donor
+federation is volunteer-ready:** the P2-M0.x operator-UX/privacy remediation track
+plus P2-M1 through **P2-M7.1** are tagged.
+
+| Track | Status |
+|-------|--------|
+| **Phase 0** — specifications | ✅ Complete |
+| **Phase 1** — single-node MVP (M1–M14) | ✅ Complete (`v0.1.0-rc1`) |
+| **Phase 2** — donor federation | 🟢 Shipped through **P2-M7.1** (beta-readiness) |
+| ↳ identity, assignment sync, replication, donor-backed reads | ✅ P2-M1 – M4 |
+| ↳ liveness + healing, possession audits, production hardening | ✅ P2-M5 – M7 |
+| ↳ below-floor replacement, donor↔donor repair TLS, beta hardening | ✅ **P2-M7.1** |
+| **Phase 2** — streaming-AEAD envelope | ⏭️ Next (P2-M8+) |
+
+[`docs/ROADMAP.md`](docs/ROADMAP.md) is the authoritative per-milestone status.
 
 ## Repository layout
 
 ```
-docs/
-  specs/        protocol, data model, encryption envelope
-  legal/        license, ToS template, DMCA procedure
-  recipes/      deployment recipes (CDN, nginx, etc.)
-.github/        CI workflows, security policy, code owners
-internal/       internal Go packages (subject to change)
-pkg/            exported, semver-stable Go library packages
-cmd/            command-line entry points
-web/widget/     drop-in upload widget (TypeScript)
-web/admin/      operator admin SPA (TypeScript)
-nginx/          reference reverse-proxy configuration
+docs/          specs (protocol, data model, envelope), runbooks, recipes, legal
+internal/      internal Go packages (subject to change)
+pkg/           exported, semver-stable Go library packages
+cmd/           command-line entry points (coordinator, novactl, migrate, …)
+web/widget/    drop-in upload widget (TypeScript)
+web/admin/     operator admin SPA (TypeScript)
+web/setup/     first-run setup wizard (TypeScript)
+docker/        compose + Dockerfiles for the production topology
+nginx/         reference reverse-proxy configuration
+.github/       CI workflows, security policy, code owners
 ```
-
-## Project status
-
-Phase 0 (specifications) and Phase 1 (single-node MVP) are complete;
-Phase 1 closed at the `v0.1.0-rc1` release candidate (M1 through M14
-are tagged). **Phase 2's donor-federation track is complete through
-P2-M7 (production hardening & donor release)**: the P2-M0.x
-operator-UX/privacy remediation track plus P2-M1–M7 are tagged —
-identity, assignment sync, replication, donor-backed reads, healing,
-possession audits, and the volunteer-ready hardening release. The
-streaming-AEAD envelope milestones (P2-M8+) are next. See
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for the authoritative
-per-milestone status.
-
-## Try Nova (developer setup)
-
-> **Dev walkthrough.** This section boots a single-node coordinator
-> against a local Postgres + embedded IPFS for kicking the tires. For
-> a production-style first-run, follow the operator quickstart at
-> [`docs/quickstart.md`](docs/quickstart.md): `docker compose
-> --profile setup up` (in `docker/`), then open the loopback-only
-> wizard at `http://127.0.0.1:8444/setup/` (or run the headless
-> `novactl setup`). See
-> [`docs/legal/OPERATOR_CHECKLIST.md`](docs/legal/OPERATOR_CHECKLIST.md)
-> § "First-run setup (M13)" for the three first-run paths, TLS-mode
-> guidance, and the secrets-backup obligation.
-
-### Prerequisites
-
-- Linux host (or WSL2). macOS works but `govips`/`libvips` host setup
-  varies; on macOS install `libvips` via Homebrew before `go run`.
-- **Go** 1.26 or newer (`go.mod` pins the toolchain).
-- **Node** 22 (`.nvmrc` is authoritative) — only needed to build the
-  SPAs/widget (`web/*`); the Go dev walkthrough below does not use it.
-- **Docker** + `docker compose` plugin.
-- `pkgconf`, `gcc`, `openssl`. The `govips` cgo build needs the first
-  two; `openssl` is used here to generate dev keys.
-
-On Arch Linux:
-
-```sh
-sudo pacman -S --needed go docker docker-compose pkgconf gcc openssl
-sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"   # log out + back in for the group to take
-```
-
-### 1. Bring up Postgres
-
-```sh
-git clone git@github.com:nova-archive/nova.git
-cd nova
-cp docker/.env.example docker/.env
-sed -i "s/changeme/$(openssl rand -hex 16)/" docker/.env
-docker compose -f docker/docker-compose.yml up -d postgres
-```
-
-### 2. Apply migrations
-
-```sh
-make migrate-up
-```
-
-This builds `cmd/migrate` and applies every migration through
-`internal/db/migrations/`. `make migrate-status` shows current state;
-`make smoke` runs the full schema-assertion smoke test.
-
-### 3. Generate dev secrets
-
-Nova needs three secret artifacts: a master key (envelope wrapping),
-an Ed25519 signing key (local OIDC issuer), and an IPFS swarm key
-(private mesh).
-
-```sh
-mkdir -p /tmp/nova-dev/kubo-repo /tmp/nova-dev/secrets
-chmod 700 /tmp/nova-dev/secrets
-
-# Master key: 32 random bytes, hex-encoded.
-openssl rand -hex 32 > /tmp/nova-dev/secrets/master-key
-
-# Local OIDC signing key: Ed25519 seed (32 random bytes, hex-encoded).
-openssl rand -hex 32 > /tmp/nova-dev/secrets/oidc-signing-key
-
-# IPFS private swarm key (Kubo PSK v1 format).
-{ printf '/key/swarm/psk/1.0.0/\n/base16/\n'; openssl rand -hex 32; } \
-    > /tmp/nova-dev/secrets/swarm.key
-
-chmod 600 /tmp/nova-dev/secrets/*
-```
-
-### 4. Run the coordinator
-
-```sh
-set -a
-source docker/.env
-DATABASE_URL="postgres://nova:${POSTGRES_PASSWORD}@127.0.0.1:5432/nova?sslmode=disable"
-NOVA_KUBO_REPO=/tmp/nova-dev/kubo-repo
-IPFS_SWARM_KEY_FILE=/tmp/nova-dev/secrets/swarm.key
-NOVA_MASTER_KEY_ACTIVE=v1
-NOVA_MASTER_KEY_V1_FILE=/tmp/nova-dev/secrets/master-key
-NOVA_OIDC_SIGNING_KEY_FILE=/tmp/nova-dev/secrets/oidc-signing-key
-set +a
-
-make run-coordinator
-```
-
-The coordinator listens on `:9000` by default (override with
-`NOVA_LISTEN_ADDR`). See `cmd/coordinator/main.go` for the full
-environment-variable table.
-
-### 5. Smoke-test the read path
-
-```sh
-curl http://127.0.0.1:9000/health
-curl http://127.0.0.1:9000/api/v1/auth/config
-```
-
-Both should return 200 with a JSON body. From here:
-
-- **Anonymous endpoints** (`/health`, `/blob/{cid}`, `/blob/{cid}.json`,
-  `/api/v1/auth/config`, `/api/v1/auth/jwks.json`) work without
-  credentials.
-- **Authenticated endpoints** (uploads at `/api/v1/uploads`,
-  `/api/v1/blobs`, `/api/v1/images`, plus `/api/v1/users/me`) require
-  a bearer token. The production setup wizard (M13) creates the first
-  operator account; for this manual dev path, insert an `operator`
-  user via `psql` with an argon2id password hash (see
-  `internal/auth/password` for the format), then `go run
-  ./cmd/novactl auth login` to fetch a token.
-
-### Beyond this dev walkthrough
-
-This manual recipe is the lightest dev-test path. Everything the
-Phase 1 milestones promised is shipped and tagged (M1–M14):
-signed-URL HMAC (M7), integrity-audit listing (M8), DMCA/moderation
-(M9), master-key rotation (M10), the admin SPA (M11) and drag-and-drop
-widget (M12), the first-run setup wizard + production Docker + TLS
-modes (M13), and the operator quickstart + end-to-end CI smoke (M14).
-For a production-style first-run, use the setup wizard (`docker
-compose --profile setup up`; see the dev-walkthrough note above) and
-the operator quickstart at [`docs/quickstart.md`](docs/quickstart.md).
-Phase 2's donor federation is shipped through P2-M7 (volunteers: see
-[`docs/quickstart/donor.md`](docs/quickstart/donor.md)); the
-streaming-AEAD track is next — see [`docs/ROADMAP.md`](docs/ROADMAP.md).
-
-## Development MCP servers
-
-Phase 1 onwards, this project ships a `.claude/settings.local.json` that
-configures a Postgres MCP server (`nova-dev-postgres`). When the dev
-Postgres container is up (`docker compose -f docker/docker-compose.yml up
--d postgres`), Claude Code sessions with this project loaded can query
-the dev database directly via MCP.
-
-The MCP connection string reads `POSTGRES_PASSWORD` from your shell env;
-set it from `docker/.env` before running Claude Code:
-
-```sh
-set -a; source docker/.env; set +a
-```
-
-If you do not want the MCP server, delete or comment out the
-`mcpServers.nova-dev-postgres` entry in `.claude/settings.local.json`.
-The MCP is dev-only; production deployments do not use it.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). Project naming hygiene is
-enforced via CI; please read the policy section before submitting a PR.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Project naming hygiene is CI-enforced —
+please read the policy section before submitting a PR.
 
 ## Security
 

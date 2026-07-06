@@ -1,0 +1,13 @@
+<svg width="220" height="220" viewBox="0 0 64 64" aria-label="Nova primary mark">
+              <g transform="translate(32 32)" fill="#111114">
+                <polygon points="0,-30 3,-3 -3,-3"></polygon>
+                <polygon points="0,-30 3,-3 -3,-3" transform="rotate(90)"></polygon>
+                <polygon points="0,-30 3,-3 -3,-3" transform="rotate(180)"></polygon>
+                <polygon points="0,-30 3,-3 -3,-3" transform="rotate(270)"></polygon>
+                <polygon points="0,-17 2,-3 -2,-3" transform="rotate(45)"></polygon>
+                <polygon points="0,-17 2,-3 -2,-3" transform="rotate(135)"></polygon>
+                <polygon points="0,-17 2,-3 -2,-3" transform="rotate(225)"></polygon>
+                <polygon points="0,-17 2,-3 -2,-3" transform="rotate(315)"></polygon>
+                <circle cx="0" cy="0" r="3.2" fill="#E2502B"></circle>
+              </g>
+            </svg>
