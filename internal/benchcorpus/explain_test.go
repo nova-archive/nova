@@ -51,6 +51,18 @@ func TestExplainPlans(t *testing.T) {
 			anyOf: []string{"nodes_below_floor_idx"},
 		},
 		{
+			// P2-M7.1 D-M7.1-3: the actual EnqueueBelowFloorReconcile victim
+			// selection — a below-floor hub donor's acked pins must be reached by
+			// driving from the (few) sustained nodes via the partial index, NOT by
+			// scanning the whole pin_assignments table.
+			name: "below-floor requeue victim selection drives from nodes_below_floor_idx",
+			sql: `SELECT DISTINCT pa.cid FROM pin_assignments pa JOIN nodes n ON n.id = pa.node_id
+			      WHERE pa.state = 'acked' AND n.below_floor_since IS NOT NULL
+			        AND n.below_floor_since <= now() - interval '24 hours'
+			      ORDER BY pa.cid LIMIT 500`,
+			anyOf: []string{"nodes_below_floor_idx"},
+		},
+		{
 			name:  "pin_assignments keyed lookup uses cid_state index",
 			sql:   `SELECT node_id FROM pin_assignments WHERE cid = $1 AND state = 'acked'`,
 			args:  []any{cid},
