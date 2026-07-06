@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db/gen"
 )
 
@@ -36,13 +37,21 @@ func (t ReplicationTargets) For(class string) int {
 }
 
 // DefaultBelowFloorGraceSeconds is the D-M7.1-3 sustained-below-floor grace
-// window (24h): a below_floor_since marker YOUNGER than this still counts
-// toward safety (hysteresis — reputation wobble near the floor must not flap
-// counts or flood the reconcile queue); older, and the node drops out of
-// safety counts and placement. Task 11 threads the below_floor_replacement.grace
-// config knob through the callers; until that sweep exists nothing sets the
-// marker, so the design default is behavior-neutral here.
-const DefaultBelowFloorGraceSeconds float64 = 24 * 60 * 60
+// window (24h): a below_floor_since marker YOUNGER than this still counts toward
+// safety (hysteresis — reputation wobble near the floor must not flap counts or
+// flood the reconcile queue); older, and the node drops out of safety counts and
+// placement. It mirrors the single config authority so the default literal lives
+// in exactly one place.
+//
+// DIVERGENCE (accepted, beta): RecomputeCID (projection recompute) and
+// selectDest (placement) use this DEFAULT for the count-exclusion window, while
+// the orchestrator sweep uses the operator-CONFIGURED below_floor_replacement.
+// grace for requeue/demote timing. At the default they coincide. A customized
+// grace shifts only the sweep's timing; the count path stays at 24h, which can
+// only make healing start EARLIER (safe — never a durability dip). Threading the
+// configured grace through every RecomputeCID/CountSourceableHolders call site is
+// a follow-up (see REVIEW_2026_07_04.md).
+const DefaultBelowFloorGraceSeconds float64 = config.DefaultBelowFloorGraceSeconds
 
 // safetyTier classifies a CID from its acked-on-countable-nodes count against the
 // class target (D-M5-2c): 0 ⇒ donor_lost (no donor holder; may still be

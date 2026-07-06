@@ -589,6 +589,22 @@ func run() error {
 				CapacityRunwayFloorDays: float64(opCfg.Orchestrator.CapacityRunwayFloorDays),
 			},
 		})
+		// Below-floor replacement sweep (D-M7.1-3): distrust remedy for donors
+		// whose reputation has sunk below the floor. Marker maintenance always
+		// runs; the requeue + replace-then-demote remedy is operator-gated. The
+		// requeue counter is wired to /metrics when it is enabled (nil-safe).
+		var onBelowFloorRequeue func(int)
+		if mtr != nil {
+			onBelowFloorRequeue = mtr.ObserveBelowFloorRequeue
+		}
+		orch.SetBelowFloor(orchestrator.BelowFloorConfig{
+			Enabled:          opCfg.BelowFloorReplacement.EffectiveEnabled(),
+			ReputationFloor:  opCfg.Orchestrator.EffectiveReputationFloor(),
+			HysteresisMargin: opCfg.BelowFloorReplacement.EffectiveHysteresisMargin(),
+			GraceSeconds:     opCfg.BelowFloorReplacement.EffectiveGrace().Seconds(),
+			RequeueBatch:     opCfg.BelowFloorReplacement.EffectiveRequeueBatch(),
+			OnRequeue:        onBelowFloorRequeue,
+		})
 
 		// P2-M6 possession-audit scheduler: in-process two-stage sampling loop that
 		// challenges donors over coordinator-identity mTLS and records outcomes. Gated

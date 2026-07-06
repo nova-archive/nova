@@ -264,3 +264,192 @@ func TestBelowFloorAndDrainSortKeyOrder(t *testing.T) {
 	require.Equal(t, bfNodeB, uuidString(src.NodeID),
 		"draining B outranks below-floor A as repair source (healthy > draining > below-floor)")
 }
+
+// ---------------------------------------------------------------------------
+// Task 11 sweep WRITE-side (D-M7.1-3): marker maintenance, requeue, demote.
+// ---------------------------------------------------------------------------
+
+// bfSweepCfg builds an enabled BelowFloorConfig for the sweep functions.
+func bfSweepCfg(floor, margin, graceSecs float64, batch int) BelowFloorConfig {
+	return BelowFloorConfig{
+		Enabled: true, ReputationFloor: floor, HysteresisMargin: margin,
+		GraceSeconds: graceSecs, RequeueBatch: batch,
+	}
+}
+
+func setReputation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id string, score float64) {
+	t.Helper()
+	_, err := pool.Exec(ctx, `UPDATE nodes SET reputation_score = $2 WHERE id = $1::uuid`, id, score)
+	require.NoError(t, err)
+}
+
+func belowFloorMarker(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id string) pgtype.Timestamptz {
+	t.Helper()
+	var ts pgtype.Timestamptz
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT below_floor_since FROM nodes WHERE id = $1::uuid`, id).Scan(&ts))
+	return ts
+}
+
+func assertPinState(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cid, node, want string) {
+	t.Helper()
+	var state string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT state FROM pin_assignments WHERE cid=$1 AND node_id=$2::uuid`, cid, node).Scan(&state))
+	require.Equal(t, want, state)
+}
+
+// TestBelowFloorMarkerHysteresis: the marker is stamped once reputation sinks
+// below the floor, is NEVER re-stamped or cleared by wobble inside the
+// hysteresis band [floor, floor+margin), and clears only on recovery past
+// floor+margin (contract item 1).
+func TestBelowFloorMarkerHysteresis(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	seedNode(t, ctx, pool, bfNodeA, "active", "current", true)
+	cfg := bfSweepCfg(0.5, 0.1, bfGraceSecs, 500)
+
+	// Above the floor → no marker.
+	setReputation(t, ctx, pool, bfNodeA, 0.8)
+	res, err := MaintainBelowFloorMarkers(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 0, res.Marked)
+	require.False(t, belowFloorMarker(t, ctx, pool, bfNodeA).Valid, "healthy reputation is not marked")
+
+	// Below the floor → marker set.
+	setReputation(t, ctx, pool, bfNodeA, 0.4)
+	res, err = MaintainBelowFloorMarkers(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Marked)
+	first := belowFloorMarker(t, ctx, pool, bfNodeA)
+	require.True(t, first.Valid, "sub-floor reputation is marked")
+
+	// Wobble UP into the band [0.5, 0.6) → not cleared, not re-stamped.
+	setReputation(t, ctx, pool, bfNodeA, 0.55)
+	res, err = MaintainBelowFloorMarkers(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 0, res.Marked, "an already-marked node is never re-stamped")
+	require.Equal(t, 0, res.Cleared, "wobble inside the band does not clear")
+	require.Equal(t, first.Time, belowFloorMarker(t, ctx, pool, bfNodeA).Time,
+		"the sustainment clock is not reset by band wobble")
+
+	// Recover past floor+margin → cleared.
+	setReputation(t, ctx, pool, bfNodeA, 0.65)
+	res, err = MaintainBelowFloorMarkers(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Cleared)
+	require.False(t, belowFloorMarker(t, ctx, pool, bfNodeA).Valid,
+		"recovery past floor+margin clears the marker")
+}
+
+// TestBelowFloorMarkerRunsWhenRemedyDisabled: marker maintenance is
+// observability and runs regardless of Enabled — only the requeue/demote remedy
+// is gated (contract item 5; the gate itself lives in Orchestrator.runOnce).
+func TestBelowFloorMarkerRunsWhenRemedyDisabled(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	seedNode(t, ctx, pool, bfNodeA, "active", "current", true)
+	cfg := bfSweepCfg(0.5, 0.1, bfGraceSecs, 500)
+	cfg.Enabled = false
+
+	setReputation(t, ctx, pool, bfNodeA, 0.4)
+	res, err := MaintainBelowFloorMarkers(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Marked, "marker maintenance runs with the remedy disabled (gauge stays truthful)")
+	require.True(t, belowFloorMarker(t, ctx, pool, bfNodeA).Valid)
+}
+
+// TestBelowFloorRequeueGraceAndBatch: only SUSTAINED nodes' CIDs are requeued,
+// with reason 'below_floor', capped at requeue_batch (contracts 2 + 3).
+func TestBelowFloorRequeueGraceAndBatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	seedNode(t, ctx, pool, bfNodeA, "active", "current", true)
+	for _, c := range []string{"rq-1", "rq-2", "rq-3"} {
+		seedBlob(t, ctx, pool, c, "normal", true)
+		assignPinState(t, ctx, pool, c, bfNodeA, "acked")
+	}
+	cfg := bfSweepCfg(0.5, 0.1, bfGraceSecs, 2) // batch cap 2
+
+	// In-grace → no replacement traffic.
+	markBelowFloor(t, ctx, pool, bfNodeA, bfInGraceSecs)
+	res, err := ReplaceBelowFloor(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 0, res.Requeued, "an in-grace node receives no replacement traffic")
+
+	// Sustained → requeue, capped at batch=2.
+	markBelowFloor(t, ctx, pool, bfNodeA, bfSustainedSecs)
+	res, err = ReplaceBelowFloor(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 2, res.Requeued, "requeue is capped at requeue_batch across all sustained nodes")
+
+	var n int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM blob_replication_reconcile_queue WHERE reason='below_floor'`).Scan(&n))
+	require.Equal(t, 2, n, "requeued CIDs carry reason 'below_floor'")
+}
+
+// TestBelowFloorReplaceThenDemote: a sustained node's replica is failed with
+// state='failed' ONLY once a trusted replacement restores the healthy count —
+// never a durability dip (contract item 4).
+func TestBelowFloorReplaceThenDemote(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	seedBelowFloorFixture(t, ctx, pool) // bf-cid target 2, A+B acked, brs healthy=2
+	cfg := bfSweepCfg(0.5, 0.1, bfGraceSecs, 500)
+	markBelowFloor(t, ctx, pool, bfNodeA, bfSustainedSecs)
+
+	// Only A (sustained) + B hold bf-cid; excluding A, live holders = 1 < target 2.
+	res, err := ReplaceBelowFloor(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 0, res.Demoted, "no demote until a trusted replacement exists")
+	assertPinState(t, ctx, pool, "bf-cid", bfNodeA, "acked")
+
+	// C acks a replacement → live holders excluding A = 2 (B, C) >= target 2.
+	assignPinState(t, ctx, pool, "bf-cid", bfNodeC, "acked")
+	res, err = ReplaceBelowFloor(ctx, pool, cfg)
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Demoted, "A is demoted once the healthy count is restored")
+	assertPinState(t, ctx, pool, "bf-cid", bfNodeA, "failed")
+	// No durability dip: the two trusted replicas stay acked.
+	assertPinState(t, ctx, pool, "bf-cid", bfNodeB, "acked")
+	assertPinState(t, ctx, pool, "bf-cid", bfNodeC, "acked")
+}
+
+// TestBelowFloorSoleHolderNeverDemotes: a sustained node that is the ONLY holder
+// is never demoted — it stays the repair source of last resort (contract item 4,
+// the drain self-sourcing principle).
+func TestBelowFloorSoleHolderNeverDemotes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	seedNode(t, ctx, pool, bfNodeA, "active", "current", true)
+	seedBlob(t, ctx, pool, "sole-cid", "normal", true)
+	assignPinState(t, ctx, pool, "sole-cid", bfNodeA, "acked")
+	_, err := pool.Exec(ctx, `
+		INSERT INTO blob_replication_state
+			(cid, healthy_acked_count, sourceable_acked_count, in_flight_count,
+			 target_count, safety_tier, local_recoverable, durability_class, dirty)
+		VALUES ('sole-cid', 0, 0, 0, 2, 'donor_lost', true, 'normal', false)`)
+	require.NoError(t, err)
+	markBelowFloor(t, ctx, pool, bfNodeA, bfSustainedSecs)
+
+	res, err := ReplaceBelowFloor(ctx, pool, bfSweepCfg(0.5, 0.1, bfGraceSecs, 500))
+	require.NoError(t, err)
+	require.Equal(t, 0, res.Demoted, "a sole below-floor holder is never demoted")
+	assertPinState(t, ctx, pool, "sole-cid", bfNodeA, "acked")
+}

@@ -94,10 +94,13 @@ type CommitGateConfig struct {
 // defaultBelowFloorGraceSeconds is the D-M7.1-3 sustained-below-floor grace
 // window (24h) passed to CountSourceableHolders by the commit/prune safety
 // callers: a below_floor_since marker younger than this still counts
-// (hysteresis). Task 11 threads the below_floor_replacement.grace config knob
-// through here; until that sweep exists nothing sets the marker, so the
-// design default is behavior-neutral.
-const defaultBelowFloorGraceSeconds float64 = 24 * 60 * 60
+// (hysteresis). It mirrors the single config authority so the default literal
+// lives in one place. Like the orchestrator's projection seam, the commit/prune
+// safety path uses this DEFAULT rather than the operator-configured grace; a
+// customized grace shifts only the sweep's timing, and a shorter commit-safety
+// window can only be MORE conservative (excludes a marked holder sooner), never
+// unsafe. Full config threading here is a follow-up (see REVIEW_2026_07_04.md).
+const defaultBelowFloorGraceSeconds float64 = config.DefaultBelowFloorGraceSeconds
 
 // QuorumFor returns the commit quorum for a durability class, defaulting to the
 // important-class quorum for an unknown class (the conservative choice).
