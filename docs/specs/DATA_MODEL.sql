@@ -863,3 +863,29 @@ ALTER TABLE nodes
 -- index tiny.
 CREATE INDEX nodes_draining_idx ON nodes (id) INCLUDE (draining_at)
     WHERE draining_at IS NOT NULL;
+
+-- ============================================================================
+-- P2-M7.1 (migration 0018_below_floor.sql): below-floor replacement marker.
+-- ============================================================================
+
+-- nodes.below_floor_since: the sustained-below-floor marker (NULL = not below
+-- the reputation floor). Set/cleared by the orchestrator's below-floor sweep
+-- (D-M7.1-3): stamped when reputation_score < reputation_floor, cleared only at
+-- reputation_score >= floor + hysteresis_margin (so wobble near the floor never
+-- flaps). It is the DISTRUST analogue of draining_at: once the marker is
+-- SUSTAINED past the grace window (default 24h) the node is excluded from safety
+-- counts (healthy_acked / sourceable_acked / CountSourceableHolders) and
+-- placement, while read/repair SELECTION keeps it deprioritized behind draining
+-- (composite preference healthy > draining > below-floor). An in-grace marker
+-- still counts. Reputation itself stays in reputation_score; this column records
+-- only the sustained-below-floor EPISODE for the replacement remedy.
+ALTER TABLE nodes
+    ADD COLUMN below_floor_since timestamptz;
+
+-- Partial index: the sweep + safety/placement queries filter
+-- `below_floor_since IS NOT NULL [AND below_floor_since <= now() - grace]`; the
+-- population is small (only distrusted donors), so a partial index on the marker
+-- keeps it tiny. The benchcorpus EXPLAIN gate asserts this index serves the
+-- sustained predicate and the sweep's victim selection.
+CREATE INDEX nodes_below_floor_idx ON nodes (below_floor_since)
+    WHERE below_floor_since IS NOT NULL;

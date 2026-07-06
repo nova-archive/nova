@@ -672,7 +672,7 @@ pass        := recomputed == stored
 **`audit-block-hash/v1`** in the `capabilities` field of `POST /fed/v1/register`
 (and in the register example above). The coordinator only issues challenges to
 donors advertising this capability. The whole-blob `envelope_round_trip` kind and
-its capability are **not implemented in M6** (deferred to P2-M7).
+its capability are **not implemented in M6** (deferred to P2-M8+; P2-M7 shipped without it).
 
 **Assignment binding (D-M6-4-BIND).** The challenge carries `assignment_id` and
 `generation`; the donor verifies all of:

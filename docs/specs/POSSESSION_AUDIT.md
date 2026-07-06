@@ -28,7 +28,7 @@ Plan: `docs/superpowers/plans/phase2/2026-06-29-phase2-m6-possession-audits.md`.
 > is always set (pass/fail/skip/timeout) and is the indexing/operator-query
 > column; both added by migration `0015`. **Synchronous-only is the final
 > design**: the two-call `/fed/v1/audit/response` form and `envelope_round_trip`
-> challenge kind are **not implemented** (deferred to P2-M7). A hard failure
+> challenge kind are **not implemented** (deferred to P2-M8+; P2-M7 shipped without it). A hard failure
 > (`404` / CID mismatch) **invalidates the specific `pin_assignments` row**
 > (`state='failed'`) and enqueues reconcile, correcting M5 acked-only durability;
 > a soft failure (deadline exceeded) does not. The donor has a **separate audit
@@ -82,7 +82,7 @@ issues the challenge and the donor returns the **raw block bytes** in the same H
 response; the coordinator measures latency and decides the deadline from its
 **own receive-time**, never from a donor-supplied timestamp (a lying donor would
 backdate it). The two-call form (a separate `/audit/response` POST) is a
-**design-only fallback, not implemented in M6** (deferred to P2-M7); any
+**design-only fallback, not implemented in M6** (deferred to P2-M8+; P2-M7 shipped without it); any
 donor `completed_at` is advisory and is never the deadline basis (D10).
 
 ### Challenge
@@ -114,7 +114,7 @@ Content-Type: application/json
 - `block_hash` (default; implemented): donor returns the **raw block bytes**;
   coordinator verifies by CID reconstruction
   (`stored.Prefix().Sum(returnedBytes).Equals(stored)`).
-- `envelope_round_trip` — **design-only, not implemented in M6** (deferred to P2-M7).
+- `envelope_round_trip` — **design-only, not implemented in M6** (deferred to P2-M8+; P2-M7 shipped without it).
 
 ### Response
 
