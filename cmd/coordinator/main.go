@@ -403,10 +403,12 @@ func run() error {
 	var mtr *metrics.Metrics
 	if addr, enabled := resolveMetricsListenAddr(opCfg, os.LookupEnv); enabled {
 		floor := config.DefaultReputationFloor
+		bfGrace := (config.BelowFloorReplacement{}).EffectiveGrace()
 		if opCfg != nil {
 			floor = opCfg.Orchestrator.EffectiveReputationFloor()
+			bfGrace = opCfg.BelowFloorReplacement.EffectiveGrace()
 		}
-		mtr = metrics.New(pool, floor)
+		mtr = metrics.New(pool, floor, bfGrace.Seconds())
 		mln, err := net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("metrics_listen_addr: %w", err)

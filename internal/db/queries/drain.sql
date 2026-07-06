@@ -21,6 +21,9 @@ SELECT id, draining_at FROM nodes WHERE draining_at IS NOT NULL ORDER BY id;
 -- Drain debt (D-M7-6f): CIDs acked on the draining node whose count of acked,
 -- live, sync-current, NON-draining holders is below target_count. Pending
 -- reservations are NOT safe and do not reduce debt.
+-- P2-M7.1 (D-M7.1-3): SUSTAINED-below-floor holders (marker older than grace)
+-- do not reduce debt either — the safe-to-revoke gate must not lean on a
+-- replica healing is actively replacing; an in-grace marker still counts.
 -- Shape: ONE hash-aggregated live-holder count over the node's held CIDs,
 -- not a correlated subquery per pin — the P2-M7 corpus bench measured the
 -- correlated shape at ~23 s for a hub donor holding ~500k pins (9.8M-block
@@ -37,11 +40,13 @@ LEFT JOIN (
       AND n2.status IN ('active','suspect')
       AND n2.assignment_sync_state = 'current'
       AND n2.draining_at IS NULL
+      AND (n2.below_floor_since IS NULL
+           OR n2.below_floor_since > now() - make_interval(secs => sqlc.arg(below_floor_grace_secs)::float))
       AND pa2.cid IN (SELECT pa3.cid FROM pin_assignments pa3
-                      WHERE pa3.node_id = $1 AND pa3.state = 'acked')
+                      WHERE pa3.node_id = sqlc.arg(node_id) AND pa3.state = 'acked')
     GROUP BY pa2.cid
 ) h ON h.cid = pa.cid
-WHERE pa.node_id = $1 AND pa.state = 'acked'
+WHERE pa.node_id = sqlc.arg(node_id) AND pa.state = 'acked'
   AND COALESCE(h.live_holders, 0) < brs.target_count;
 
 -- name: CountDrainInflightCIDs :one
@@ -49,22 +54,26 @@ WHERE pa.node_id = $1 AND pa.state = 'acked'
 -- from "working" (D-M7-6f). Counts pending replacements ONLY on eligible
 -- destinations (non-draining, live/current, non-suspended, not the draining
 -- node itself) — a stale/dead pending row must not read as drain progress
--- (the same reason liveness fails dead pendings). Pending still never reduces
--- safe-to-revoke debt; this is "work in flight" only.
+-- (the same reason liveness fails dead pendings). P2-M7.1 (D-M7.1-3): a
+-- SUSTAINED-below-floor destination is not eligible either (placement
+-- excludes it; a pending there is a leftover, not progress). Pending still
+-- never reduces safe-to-revoke debt; this is "work in flight" only.
 SELECT count(DISTINCT pa.cid)
 FROM pin_assignments pa
-WHERE pa.node_id = $1 AND pa.state = 'acked'
+WHERE pa.node_id = sqlc.arg(node_id) AND pa.state = 'acked'
   AND EXISTS (
       SELECT 1
       FROM pin_assignments p3
       JOIN nodes n3 ON n3.id = p3.node_id
       WHERE p3.cid = pa.cid
         AND p3.state = 'pending'
-        AND p3.node_id <> $1
+        AND p3.node_id <> sqlc.arg(node_id)
         AND n3.status IN ('active','suspect')
         AND n3.assignment_sync_state = 'current'
         AND n3.trust_state <> 'suspended'
         AND n3.draining_at IS NULL
+        AND (n3.below_floor_since IS NULL
+             OR n3.below_floor_since > now() - make_interval(secs => sqlc.arg(below_floor_grace_secs)::float))
   );
 
 -- name: CountBelowFloorReplicas :many

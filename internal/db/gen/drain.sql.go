@@ -82,17 +82,26 @@ WHERE pa.node_id = $1 AND pa.state = 'acked'
         AND n3.assignment_sync_state = 'current'
         AND n3.trust_state <> 'suspended'
         AND n3.draining_at IS NULL
+        AND (n3.below_floor_since IS NULL
+             OR n3.below_floor_since > now() - make_interval(secs => $2::float))
   )
 `
+
+type CountDrainInflightCIDsParams struct {
+	NodeID              pgtype.UUID
+	BelowFloorGraceSecs float64
+}
 
 // Replacement in progress but not acked: lets an operator distinguish "stuck"
 // from "working" (D-M7-6f). Counts pending replacements ONLY on eligible
 // destinations (non-draining, live/current, non-suspended, not the draining
 // node itself) — a stale/dead pending row must not read as drain progress
-// (the same reason liveness fails dead pendings). Pending still never reduces
-// safe-to-revoke debt; this is "work in flight" only.
-func (q *Queries) CountDrainInflightCIDs(ctx context.Context, nodeID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countDrainInflightCIDs, nodeID)
+// (the same reason liveness fails dead pendings). P2-M7.1 (D-M7.1-3): a
+// SUSTAINED-below-floor destination is not eligible either (placement
+// excludes it; a pending there is a leftover, not progress). Pending still
+// never reduces safe-to-revoke debt; this is "work in flight" only.
+func (q *Queries) CountDrainInflightCIDs(ctx context.Context, arg CountDrainInflightCIDsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDrainInflightCIDs, arg.NodeID, arg.BelowFloorGraceSecs)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -110,24 +119,34 @@ LEFT JOIN (
       AND n2.status IN ('active','suspect')
       AND n2.assignment_sync_state = 'current'
       AND n2.draining_at IS NULL
+      AND (n2.below_floor_since IS NULL
+           OR n2.below_floor_since > now() - make_interval(secs => $1::float))
       AND pa2.cid IN (SELECT pa3.cid FROM pin_assignments pa3
-                      WHERE pa3.node_id = $1 AND pa3.state = 'acked')
+                      WHERE pa3.node_id = $2 AND pa3.state = 'acked')
     GROUP BY pa2.cid
 ) h ON h.cid = pa.cid
-WHERE pa.node_id = $1 AND pa.state = 'acked'
+WHERE pa.node_id = $2 AND pa.state = 'acked'
   AND COALESCE(h.live_holders, 0) < brs.target_count
 `
+
+type CountDrainPendingCIDsParams struct {
+	BelowFloorGraceSecs float64
+	NodeID              pgtype.UUID
+}
 
 // Drain debt (D-M7-6f): CIDs acked on the draining node whose count of acked,
 // live, sync-current, NON-draining holders is below target_count. Pending
 // reservations are NOT safe and do not reduce debt.
+// P2-M7.1 (D-M7.1-3): SUSTAINED-below-floor holders (marker older than grace)
+// do not reduce debt either — the safe-to-revoke gate must not lean on a
+// replica healing is actively replacing; an in-grace marker still counts.
 // Shape: ONE hash-aggregated live-holder count over the node's held CIDs,
 // not a correlated subquery per pin — the P2-M7 corpus bench measured the
 // correlated shape at ~23 s for a hub donor holding ~500k pins (9.8M-block
 // corpus), which starves the 3 s metrics scrape budget exactly when drain
 // visibility matters most.
-func (q *Queries) CountDrainPendingCIDs(ctx context.Context, nodeID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countDrainPendingCIDs, nodeID)
+func (q *Queries) CountDrainPendingCIDs(ctx context.Context, arg CountDrainPendingCIDsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDrainPendingCIDs, arg.BelowFloorGraceSecs, arg.NodeID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err

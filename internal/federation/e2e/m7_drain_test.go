@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/dbtest"
 	"github.com/nova-archive/nova/internal/federation/ca"
@@ -131,7 +132,7 @@ func TestE2EDrainDecommission(t *testing.T) {
 	require.NoError(t, q.MarkReplicationDirtyForNode(ctx, aPg))
 	require.NoError(t, q.EnqueueReconcileForNode(ctx, gen.EnqueueReconcileForNodeParams{Reason: "node_draining", NodeID: aPg}))
 
-	debt, err := q.CountDrainPendingCIDs(ctx, aPg)
+	debt, err := q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{NodeID: aPg, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, debt)
 
@@ -164,7 +165,7 @@ func TestE2EDrainDecommission(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, acked)
-	debt, err = q.CountDrainPendingCIDs(ctx, aPg)
+	debt, err = q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{NodeID: aPg, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 0, debt, "drain-ready (safe-to-revoke gate)")
 
@@ -176,6 +177,105 @@ func TestE2EDrainDecommission(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, counts.HealthyAcked, "healthy count unchanged end-to-end")
+}
+
+// TestE2EDrainDebtDistrustsBelowFloorHolder (P2-M7.1, D-M7.1-3): the drain
+// safe-to-revoke gate must not lean on a distrusted replica. When the ONLY
+// other holder of a draining node's CID is SUSTAINED-below-floor, drain debt
+// stays non-zero (revoking now would leave the data solely on a node healing
+// is actively replacing); an in-grace marker still counts (hysteresis).
+// Mirrors: a pending replacement ON a sustained-below-floor destination must
+// not read as drain progress either (CountDrainInflightCIDs).
+func TestE2EDrainDebtDistrustsBelowFloorHolder(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration")
+	}
+	ctx := context.Background()
+	pool := dbtest.New(t, ctx)
+	q := gen.New(pool)
+	targets := orchestrator.ReplicationTargets{Important: 5, Normal: 1, Cache: 1}
+	const grace = 3600.0
+
+	const cid = "bafyM71DRAINbf"
+	_, err := pool.Exec(ctx, `
+		INSERT INTO blobs (cid, mime_type, byte_size, state, product, envelope_version)
+		VALUES ($1, 'image/jpeg', 4096, 'active', 'image', 2)`, cid)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO blob_storage_state (cid, commit_state, durability_class, local_role, local_present, local_bytes)
+		VALUES ($1, 'committed', 'normal', 'absent', false, 0)`, cid)
+	require.NoError(t, err)
+
+	// Draining node D and below-floor node B both hold the CID acked.
+	dID, bID := uuid.New(), uuid.New()
+	seedM7Node(t, ctx, pool, dID, "placeholder", true)
+	seedM7Node(t, ctx, pool, bID, "placeholder", true)
+	for _, n := range []uuid.UUID{dID, bID} {
+		_, err = pool.Exec(ctx, `
+			INSERT INTO pin_assignments (cid, node_id, state, acked_at)
+			VALUES ($1, $2::uuid, 'acked', now())`, cid, n)
+		require.NoError(t, err)
+	}
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	require.NoError(t, orchestrator.RecomputeCID(ctx, tx, cid, targets))
+	require.NoError(t, tx.Commit(ctx))
+
+	dPg := m7pg(t, dID.String())
+	n, err := q.SetNodeDraining(ctx, dPg)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+
+	// Healthy other holder B → the debt is already covered.
+	debt, err := q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{
+		NodeID: dPg, BelowFloorGraceSecs: grace,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, debt, "a healthy other holder covers target 1")
+
+	// B sinks below the floor, SUSTAINED (2h-old marker, 1h grace): the gate
+	// must reopen — a distrusted replica cannot make a drain safe-to-revoke.
+	_, err = pool.Exec(ctx, `
+		UPDATE nodes SET below_floor_since = now() - interval '2 hours' WHERE id = $1::uuid`, bID)
+	require.NoError(t, err)
+	debt, err = q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{
+		NodeID: dPg, BelowFloorGraceSecs: grace,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, debt, "drain debt stays non-zero when the only other holder is sustained-below-floor (D-M7.1-3)")
+
+	// In-grace marker (1 min old): hysteresis — B still counts, debt covered.
+	_, err = pool.Exec(ctx, `
+		UPDATE nodes SET below_floor_since = now() - interval '1 minute' WHERE id = $1::uuid`, bID)
+	require.NoError(t, err)
+	debt, err = q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{
+		NodeID: dPg, BelowFloorGraceSecs: grace,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, debt, "an in-grace below-floor holder still counts (hysteresis)")
+
+	// In-flight mirror: a pending replacement on a SUSTAINED-below-floor
+	// destination is not progress; on a healthy destination it is.
+	cID := uuid.New()
+	seedM7Node(t, ctx, pool, cID, "placeholder", true)
+	_, err = pool.Exec(ctx, `
+		UPDATE nodes SET below_floor_since = now() - interval '2 hours' WHERE id = ANY(ARRAY[$1,$2]::uuid[])`, bID, cID)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO pin_assignments (cid, node_id, state) VALUES ($1, $2::uuid, 'pending')`, cid, cID)
+	require.NoError(t, err)
+	inflight, err := q.CountDrainInflightCIDs(ctx, gen.CountDrainInflightCIDsParams{
+		NodeID: dPg, BelowFloorGraceSecs: grace,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, inflight, "a pending on a sustained-below-floor destination is not drain progress")
+	_, err = pool.Exec(ctx, `UPDATE nodes SET below_floor_since = NULL WHERE id = $1::uuid`, cID)
+	require.NoError(t, err)
+	inflight, err = q.CountDrainInflightCIDs(ctx, gen.CountDrainInflightCIDsParams{
+		NodeID: dPg, BelowFloorGraceSecs: grace,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, inflight, "a pending on a healthy destination is drain progress")
 }
 
 // startSourceDonorWithID is startSourceDonor with a caller-fixed node id (the

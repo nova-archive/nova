@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db/gen"
 )
 
@@ -67,11 +68,19 @@ func drainNode(ctx context.Context, pool *pgxpool.Pool, id pgtype.UUID, force bo
 
 	// The command just changed lifecycle state; if it cannot report debt, the
 	// operator must know — never swallow these errors.
-	pending, err := q.CountDrainPendingCIDs(ctx, id)
+	// The CLI is DB-direct (no operator.yaml), so the debt readout evaluates
+	// sustained-below-floor holders against the DEFAULT grace; the
+	// coordinator's configured below_floor_replacement.grace governs the
+	// authoritative sweep and the /metrics families (P2-M7.1).
+	pending, err := q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{
+		NodeID: id, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds,
+	})
 	if err != nil {
 		return res, fmt.Errorf("count drain debt: %w", err)
 	}
-	inflight, err := q.CountDrainInflightCIDs(ctx, id)
+	inflight, err := q.CountDrainInflightCIDs(ctx, gen.CountDrainInflightCIDsParams{
+		NodeID: id, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds,
+	})
 	if err != nil {
 		return res, fmt.Errorf("count drain inflight: %w", err)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/orchestrator"
 	"github.com/stretchr/testify/require"
@@ -242,7 +243,7 @@ func TestCorpusBench(t *testing.T) {
 			}
 		}, nil},
 		{"drain_pending", 20, func(i int) {
-			_, err := q.CountDrainPendingCIDs(ctx, drainingID)
+			_, err := q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{NodeID: drainingID, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 			require.NoError(t, err)
 		}, nil},
 		{"below_floor", 20, func(i int) {

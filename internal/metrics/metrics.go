@@ -28,7 +28,10 @@ type Metrics struct {
 	sourceSelFailures *prometheus.CounterVec // reason
 }
 
-func New(pool *pgxpool.Pool, reputationFloor float64) *Metrics {
+// New builds the registry. belowFloorGraceSecs is the P2-M7.1
+// below_floor_replacement.grace window (seconds) the scrape-time drain-debt
+// and below-floor families evaluate sustained markers against.
+func New(pool *pgxpool.Pool, reputationFloor, belowFloorGraceSecs float64) *Metrics {
 	m := &Metrics{reg: prometheus.NewRegistry()}
 	m.registerFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "nova_compat_registration_failures_total",
@@ -62,7 +65,7 @@ func New(pool *pgxpool.Pool, reputationFloor float64) *Metrics {
 	m.reg.MustRegister(m.registerFailures, m.trustTransitions, m.reputationMoved,
 		m.auditLatency, m.donorFetch, m.donorFetchLatency, m.egressRefusals,
 		m.sourceSelFailures,
-		newDBCollector(pool, reputationFloor))
+		newDBCollector(pool, reputationFloor, belowFloorGraceSecs))
 	return m
 }
 

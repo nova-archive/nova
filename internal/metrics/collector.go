@@ -26,8 +26,12 @@ import (
 // must never panic the handler. The drain families iterate per draining node;
 // that population is operator-initiated and tiny by construction (D-M7-6).
 type dbCollector struct {
-	pool  *pgxpool.Pool
-	floor float64
+	pool *pgxpool.Pool
+	// floor is the orchestrator reputation floor; belowFloorGraceSecs is the
+	// below_floor_replacement.grace window (P2-M7.1) the drain-debt queries
+	// use to distrust SUSTAINED-below-floor holders.
+	floor               float64
+	belowFloorGraceSecs float64
 
 	replicationCIDs   *prometheus.Desc
 	queueDepth        *prometheus.Desc
@@ -43,10 +47,11 @@ type dbCollector struct {
 	auditResults      *prometheus.Desc
 }
 
-func newDBCollector(pool *pgxpool.Pool, reputationFloor float64) *dbCollector {
+func newDBCollector(pool *pgxpool.Pool, reputationFloor, belowFloorGraceSecs float64) *dbCollector {
 	return &dbCollector{
-		pool:  pool,
-		floor: reputationFloor,
+		pool:                pool,
+		floor:               reputationFloor,
+		belowFloorGraceSecs: belowFloorGraceSecs,
 		replicationCIDs: prometheus.NewDesc("nova_replication_cids",
 			"CIDs by replication safety tier and durability class.", []string{"tier", "class"}, nil),
 		queueDepth: prometheus.NewDesc("nova_reconcile_queue_depth",
@@ -179,12 +184,16 @@ func (c *dbCollector) collectDrain(ctx context.Context, ch chan<- prometheus.Met
 	for _, n := range nodes {
 		id := uuid.UUID(n.ID.Bytes).String()
 		ch <- prometheus.MustNewConstMetric(c.draining, prometheus.GaugeValue, 1, id)
-		pending, err := q.CountDrainPendingCIDs(ctx, n.ID)
+		pending, err := q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{
+			NodeID: n.ID, BelowFloorGraceSecs: c.belowFloorGraceSecs,
+		})
 		if err != nil {
 			slog.Warn("metrics.scrape_query_failed", "family", "nova_node_drain_pending_cids", "err", err)
 			continue
 		}
-		inflight, err := q.CountDrainInflightCIDs(ctx, n.ID)
+		inflight, err := q.CountDrainInflightCIDs(ctx, gen.CountDrainInflightCIDsParams{
+			NodeID: n.ID, BelowFloorGraceSecs: c.belowFloorGraceSecs,
+		})
 		if err != nil {
 			slog.Warn("metrics.scrape_query_failed", "family", "nova_node_drain_inflight_cids", "err", err)
 			continue

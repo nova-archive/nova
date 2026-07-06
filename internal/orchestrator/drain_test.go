@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/dbtest"
 	"github.com/stretchr/testify/require"
@@ -191,13 +192,13 @@ func TestDrainDebtCounts(t *testing.T) {
 	markDraining(t, ctx, pool, drainNodeA)
 
 	// Only B (1 non-draining acked holder) < target 2 → debt 1.
-	debt, err := q.CountDrainPendingCIDs(ctx, aID)
+	debt, err := q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{NodeID: aID, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, debt)
 
 	// C acks a replacement → debt cleared.
 	assignPinState(t, ctx, pool, "drain-cid", drainNodeC, "acked")
-	debt, err = q.CountDrainPendingCIDs(ctx, aID)
+	debt, err = q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{NodeID: aID, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 0, debt)
 
@@ -206,17 +207,17 @@ func TestDrainDebtCounts(t *testing.T) {
 	_, err = pool.Exec(ctx, `DELETE FROM pin_assignments WHERE cid='drain-cid' AND node_id=$1::uuid`, drainNodeC)
 	require.NoError(t, err)
 	assignPinState(t, ctx, pool, "drain-cid", drainNodeC, "pending")
-	debt, err = q.CountDrainPendingCIDs(ctx, aID)
+	debt, err = q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{NodeID: aID, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, debt, "pending never reduces drain debt")
-	inflight, err := q.CountDrainInflightCIDs(ctx, aID)
+	inflight, err := q.CountDrainInflightCIDs(ctx, gen.CountDrainInflightCIDsParams{NodeID: aID, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, inflight)
 
 	// A pending on an INELIGIBLE destination (draining C) is not progress.
 	_, err = pool.Exec(ctx, `UPDATE nodes SET draining_at = now() WHERE id = $1::uuid`, drainNodeC)
 	require.NoError(t, err)
-	inflight, err = q.CountDrainInflightCIDs(ctx, aID)
+	inflight, err = q.CountDrainInflightCIDs(ctx, gen.CountDrainInflightCIDsParams{NodeID: aID, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 0, inflight, "pending on an ineligible destination must not read as drain progress")
 }

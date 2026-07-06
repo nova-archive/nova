@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/dbtest"
 	"github.com/nova-archive/nova/internal/notify"
@@ -203,7 +204,7 @@ func TestDrillDrainedSoleHolderHealsFromDrainingSource(t *testing.T) {
 		Reason: "node_draining", NodeID: aPg,
 	}))
 
-	debt, err := q.CountDrainPendingCIDs(ctx, aPg)
+	debt, err := q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{NodeID: aPg, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, debt, "sole-holder drain opens debt")
 
@@ -232,7 +233,7 @@ func TestDrillDrainedSoleHolderHealsFromDrainingSource(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, acked)
 
-	debt, err = q.CountDrainPendingCIDs(ctx, aPg)
+	debt, err = q.CountDrainPendingCIDs(ctx, gen.CountDrainPendingCIDsParams{NodeID: aPg, BelowFloorGraceSecs: config.DefaultBelowFloorGraceSeconds})
 	require.NoError(t, err)
 	require.EqualValues(t, 0, debt, "drain-ready once the replacement acks")
 }

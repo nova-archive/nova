@@ -104,7 +104,7 @@ func TestScrapeFamiliesAndValues(t *testing.T) {
 	pool := dbtest.New(t, ctx)
 	drainingID := seedMetricsFixture(t, ctx, pool)
 
-	m := New(pool, 0.5)
+	m := New(pool, 0.5, 3600)
 	body := scrape(t, m)
 
 	require.GreaterOrEqual(t, metricValue(t, body, "nova_nodes", `status="active"`), 1.0)
@@ -127,7 +127,7 @@ func TestLabelDiscipline(t *testing.T) {
 	pool := dbtest.New(t, ctx)
 	seedMetricsFixture(t, ctx, pool)
 
-	m := New(pool, 0.5)
+	m := New(pool, 0.5, 3600)
 	// Touch every process-local hook once so their families materialize.
 	m.ObserveRegisterFailure("missing_capability")
 	m.ObserveTrustTransition("probationary", "trusted", "graduated")
