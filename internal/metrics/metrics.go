@@ -26,6 +26,7 @@ type Metrics struct {
 	donorFetchLatency prometheus.Histogram
 	egressRefusals    *prometheus.CounterVec // reason
 	sourceSelFailures *prometheus.CounterVec // reason
+	belowFloorRequeue prometheus.Counter     // CIDs requeued by the below-floor sweep
 }
 
 // New builds the registry. belowFloorGraceSecs is the P2-M7.1
@@ -62,9 +63,13 @@ func New(pool *pgxpool.Pool, reputationFloor, belowFloorGraceSecs float64) *Metr
 	m.sourceSelFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "nova_source_selection_failures_total", Help: "Read/repair source selection failures by reason.",
 	}, []string{"reason"})
+	m.belowFloorRequeue = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "nova_below_floor_requeued_total",
+		Help: "CIDs enqueued for re-replication by the below-floor sweep (process-local; resets on restart).",
+	})
 	m.reg.MustRegister(m.registerFailures, m.trustTransitions, m.reputationMoved,
 		m.auditLatency, m.donorFetch, m.donorFetchLatency, m.egressRefusals,
-		m.sourceSelFailures,
+		m.sourceSelFailures, m.belowFloorRequeue,
 		newDBCollector(pool, reputationFloor, belowFloorGraceSecs))
 	return m
 }
@@ -93,4 +98,11 @@ func (m *Metrics) ObserveDonorFetch(result, reason string, sec float64) {
 func (m *Metrics) ObserveEgressRefusal(reason string) { m.egressRefusals.WithLabelValues(reason).Inc() }
 func (m *Metrics) ObserveSourceSelectionFailure(reason string) {
 	m.sourceSelFailures.WithLabelValues(reason).Inc()
+}
+
+// ObserveBelowFloorRequeue records n CIDs enqueued by one below-floor sweep.
+func (m *Metrics) ObserveBelowFloorRequeue(n int) {
+	if n > 0 {
+		m.belowFloorRequeue.Add(float64(n))
+	}
 }

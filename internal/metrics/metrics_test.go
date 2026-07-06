@@ -38,6 +38,10 @@ func seedMetricsFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `UPDATE nodes SET reputation_score = 0.3 WHERE id = $1::uuid`, nodeF)
 	require.NoError(t, err)
+	// F has carried a below-floor marker for 2h — SUSTAINED against the 1h grace
+	// the scrape uses, so nova_below_floor_nodes{state="sustained"} == 1.
+	_, err = pool.Exec(ctx, `UPDATE nodes SET below_floor_since = now() - interval '2 hours' WHERE id = $1::uuid`, nodeF)
+	require.NoError(t, err)
 
 	for _, cid := range []string{"m-cid-1", "m-cid-2", "m-cid-3"} {
 		_, err = pool.Exec(ctx, `
@@ -113,6 +117,8 @@ func TestScrapeFamiliesAndValues(t *testing.T) {
 	require.Equal(t, 0.0, metricValue(t, body, "nova_node_drain_ready", drainingID))
 	require.Greater(t, metricValue(t, body, "nova_node_drain_pending_oldest_seconds", drainingID), 0.0)
 	require.Equal(t, 2.0, metricValue(t, body, "nova_below_floor_replica_debt", ""))
+	require.Equal(t, 1.0, metricValue(t, body, "nova_below_floor_nodes", `state="sustained"`))
+	require.Equal(t, 0.0, metricValue(t, body, "nova_below_floor_nodes", `state="in_grace"`))
 	require.Contains(t, body, "nova_replication_cids")
 	require.Contains(t, body, "nova_reconcile_queue_depth")
 	require.Equal(t, 1.0, metricValue(t, body, "nova_audit_results_total", `result="pass"`),
@@ -136,6 +142,7 @@ func TestLabelDiscipline(t *testing.T) {
 	m.ObserveDonorFetch("ok", "none", 0.02)
 	m.ObserveEgressRefusal("budget_exhausted")
 	m.ObserveSourceSelectionFailure("no_sourceable_holder")
+	m.ObserveBelowFloorRequeue(3)
 
 	families, err := m.Registry().Gather()
 	require.NoError(t, err)

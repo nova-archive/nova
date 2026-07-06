@@ -39,6 +39,7 @@ type dbCollector struct {
 	nodes             *prometheus.Desc
 	belowFloorTotal   *prometheus.Desc
 	belowFloorPerNode *prometheus.Desc
+	belowFloorNodes   *prometheus.Desc
 	draining          *prometheus.Desc
 	drainPending      *prometheus.Desc
 	drainInflight     *prometheus.Desc
@@ -65,6 +66,9 @@ func newDBCollector(pool *pgxpool.Pool, reputationFloor, belowFloorGraceSecs flo
 			"Acked, countable replicas held on nodes below the reputation floor (observability only; remedy is P2-M7.1).", nil, nil),
 		belowFloorPerNode: prometheus.NewDesc("nova_node_below_floor_replicas",
 			"Acked, countable replicas on this below-floor node.", []string{"node_id"}, nil),
+		belowFloorNodes: prometheus.NewDesc("nova_below_floor_nodes",
+			"Nodes carrying a below-floor marker, by state: sustained (marker older than grace; excluded from safety counts + placement) vs in_grace (still counts). D-M7.1-3.",
+			[]string{"state"}, nil),
 		draining: prometheus.NewDesc("nova_node_draining",
 			"1 for each draining node (D-M7-6).", []string{"node_id"}, nil),
 		drainPending: prometheus.NewDesc("nova_node_drain_pending_cids",
@@ -84,7 +88,7 @@ func newDBCollector(pool *pgxpool.Pool, reputationFloor, belowFloorGraceSecs flo
 func (c *dbCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		c.replicationCIDs, c.queueDepth, c.queueOldest, c.nodes,
-		c.belowFloorTotal, c.belowFloorPerNode,
+		c.belowFloorTotal, c.belowFloorPerNode, c.belowFloorNodes,
 		c.draining, c.drainPending, c.drainInflight, c.drainOldest, c.drainReady,
 		c.auditResults,
 	} {
@@ -104,6 +108,7 @@ func (c *dbCollector) Collect(ch chan<- prometheus.Metric) {
 		`SELECT status::text, trust_state::text, assignment_sync_state, count(*)::float8
 		 FROM nodes GROUP BY 1, 2, 3`, 3)
 	c.collectBelowFloor(ctx, ch)
+	c.collectBelowFloorNodes(ctx, ch)
 	c.collectDrain(ctx, ch)
 	c.collectGroupBy(ctx, ch, c.auditResults, prometheus.CounterValue,
 		`SELECT COALESCE(result::text, 'pending'), COALESCE(NULLIF(error, ''), 'none'), count(*)::float8
@@ -171,6 +176,25 @@ func (c *dbCollector) collectBelowFloor(ctx context.Context, ch chan<- prometheu
 			uuid.UUID(r.NodeID.Bytes).String())
 	}
 	ch <- prometheus.MustNewConstMetric(c.belowFloorTotal, prometheus.GaugeValue, total)
+}
+
+// collectBelowFloorNodes emits nova_below_floor_nodes{state} — the count of
+// nodes carrying a below-floor marker, split into sustained (marker older than
+// the configured grace) and in_grace. A state absent from the query result
+// means zero of that kind, so both labels are always emitted (a truthful zero
+// beats a missing series for alerting).
+func (c *dbCollector) collectBelowFloorNodes(ctx context.Context, ch chan<- prometheus.Metric) {
+	rows, err := gen.New(c.pool).CountBelowFloorNodes(ctx, c.belowFloorGraceSecs)
+	if err != nil {
+		slog.Warn("metrics.scrape_query_failed", "family", "nova_below_floor_nodes", "err", err)
+		return
+	}
+	byState := map[bool]float64{true: 0, false: 0}
+	for _, r := range rows {
+		byState[r.Sustained] = float64(r.N)
+	}
+	ch <- prometheus.MustNewConstMetric(c.belowFloorNodes, prometheus.GaugeValue, byState[true], "sustained")
+	ch <- prometheus.MustNewConstMetric(c.belowFloorNodes, prometheus.GaugeValue, byState[false], "in_grace")
 }
 
 func (c *dbCollector) collectDrain(ctx context.Context, ch chan<- prometheus.Metric) {
