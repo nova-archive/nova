@@ -55,6 +55,42 @@ func pemPair(t *testing.T, parent *x509.Certificate, parentKey ed25519.PrivateKe
 	return certPEM, keyPEM, cert, priv
 }
 
+// TestCustomVerifyClientsDisableResumption guards the SECURITY INVARIANT in
+// tls.go: the two InsecureSkipVerify + VerifyPeerCertificate client configs must
+// leave ClientSessionCache nil. Go runs VerifyPeerCertificate only on a FULL
+// handshake, so a client session cache would let a resumed connection skip
+// federation-identity verification entirely.
+func TestCustomVerifyClientsDisableResumption(t *testing.T) {
+	caPEM, _, caCert, caKey := pemPair(t, nil, nil, true, "", nil)
+	cliPEM, cliKeyPEM, _, _ := pemPair(t, caCert, caKey, false, "nova://coordinator/abc", nil)
+
+	coord, err := CoordinatorClientTLS(caPEM, cliPEM, cliKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coord.ClientSessionCache != nil {
+		t.Error("CoordinatorClientTLS must leave ClientSessionCache nil — resumption would bypass VerifyPeerCertificate")
+	}
+	if !coord.InsecureSkipVerify || coord.VerifyPeerCertificate == nil {
+		t.Error("CoordinatorClientTLS must pair InsecureSkipVerify with a VerifyPeerCertificate")
+	}
+
+	base, err := ClientTLSConfig(caPEM, cliPEM, cliKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repair, err := DonorRepairClientTLS(base, "node-xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repair.ClientSessionCache != nil {
+		t.Error("DonorRepairClientTLS must leave ClientSessionCache nil — resumption would bypass VerifyPeerCertificate")
+	}
+	if !repair.InsecureSkipVerify || repair.VerifyPeerCertificate == nil {
+		t.Error("DonorRepairClientTLS must pair InsecureSkipVerify with a VerifyPeerCertificate")
+	}
+}
+
 func TestMutualTLSHandshake(t *testing.T) {
 	caPEM, _, caCert, caKey := pemPair(t, nil, nil, true, "", nil)
 	srvPEM, srvKeyPEM, _, _ := pemPair(t, caCert, caKey, false, "", []string{"localhost"})

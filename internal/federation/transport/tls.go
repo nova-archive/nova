@@ -78,9 +78,16 @@ func CoordinatorClientTLS(caPEM, certPEM, keyPEM []byte) (*tls.Config, error) {
 		return nil, err
 	}
 	return &tls.Config{
-		Certificates:          []tls.Certificate{cert},
-		RootCAs:               pool,
-		MinVersion:            tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS12,
+		// ClientSessionCache is intentionally left nil. With InsecureSkipVerify +
+		// VerifyPeerCertificate, Go runs the custom check only on a FULL
+		// handshake; a resumed session (client session ticket) skips it. A nil
+		// client cache disables client-side resumption, so peer-identity
+		// verification runs on every connection. SECURITY INVARIANT: do NOT add a
+		// ClientSessionCache to a custom-verify config without also re-verifying
+		// identity on resume — TestCustomVerifyClientsDisableResumption guards it.
 		InsecureSkipVerify:    true, // custom verification below — never a verification bypass
 		VerifyPeerCertificate: verifyFederationServerChain(pool),
 	}, nil
@@ -157,6 +164,9 @@ func DonorRepairClientTLS(base *tls.Config, expectedNodeID string) (*tls.Config,
 	}
 	pool := base.RootCAs
 	cfg := base.Clone()
+	// See CoordinatorClientTLS: nil ClientSessionCache keeps identity
+	// verification on every connection under InsecureSkipVerify. base
+	// (ClientTLSConfig) sets no cache; do not introduce one here.
 	cfg.InsecureSkipVerify = true // custom verification below — never a verification bypass
 	cfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		id, err := verifyFederationChain(pool, rawCerts)
