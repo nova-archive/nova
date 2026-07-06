@@ -201,7 +201,7 @@ WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.last_seen_at > now() - make_interval(secs => $2::float)
   AND n.advertised_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
-ORDER BY (n.draining_at IS NOT NULL), (n.below_floor_since IS NOT NULL), n.reputation_score DESC, n.id
+ORDER BY (n.below_floor_since IS NOT NULL), (n.draining_at IS NOT NULL), n.reputation_score DESC, n.id
 `
 
 type ListSourceableHoldersParams struct {
@@ -219,10 +219,12 @@ type ListSourceableHoldersRow struct {
 
 // Best-link sourceable holders: reputation desc, then id for stable rotation.
 // P2-M7 (D-M7-6c): SELECTION, not a safety count — a draining node stays
-// eligible while live, deprioritized by the prepended drain sort key.
-// P2-M7.1 (D-M7.1-3): a below-floor node stays eligible too, deprioritized
-// after the drain key (bare marker, no grace — even an in-grace node is
-// slightly deprioritized as a source; that is intended).
+// eligible while live, deprioritized by a prepended sort key.
+// P2-M7.1 (D-M7.1-3): a below-floor node stays eligible too, and is the TRUE
+// last resort — the below-floor key sorts FIRST so the composite preference
+// is healthy > draining > below-floor (a draining node is trusted data
+// leaving politely; a below-floor node is distrusted). Bare marker, no grace:
+// even an in-grace node is slightly deprioritized as a source (intended).
 func (q *Queries) ListSourceableHolders(ctx context.Context, arg ListSourceableHoldersParams) ([]ListSourceableHoldersRow, error) {
 	rows, err := q.db.Query(ctx, listSourceableHolders, arg.Cid, arg.StaleSecs)
 	if err != nil {

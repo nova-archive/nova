@@ -309,10 +309,12 @@ type Querier interface {
 	ListSigningKeysForRewrap(ctx context.Context, masterKeyVersionID pgtype.UUID) ([]ListSigningKeysForRewrapRow, error)
 	// Best-link sourceable holders: reputation desc, then id for stable rotation.
 	// P2-M7 (D-M7-6c): SELECTION, not a safety count — a draining node stays
-	// eligible while live, deprioritized by the prepended drain sort key.
-	// P2-M7.1 (D-M7.1-3): a below-floor node stays eligible too, deprioritized
-	// after the drain key (bare marker, no grace — even an in-grace node is
-	// slightly deprioritized as a source; that is intended).
+	// eligible while live, deprioritized by a prepended sort key.
+	// P2-M7.1 (D-M7.1-3): a below-floor node stays eligible too, and is the TRUE
+	// last resort — the below-floor key sorts FIRST so the composite preference
+	// is healthy > draining > below-floor (a draining node is trusted data
+	// leaving politely; a below-floor node is distrusted). Bare marker, no grace:
+	// even an in-grace node is slightly deprioritized as a source (intended).
 	ListSourceableHolders(ctx context.Context, arg ListSourceableHoldersParams) ([]ListSourceableHoldersRow, error)
 	// Reconciler input: staging rows + the blob's product, ordered oldest-first.
 	ListStagingBlobs(ctx context.Context, lim int32) ([]ListStagingBlobsRow, error)

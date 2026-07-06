@@ -280,8 +280,8 @@ WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
   AND (n.last_egress_remaining_bytes IS NULL OR n.last_egress_remaining_bytes >= $2)
-ORDER BY (n.draining_at IS NOT NULL),   -- P2-M7 D-M7-6c: draining stays eligible, sorted last
-         (n.below_floor_since IS NOT NULL),   -- P2-M7.1 D-M7.1-3: below-floor stays eligible, after the drain key (bare marker — in-grace is deprioritized too, intended)
+ORDER BY (n.below_floor_since IS NOT NULL),   -- P2-M7.1 D-M7.1-3: below-floor stays eligible but is the TRUE last resort (healthy > draining > below-floor; bare marker — in-grace is deprioritized too, intended)
+         (n.draining_at IS NOT NULL),   -- P2-M7 D-M7-6c: draining stays eligible, sorted after healthy
          (COALESCE(n.last_egress_remaining_bytes, 0)::float8 * n.reputation_score) DESC,
          n.reputation_score DESC, n.id
 LIMIT 1

@@ -31,6 +31,12 @@ const (
 	bfGraceSecs     = 3600.0
 	bfSustainedSecs = 7200.0
 	bfInGraceSecs   = 60.0
+
+	// bfDistinctStaleSecs is the CountSourceableHolders freshness window used
+	// by these tests: deliberately DISTINCT from bfGraceSecs AND larger than
+	// bfSustainedSecs, so a transposed stale/grace argument pair cannot pass
+	// (all fixture nodes are fresh, so any positive stale window is inert).
+	bfDistinctStaleSecs = 86400.0
 )
 
 // seedBelowFloorFixture: blob bf-cid (target 2), A+B acked holders, C empty
@@ -89,8 +95,11 @@ func TestBelowFloorSustainedExcludedFromSafetyCounts(t *testing.T) {
 	require.EqualValues(t, 1, after.SourceableAcked, "sustained-below-floor A must not be safety-sourceable (D-M7.1-3)")
 
 	// The commit/prune/read safety count (storage_state.sql) must agree.
+	// StaleSecs is deliberately DISTINCT from the grace (transposition-proof:
+	// a swapped stale/grace argument would read the 2h-old marker as in-grace
+	// and flip this assertion).
 	n, err := q.CountSourceableHolders(ctx, gen.CountSourceableHoldersParams{
-		Cid: "bf-cid", StaleSecs: 3600, BelowFloorGraceSecs: bfGraceSecs,
+		Cid: "bf-cid", StaleSecs: bfDistinctStaleSecs, BelowFloorGraceSecs: bfGraceSecs,
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n, "CountSourceableHolders must exclude sustained-below-floor A")
@@ -117,7 +126,7 @@ func TestBelowFloorInGraceStillCounts(t *testing.T) {
 	require.EqualValues(t, 2, counts.SourceableAcked)
 
 	n, err := q.CountSourceableHolders(ctx, gen.CountSourceableHoldersParams{
-		Cid: "bf-cid", StaleSecs: 3600, BelowFloorGraceSecs: bfGraceSecs,
+		Cid: "bf-cid", StaleSecs: bfDistinctStaleSecs, BelowFloorGraceSecs: bfGraceSecs,
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 2, n, "in-grace below-floor A still counts for commit/prune safety")
@@ -211,8 +220,10 @@ func TestBelowFloorDeprioritizedNotExcludedFromSelection(t *testing.T) {
 }
 
 // TestBelowFloorAndDrainSortKeyOrder pins the prepended sort-key order: the
-// drain key comes FIRST, below-floor second — a below-floor-but-live node is
-// preferred over a draining one, and a healthy node over both.
+// below-floor key comes FIRST, drain second — the composite preference is
+// healthy > draining > below-floor (P2-M7.1 review decision; the design prose
+// governs). A draining node is trusted data leaving politely; a below-floor
+// node is DISTRUSTED — it is the TRUE last resort.
 func TestBelowFloorAndDrainSortKeyOrder(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")
@@ -235,6 +246,21 @@ func TestBelowFloorAndDrainSortKeyOrder(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, holders, 3)
 	require.Equal(t, bfNodeC, uuidString(holders[0].NodeID), "healthy C first")
-	require.Equal(t, bfNodeA, uuidString(holders[1].NodeID), "below-floor A before draining B")
-	require.Equal(t, bfNodeB, uuidString(holders[2].NodeID), "draining B last")
+	require.Equal(t, bfNodeB, uuidString(holders[1].NodeID), "draining B before below-floor A")
+	require.Equal(t, bfNodeA, uuidString(holders[2].NodeID), "below-floor A last (true last resort)")
+
+	// The repair-source selection must agree: draining B outranks below-floor A.
+	_, err = pool.Exec(ctx, `
+		UPDATE nodes SET advertised_capabilities = '{read-source/v1,repair-stream/v1}'
+		WHERE id = ANY(ARRAY[$1, $2]::uuid[])`, bfNodeA, bfNodeB)
+	require.NoError(t, err)
+	seedBlob(t, ctx, pool, "bf-order-cid", "normal", true)
+	assignPinState(t, ctx, pool, "bf-order-cid", bfNodeA, "acked")
+	assignPinState(t, ctx, pool, "bf-order-cid", bfNodeB, "acked")
+	src, err := q.ListRepairSourceHolders(ctx, gen.ListRepairSourceHoldersParams{
+		Cid: "bf-order-cid", Size: pgtype.Int8{Int64: 100, Valid: true},
+	})
+	require.NoError(t, err)
+	require.Equal(t, bfNodeB, uuidString(src.NodeID),
+		"draining B outranks below-floor A as repair source (healthy > draining > below-floor)")
 }
