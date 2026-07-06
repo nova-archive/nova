@@ -102,6 +102,7 @@ func (r *Reconciler) reconcileBlob(ctx context.Context, row gen.ListStagingBlobs
 
 	held, err := r.q.CountSourceableHolders(ctx, gen.CountSourceableHoldersParams{
 		Cid: row.Cid, StaleSecs: r.gate.StaleSeconds,
+		BelowFloorGraceSecs: defaultBelowFloorGraceSeconds,
 	})
 	if err != nil {
 		r.log.Warn("storage.commit.count_holders_failed", "cid", row.Cid, "err", err)

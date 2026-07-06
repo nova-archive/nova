@@ -35,6 +35,15 @@ func (t ReplicationTargets) For(class string) int {
 	}
 }
 
+// DefaultBelowFloorGraceSeconds is the D-M7.1-3 sustained-below-floor grace
+// window (24h): a below_floor_since marker YOUNGER than this still counts
+// toward safety (hysteresis — reputation wobble near the floor must not flap
+// counts or flood the reconcile queue); older, and the node drops out of
+// safety counts and placement. Task 11 threads the below_floor_replacement.grace
+// config knob through the callers; until that sweep exists nothing sets the
+// marker, so the design default is behavior-neutral here.
+const DefaultBelowFloorGraceSeconds float64 = 24 * 60 * 60
+
 // safetyTier classifies a CID from its acked-on-countable-nodes count against the
 // class target (D-M5-2c): 0 ⇒ donor_lost (no donor holder; may still be
 // local_recoverable), 1 ⇒ tier1 (one failure from loss), 2..target-1 ⇒ tier2
@@ -71,7 +80,9 @@ func RecomputeCID(ctx context.Context, tx pgx.Tx, cid string, targets Replicatio
 		}
 		return err
 	}
-	counts, err := q.RecomputeReplicationCounts(ctx, cid)
+	counts, err := q.RecomputeReplicationCounts(ctx, gen.RecomputeReplicationCountsParams{
+		Cid: cid, BelowFloorGraceSecs: DefaultBelowFloorGraceSeconds,
+	})
 	if err != nil {
 		return err
 	}

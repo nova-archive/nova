@@ -191,7 +191,9 @@ func (s *Scheduler) selectDest(ctx context.Context, q *gen.Queries, cid, class s
 	if err != nil {
 		return uuid.Nil, false, err
 	}
-	cands, err := q.ListPlacementCandidates(ctx, cid)
+	cands, err := q.ListPlacementCandidates(ctx, gen.ListPlacementCandidatesParams{
+		Cid: cid, BelowFloorGraceSecs: DefaultBelowFloorGraceSeconds,
+	})
 	if err != nil {
 		return uuid.Nil, false, err
 	}

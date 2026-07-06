@@ -66,14 +66,18 @@ func TestDrainExcludedFromSafetyCounts(t *testing.T) {
 	seedDrainFixture(t, ctx, pool)
 	q := gen.New(pool)
 
-	before, err := q.RecomputeReplicationCounts(ctx, "drain-cid")
+	before, err := q.RecomputeReplicationCounts(ctx, gen.RecomputeReplicationCountsParams{
+		Cid: "drain-cid", BelowFloorGraceSecs: DefaultBelowFloorGraceSeconds,
+	})
 	require.NoError(t, err)
 	require.EqualValues(t, 2, before.HealthyAcked)
 	require.EqualValues(t, 2, before.SourceableAcked)
 
 	markDraining(t, ctx, pool, drainNodeA)
 
-	after, err := q.RecomputeReplicationCounts(ctx, "drain-cid")
+	after, err := q.RecomputeReplicationCounts(ctx, gen.RecomputeReplicationCountsParams{
+		Cid: "drain-cid", BelowFloorGraceSecs: DefaultBelowFloorGraceSeconds,
+	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, after.HealthyAcked, "draining A must not be durability-countable (D-M7-6b)")
 	require.EqualValues(t, 1, after.SourceableAcked, "draining A must not be safety-sourceable (D-M7-6b)")
@@ -96,7 +100,9 @@ func TestDrainExcludedFromPlacement(t *testing.T) {
 	markDraining(t, ctx, pool, drainNodeA)
 
 	// A CID nobody holds: A/B/C are all non-holders, but A is draining.
-	rows, err := gen.New(pool).ListPlacementCandidates(ctx, "other-cid")
+	rows, err := gen.New(pool).ListPlacementCandidates(ctx, gen.ListPlacementCandidatesParams{
+		Cid: "other-cid", BelowFloorGraceSecs: DefaultBelowFloorGraceSeconds,
+	})
 	require.NoError(t, err)
 	got := map[string]bool{}
 	for _, r := range rows {
@@ -164,7 +170,9 @@ func TestWeightZeroIsNotDrain(t *testing.T) {
 	require.NoError(t, err)
 	markDraining(t, ctx, pool, drainNodeA)
 
-	counts, err := q.RecomputeReplicationCounts(ctx, "drain-cid")
+	counts, err := q.RecomputeReplicationCounts(ctx, gen.RecomputeReplicationCountsParams{
+		Cid: "drain-cid", BelowFloorGraceSecs: DefaultBelowFloorGraceSeconds,
+	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, counts.HealthyAcked,
 		"weight-zero B still counts; draining A does not")

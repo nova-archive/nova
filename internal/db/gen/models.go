@@ -1055,6 +1055,7 @@ type Node struct {
 	TrustReviewRequiredAt      pgtype.Timestamptz
 	TrustReviewReason          pgtype.Text
 	DrainingAt                 pgtype.Timestamptz
+	BelowFloorSince            pgtype.Timestamptz
 }
 
 type PinAssignment struct {

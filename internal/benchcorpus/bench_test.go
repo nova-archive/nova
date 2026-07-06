@@ -189,7 +189,9 @@ func TestCorpusBench(t *testing.T) {
 	}
 	paths := []benchPath{
 		{"recompute_counts", 200, func(i int) {
-			_, err := q.RecomputeReplicationCounts(ctx, cidAt(i))
+			_, err := q.RecomputeReplicationCounts(ctx, gen.RecomputeReplicationCountsParams{
+				Cid: cidAt(i), BelowFloorGraceSecs: orchestrator.DefaultBelowFloorGraceSeconds,
+			})
 			require.NoError(t, err)
 		}, func() string {
 			return explainOnce(ctx, pool, `SELECT count(*) FROM pin_assignments pa JOIN nodes n ON n.id = pa.node_id WHERE pa.cid = $1`, cidAt(0))
@@ -208,7 +210,9 @@ func TestCorpusBench(t *testing.T) {
 			}
 		}, nil},
 		{"placement_candidates", 200, func(i int) {
-			_, err := q.ListPlacementCandidates(ctx, cidAt(i))
+			_, err := q.ListPlacementCandidates(ctx, gen.ListPlacementCandidatesParams{
+				Cid: cidAt(i), BelowFloorGraceSecs: orchestrator.DefaultBelowFloorGraceSeconds,
+			})
 			require.NoError(t, err)
 		}, func() string {
 			return explainOnce(ctx, pool, `SELECT n.id FROM nodes n WHERE n.status = 'active' AND NOT EXISTS (SELECT 1 FROM pin_assignments pa WHERE pa.cid = $1 AND pa.node_id = n.id)`, cidAt(0))

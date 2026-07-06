@@ -198,6 +198,7 @@ func (p *Pruner) pruneCandidate(ctx context.Context, cand gen.ListPruneCandidate
 		// Count live donors so we can alert if under-replicated.
 		n, cerr := p.q.CountSourceableHolders(ctx, gen.CountSourceableHoldersParams{
 			Cid: cand.Cid, StaleSecs: p.stale,
+			BelowFloorGraceSecs: defaultBelowFloorGraceSeconds,
 		})
 		if cerr != nil {
 			log.Warn("storage.prune.count_holders_failed", "cid", cand.Cid, "err", cerr)
@@ -214,6 +215,7 @@ func (p *Pruner) pruneCandidate(ctx context.Context, cand gen.ListPruneCandidate
 	// Backend has the blob. Count live donor holders to decide prune vs retain.
 	n, err := p.q.CountSourceableHolders(ctx, gen.CountSourceableHoldersParams{
 		Cid: cand.Cid, StaleSecs: p.stale,
+		BelowFloorGraceSecs: defaultBelowFloorGraceSeconds,
 	})
 	if err != nil {
 		log.Warn("storage.prune.count_holders_failed", "cid", cand.Cid, "err", err)

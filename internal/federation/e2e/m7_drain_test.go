@@ -171,7 +171,9 @@ func TestE2EDrainDecommission(t *testing.T) {
 	// 4. Revoke A → ZERO durability loss: B carries the CID alone.
 	_, err = q.RevokeNode(ctx, aPg)
 	require.NoError(t, err)
-	counts, err := q.RecomputeReplicationCounts(ctx, cid)
+	counts, err := q.RecomputeReplicationCounts(ctx, gen.RecomputeReplicationCountsParams{
+		Cid: cid, BelowFloorGraceSecs: orchestrator.DefaultBelowFloorGraceSeconds,
+	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, counts.HealthyAcked, "healthy count unchanged end-to-end")
 }

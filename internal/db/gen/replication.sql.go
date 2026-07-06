@@ -181,9 +181,17 @@ WHERE n.status = 'active'
   AND n.assignment_sync_state = 'current'
   AND n.trust_state <> 'suspended'
   AND n.draining_at IS NULL          -- P2-M7 D-M7-6c: never a new-placement destination
+  AND (n.below_floor_since IS NULL
+       OR n.below_floor_since > now() - make_interval(secs => $2::float))
+                                     -- P2-M7.1 D-M7.1-3: sustained-below-floor is never a new-placement destination
   AND NOT EXISTS (SELECT 1 FROM pin_assignments pa WHERE pa.cid = $1 AND pa.node_id = n.id)
 ORDER BY n.id
 `
+
+type ListPlacementCandidatesParams struct {
+	Cid                 string
+	BelowFloorGraceSecs float64
+}
 
 type ListPlacementCandidatesRow struct {
 	NodeID           pgtype.UUID
@@ -203,8 +211,8 @@ type ListPlacementCandidatesRow struct {
 // NON-holders (a node already assigned the CID, pending or acked, is excluded).
 // The placement engine (Task 4) applies anti-affinity, trust caps, capacity and
 // reputation floor over these.
-func (q *Queries) ListPlacementCandidates(ctx context.Context, cid string) ([]ListPlacementCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listPlacementCandidates, cid)
+func (q *Queries) ListPlacementCandidates(ctx context.Context, arg ListPlacementCandidatesParams) ([]ListPlacementCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listPlacementCandidates, arg.Cid, arg.BelowFloorGraceSecs)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +281,7 @@ WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
   AND (n.last_egress_remaining_bytes IS NULL OR n.last_egress_remaining_bytes >= $2)
 ORDER BY (n.draining_at IS NOT NULL),   -- P2-M7 D-M7-6c: draining stays eligible, sorted last
+         (n.below_floor_since IS NOT NULL),   -- P2-M7.1 D-M7.1-3: below-floor stays eligible, after the drain key (bare marker — in-grace is deprioritized too, intended)
          (COALESCE(n.last_egress_remaining_bytes, 0)::float8 * n.reputation_score) DESC,
          n.reputation_score DESC, n.id
 LIMIT 1
@@ -390,6 +399,9 @@ WITH holders AS (
            n.assignment_sync_state,
            n.trust_state,
            (n.draining_at IS NOT NULL) AS draining,   -- P2-M7 D-M7-6c
+           (n.below_floor_since IS NOT NULL
+            AND n.below_floor_since <= now() - make_interval(secs => $2::float)
+           ) AS below_floor_sustained,   -- P2-M7.1 D-M7.1-3
            (n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
             AND n.advertised_capabilities @> ARRAY['read-source/v1']) AS read_srcable
     FROM pin_assignments pa
@@ -401,12 +413,14 @@ SELECT
         WHERE state = 'acked' AND status IN ('active', 'suspect')
           AND assignment_sync_state = 'current'
           AND NOT draining
+          AND NOT below_floor_sustained
     )::int AS healthy_acked,
     count(*) FILTER (
         WHERE state = 'acked' AND status IN ('active', 'suspect')
           AND assignment_sync_state = 'current'
           AND trust_state <> 'suspended' AND read_srcable
           AND NOT draining
+          AND NOT below_floor_sustained
     )::int AS sourceable_acked,
     count(*) FILTER (
         WHERE state = 'pending' AND status IN ('active', 'suspect')
@@ -414,6 +428,11 @@ SELECT
     )::int AS in_flight
 FROM holders
 `
+
+type RecomputeReplicationCountsParams struct {
+	Cid                 string
+	BelowFloorGraceSecs float64
+}
 
 type RecomputeReplicationCountsRow struct {
 	HealthyAcked    int32
@@ -427,8 +446,8 @@ type RecomputeReplicationCountsRow struct {
 // read-availability count; status-based, NO time predicate — D-M5-2a). in_flight
 // counts ONLY pending reservations on destinations still eligible to complete, so
 // a dead pending row never throttles healing forever (Rev. 5 #5).
-func (q *Queries) RecomputeReplicationCounts(ctx context.Context, cid string) (RecomputeReplicationCountsRow, error) {
-	row := q.db.QueryRow(ctx, recomputeReplicationCounts, cid)
+func (q *Queries) RecomputeReplicationCounts(ctx context.Context, arg RecomputeReplicationCountsParams) (RecomputeReplicationCountsRow, error) {
+	row := q.db.QueryRow(ctx, recomputeReplicationCounts, arg.Cid, arg.BelowFloorGraceSecs)
 	var i RecomputeReplicationCountsRow
 	err := row.Scan(&i.HealthyAcked, &i.SourceableAcked, &i.InFlight)
 	return i, err

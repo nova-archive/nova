@@ -80,6 +80,9 @@ type Querier interface {
 	// Called by commit/prune/read tiers to determine if donor-backed reads are viable.
 	// P2-M7 (D-M7-6b): a SAFETY count — draining nodes are excluded (they are
 	// leaving; commit/prune decisions must not lean on them).
+	// P2-M7.1 (D-M7.1-3): sustained-below-floor nodes (marker older than grace)
+	// are excluded too — healing must replace them; an in-grace marker still
+	// counts (hysteresis: reputation wobble near the floor must not flap counts).
 	CountSourceableHolders(ctx context.Context, arg CountSourceableHoldersParams) (int64, error)
 	// Creates a collection (owner_id must reference an existing user; the
 	// public_archival CHECK requires visibility='public'). Backs
@@ -289,7 +292,7 @@ type Querier interface {
 	// NON-holders (a node already assigned the CID, pending or acked, is excluded).
 	// The placement engine (Task 4) applies anti-affinity, trust caps, capacity and
 	// reputation floor over these.
-	ListPlacementCandidates(ctx context.Context, cid string) ([]ListPlacementCandidatesRow, error)
+	ListPlacementCandidates(ctx context.Context, arg ListPlacementCandidatesParams) ([]ListPlacementCandidatesRow, error)
 	// Committed + present + mode-eligible durability class; ordered by prune_eligible_at (oldest first).
 	ListPruneCandidates(ctx context.Context, arg ListPruneCandidatesParams) ([]ListPruneCandidatesRow, error)
 	ListReconcileBatch(ctx context.Context, limit int32) ([]string, error)
@@ -307,6 +310,9 @@ type Querier interface {
 	// Best-link sourceable holders: reputation desc, then id for stable rotation.
 	// P2-M7 (D-M7-6c): SELECTION, not a safety count — a draining node stays
 	// eligible while live, deprioritized by the prepended drain sort key.
+	// P2-M7.1 (D-M7.1-3): a below-floor node stays eligible too, deprioritized
+	// after the drain key (bare marker, no grace — even an in-grace node is
+	// slightly deprioritized as a source; that is intended).
 	ListSourceableHolders(ctx context.Context, arg ListSourceableHoldersParams) ([]ListSourceableHoldersRow, error)
 	// Reconciler input: staging rows + the blob's product, ordered oldest-first.
 	ListStagingBlobs(ctx context.Context, lim int32) ([]ListStagingBlobsRow, error)
@@ -357,7 +363,7 @@ type Querier interface {
 	// read-availability count; status-based, NO time predicate — D-M5-2a). in_flight
 	// counts ONLY pending reservations on destinations still eligible to complete, so
 	// a dead pending row never throttles healing forever (Rev. 5 #5).
-	RecomputeReplicationCounts(ctx context.Context, cid string) (RecomputeReplicationCountsRow, error)
+	RecomputeReplicationCounts(ctx context.Context, arg RecomputeReplicationCountsParams) (RecomputeReplicationCountsRow, error)
 	// On a replication.factor change (D-M5-2b): reset target_count for a class, mark
 	// rows dirty so the drain recomputes safety_tier, and the scheduler re-evaluates.
 	RecomputeTargetsForClass(ctx context.Context, arg RecomputeTargetsForClassParams) error

@@ -44,6 +44,13 @@ func TestExplainPlans(t *testing.T) {
 			anyOf: []string{"nodes_draining_idx"},
 		},
 		{
+			// P2-M7.1 D-M7.1-3: the sustained-below-floor predicate shape used
+			// by the safety counts / placement (and the Task 11 sweep walk).
+			name:  "sustained below-floor predicate uses nodes_below_floor_idx",
+			sql:   `SELECT id, below_floor_since FROM nodes WHERE below_floor_since IS NOT NULL AND below_floor_since <= now() - interval '24 hours'`,
+			anyOf: []string{"nodes_below_floor_idx"},
+		},
+		{
 			name:  "pin_assignments keyed lookup uses cid_state index",
 			sql:   `SELECT node_id FROM pin_assignments WHERE cid = $1 AND state = 'acked'`,
 			args:  []any{cid},

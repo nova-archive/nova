@@ -91,6 +91,14 @@ type CommitGateConfig struct {
 	StaleSeconds float64
 }
 
+// defaultBelowFloorGraceSeconds is the D-M7.1-3 sustained-below-floor grace
+// window (24h) passed to CountSourceableHolders by the commit/prune safety
+// callers: a below_floor_since marker younger than this still counts
+// (hysteresis). Task 11 threads the below_floor_replacement.grace config knob
+// through here; until that sweep exists nothing sets the marker, so the
+// design default is behavior-neutral.
+const defaultBelowFloorGraceSeconds float64 = 24 * 60 * 60
+
 // QuorumFor returns the commit quorum for a durability class, defaulting to the
 // important-class quorum for an unknown class (the conservative choice).
 func (c *CommitGateConfig) QuorumFor(class string) int {

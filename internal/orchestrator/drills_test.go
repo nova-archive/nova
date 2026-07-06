@@ -53,7 +53,9 @@ func TestDrillRevocationHeals(t *testing.T) {
 	freshenAllNodes(t, ctx, pool)
 	q := gen.New(pool)
 
-	before, err := q.RecomputeReplicationCounts(ctx, "rv-x")
+	before, err := q.RecomputeReplicationCounts(ctx, gen.RecomputeReplicationCountsParams{
+		Cid: "rv-x", BelowFloorGraceSecs: DefaultBelowFloorGraceSeconds,
+	})
 	require.NoError(t, err)
 	require.EqualValues(t, 2, before.HealthyAcked)
 
@@ -77,7 +79,9 @@ func TestDrillRevocationHeals(t *testing.T) {
 		`SELECT revoked_signaled_at IS NOT NULL FROM nodes WHERE id=$1::uuid`, a).Scan(&signaled))
 	require.True(t, signaled, "emit-once marker set")
 
-	after, err := q.RecomputeReplicationCounts(ctx, "rv-x")
+	after, err := q.RecomputeReplicationCounts(ctx, gen.RecomputeReplicationCountsParams{
+		Cid: "rv-x", BelowFloorGraceSecs: DefaultBelowFloorGraceSeconds,
+	})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, after.HealthyAcked, "revoked A dropped from durability instantly")
 

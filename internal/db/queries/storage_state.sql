@@ -3,10 +3,15 @@
 -- Called by commit/prune/read tiers to determine if donor-backed reads are viable.
 -- P2-M7 (D-M7-6b): a SAFETY count — draining nodes are excluded (they are
 -- leaving; commit/prune decisions must not lean on them).
+-- P2-M7.1 (D-M7.1-3): sustained-below-floor nodes (marker older than grace)
+-- are excluded too — healing must replace them; an in-grace marker still
+-- counts (hysteresis: reputation wobble near the floor must not flap counts).
 SELECT count(*) FROM pin_assignments pa JOIN nodes n ON n.id = pa.node_id
 WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.status IN ('active','suspect') AND n.trust_state <> 'suspended'
   AND n.draining_at IS NULL
+  AND (n.below_floor_since IS NULL
+       OR n.below_floor_since > now() - make_interval(secs => sqlc.arg(below_floor_grace_secs)::float))
   AND n.last_seen_at > now() - make_interval(secs => sqlc.arg(stale_secs)::float)
   AND n.advertised_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> '';
@@ -15,6 +20,9 @@ WHERE pa.cid = $1 AND pa.state = 'acked'
 -- Best-link sourceable holders: reputation desc, then id for stable rotation.
 -- P2-M7 (D-M7-6c): SELECTION, not a safety count — a draining node stays
 -- eligible while live, deprioritized by the prepended drain sort key.
+-- P2-M7.1 (D-M7.1-3): a below-floor node stays eligible too, deprioritized
+-- after the drain key (bare marker, no grace — even an in-grace node is
+-- slightly deprioritized as a source; that is intended).
 SELECT n.id AS node_id, pa.assignment_id, pa.generation, n.source_nebula_addr, n.reputation_score
 FROM pin_assignments pa JOIN nodes n ON n.id = pa.node_id
 WHERE pa.cid = $1 AND pa.state = 'acked'
@@ -22,7 +30,7 @@ WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.last_seen_at > now() - make_interval(secs => sqlc.arg(stale_secs)::float)
   AND n.advertised_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
-ORDER BY (n.draining_at IS NOT NULL), n.reputation_score DESC, n.id;
+ORDER BY (n.draining_at IS NOT NULL), (n.below_floor_since IS NOT NULL), n.reputation_score DESC, n.id;
 
 -- name: UpsertStorageStateStaging :exec
 -- Gate-on Put: insert staging row; ON CONFLICT re-opens a previously failed row.
