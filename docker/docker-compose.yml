@@ -36,7 +36,7 @@ name: nova
 services:
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
     container_name: nova-postgres
     environment:
       POSTGRES_DB: nova
@@ -140,7 +140,7 @@ services:
   # ── Setup profile: first-run wizard front ──────────────────────────
   nginx-setup:
     profiles: ["setup"]
-    image: nginx:1.25-alpine
+    image: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
     container_name: nova-nginx-setup
     volumes:
       - ./nginx/bootstrap.conf:/etc/nginx/conf.d/default.conf:ro
@@ -173,7 +173,7 @@ services:
   # ── Prod profile: wizard-rendered nova.conf ────────────────────────
   nginx:
     profiles: ["prod"]
-    image: nginx:1.25-alpine
+    image: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
     container_name: nova-nginx
     # cert-watch.sh wraps nginx: it waits for the cert files the rendered
     # nova.conf points at (http-01 first boot: certbot writes a self-signed
@@ -237,7 +237,7 @@ services:
   # ── Prod profile: Let's Encrypt issuance + renewal (http-01) ───────
   certbot:
     profiles: ["prod"]
-    image: certbot/certbot
+    image: certbot/certbot:latest@sha256:0107d084c225631fc64a8313e19adb07275f7296fde338f7dfa93986c80b2e3e
     container_name: nova-certbot
     environment:
       # Both default to the wizard's answers (server_name in the rendered

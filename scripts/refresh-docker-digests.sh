@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# scripts/refresh-docker-digests.sh — re-resolve the digest pins in docker/*.Dockerfile.
+# scripts/refresh-docker-digests.sh — re-resolve the digest pins in
+# docker/*.Dockerfile AND docker/docker-compose.yml runtime images.
 #
 # Every base image is pinned as FROM image:tag@sha256:... (P2-M7.1, OSSF
 # Scorecard PinnedDependenciesID). This script re-resolves each tag to its
@@ -71,5 +72,24 @@ for df in "$repo_root"/docker/*.Dockerfile; do
     sed -i -E "s/(digest-pinned \(P2-M7\.1\); resolved )[0-9]{4}-[0-9]{2}-[0-9]{2}/\1${today}/" "$df"
   fi
 done
+
+# docker-compose.yml runtime images carry the same PinnedDependencies posture
+# (P2-M7.1 security review). Format: `image: name:tag@sha256:...`. Duplicate
+# refs (both nginx services) dedupe via sort -u and rewrite together.
+compose="$repo_root/docker/docker-compose.yml"
+if [[ -f "$compose" ]]; then
+  while IFS= read -r ref; do
+    old="$(grep -oE "${ref}@sha256:[0-9a-f]{64}" "$compose" | head -1 | sed -E 's/.*@(sha256:[0-9a-f]{64})/\1/')"
+    new="$(resolve_digest "$ref")"
+    [[ "$new" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "bad digest for ${ref}: '${new}'" >&2; exit 1; }
+    if [[ "$new" != "$old" ]]; then
+      sed -i "s|${ref}@${old}|${ref}@${new}|g" "$compose"
+      echo "docker-compose.yml: ${ref} ${old} -> ${new}"
+      any_changed=1
+    else
+      echo "docker-compose.yml: ${ref} unchanged (${old})"
+    fi
+  done < <(grep -oE 'image: [^ ]+@sha256:[0-9a-f]{64}' "$compose" | sed -E 's/image: ([^@]+)@.*/\1/' | sort -u)
+fi
 
 [[ "$any_changed" == 1 ]] && echo "Digests updated — rebuild and commit." || echo "All digests current."
