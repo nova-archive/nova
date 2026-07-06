@@ -1101,6 +1101,9 @@ func cmdSetup(args []string) error {
 		for {
 			fmt.Print("Type the fingerprint to confirm you have saved the master key: ")
 			if !scanner.Scan() {
+				if err := scanner.Err(); err != nil {
+					return fmt.Errorf("setup: reading fingerprint confirmation: %w", err)
+				}
 				return errors.New("setup: stdin closed before fingerprint confirmation")
 			}
 			typed := strings.TrimSpace(scanner.Text())
@@ -1143,6 +1146,9 @@ func promptAnswers() (setup.Answers, error) {
 	prompt := func(label string) (string, error) {
 		fmt.Printf("%s: ", label)
 		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", fmt.Errorf("setup: reading %q: %w", label, err)
+			}
 			return "", fmt.Errorf("setup: stdin closed while reading %q", label)
 		}
 		return strings.TrimSpace(scanner.Text()), nil

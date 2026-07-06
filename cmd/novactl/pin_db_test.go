@@ -30,24 +30,47 @@ func TestPinAssignListUnpin(t *testing.T) {
 	}
 
 	q := gen.New(pool)
-	// assign via the same internal path the CLI uses
-	tx, _ := pool.Begin(ctx)
+	// assign via the same internal path the CLI uses. Every error is checked:
+	// a swallowed Begin/Commit/List error would leave a nil/empty result that
+	// silently satisfies the len() assertions below — a false PASS.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
 	if _, err := coordinator.AssignPin(ctx, tx, "bafy1", node); err != nil {
 		t.Fatal(err)
 	}
-	tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit assign: %v", err)
+	}
 
-	desired, _ := q.ListDesiredAssignmentsByCID(ctx, "bafy1")
-	verified, _ := q.ListVerifiedHoldersByCID(ctx, "bafy1")
+	desired, err := q.ListDesiredAssignmentsByCID(ctx, "bafy1")
+	if err != nil {
+		t.Fatalf("list desired: %v", err)
+	}
+	verified, err := q.ListVerifiedHoldersByCID(ctx, "bafy1")
+	if err != nil {
+		t.Fatalf("list verified: %v", err)
+	}
 	if len(desired) != 1 || len(verified) != 0 {
 		t.Fatalf("desired=%d verified=%d (verified must be 0 in M3)", len(desired), len(verified))
 	}
 
 	// unpin removes the desired assignment
-	tx, _ = pool.Begin(ctx)
-	coordinator.UnpinPin(ctx, tx, "bafy1", node)
-	tx.Commit(ctx)
-	desired, _ = q.ListDesiredAssignmentsByCID(ctx, "bafy1")
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin unpin: %v", err)
+	}
+	if _, err := coordinator.UnpinPin(ctx, tx, "bafy1", node); err != nil {
+		t.Fatalf("unpin: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit unpin: %v", err)
+	}
+	desired, err = q.ListDesiredAssignmentsByCID(ctx, "bafy1")
+	if err != nil {
+		t.Fatalf("list desired after unpin: %v", err)
+	}
 	if len(desired) != 0 {
 		t.Fatalf("after unpin desired = %d, want 0", len(desired))
 	}
