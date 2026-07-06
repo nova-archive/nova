@@ -33,6 +33,12 @@ type Querier interface {
 	// gives clean N-worker parallelism; run inside the per-batch tx so the locks
 	// are held until commit. Served by dek_master_version_idx.
 	ClaimDEKsForRewrap(ctx context.Context, arg ClaimDEKsForRewrapParams) ([]ClaimDEKsForRewrapRow, error)
+	// Hysteresis exit edge: the marker clears only once the score recovers past
+	// floor + hysteresis_margin (the caller passes the SUM as exit_threshold).
+	// Wobble inside [floor, floor+margin) never clears; recovery is deliberate.
+	// No status filter: a recovered score clears the marker regardless of
+	// liveness (status governs countability independently).
+	ClearBelowFloorNodes(ctx context.Context, exitThreshold float64) (int64, error)
 	ClearModerationLegalHold(ctx context.Context, cid string) error
 	ClearNodeDraining(ctx context.Context, id pgtype.UUID) (int64, error)
 	ClearScheduledTombstone(ctx context.Context, cid string) error
@@ -42,6 +48,13 @@ type Querier interface {
 	CountActiveSessionsByToken(ctx context.Context, uploadTokenID pgtype.UUID) (int64, error)
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
+	// Scrape-time input for the nova_below_floor_nodes gauge: nodes carrying a
+	// below-floor marker, split by whether the marker is older than the grace
+	// window (sustained — excluded from safety counts and placement) or still
+	// inside it (in_grace — still counts; hysteresis). Counts marked nodes
+	// regardless of liveness status: the marker is reputation state, not
+	// liveness. The 0018 partial index covers the IS NOT NULL scan.
+	CountBelowFloorNodes(ctx context.Context, graceSecs float64) ([]CountBelowFloorNodesRow, error)
 	// Below-floor replica debt (D-M7-1a): acked replicas on live nodes below the
 	// reputation floor whose pins have not hard-failed. Mirrors healthy_acked
 	// COUNTABILITY (active/suspect + sync-current) — deliberately NO trust_state
@@ -114,6 +127,37 @@ type Querier interface {
 	// added in migration 0007.
 	DeleteRevokedRefreshTokensOlderThan(ctx context.Context, revokedAt pgtype.Timestamptz) (int64, error)
 	DeleteUploadSession(ctx context.Context, id pgtype.UUID) error
+	// Replace-then-demote (gated by below_floor_replacement.enabled): fail a
+	// SUSTAINED-below-floor node's acked assignment ONLY where the blob already
+	// has target_count-many trusted holders WITHOUT it. The live-holder count is
+	// computed from AUTHORITY (pin_assignments ⨝ nodes, the same countability
+	// filter as RecomputeReplicationCounts) rather than the projection's
+	// healthy_acked_count: the projection can read stale-HIGH in the window
+	// between an audit hard-fail / liveness transition and the next reconcile
+	// drain, and a demote decided on a stale-high count would BE the durability
+	// dip this pass must never cause. Same safe-to-revoke reasoning — and the
+	// same hash-aggregate shape — as CountDrainPendingCIDs (the correlated
+	// per-pin probe measured ~23 s on a 500k-pin holder in the P2-M7 bench).
+	// A SOLE holder never demotes: zero qualifying live holders yields no
+	// aggregate row, the inner join drops the CID, and the below-floor copy
+	// stays the repair source of last resort. Bounded by demote_batch per tick
+	// (one bounded transaction per D-M5-2d); the remainder demotes on subsequent
+	// ticks. pin_assignments has NO fail-reason column (liveness and audit
+	// hard-fail both set bare state='failed'); the reason surface for demotions
+	// is the sweep's structured log + result counter.
+	DemoteBelowFloorReplicas(ctx context.Context, arg DemoteBelowFloorReplicasParams) (int64, error)
+	// Bounded requeue (the D-M7.1-3 remedy, gated by below_floor_replacement.
+	// enabled): CIDs held (acked) by SUSTAINED-below-floor nodes (marker older
+	// than grace) enter the reconcile queue with reason 'below_floor', capped at
+	// requeue_batch per tick ACROSS ALL sustained nodes. The dirtied CTE marks
+	// the SAME CID set's projection rows dirty in the same atomic statement (the
+	// two halves of the D-M5-2d bulk-transition contract, as in
+	// EnqueueReconcileForNode). Re-enqueueing an already-queued CID bumps
+	// enqueued_at, which sorts it BEHIND older entries in ListReconcileBatch —
+	// below-floor churn can never starve liveness-driven reconciles. CIDs demoted
+	// by DemoteBelowFloorReplicas leave the predicate (state <> 'acked'), so the
+	// batch works through the backlog tick by tick.
+	EnqueueBelowFloorReconcile(ctx context.Context, arg EnqueueBelowFloorReconcileParams) (int64, error)
 	EnqueueReconcile(ctx context.Context, arg EnqueueReconcileParams) error
 	// Companion to RecomputeTargetsForClass: enqueue the class's CIDs for bounded
 	// recompute of their new safety_tier.
@@ -341,6 +385,24 @@ type Querier interface {
 	// same CID concurrently. Orthogonal to AcquireChangeLogLock (a single global
 	// sequence-ordering lock): this one is keyed per CID in a distinct namespace.
 	LockReplicationCID(ctx context.Context, hashtext string) error
+	// P2-M7.1 (D-M7.1-3): below-floor replacement sweep — the WRITE side of the
+	// below_floor_since marker (0018). Marker maintenance is hysteretic (enter at
+	// reputation < floor, exit only at >= floor + margin) and ALWAYS runs so the
+	// nova_below_floor_nodes gauge stays truthful even with the remedy disabled.
+	// The remedy (requeue + replace-then-demote) rides the EXISTING healing
+	// machinery: enqueue the sustained node's CIDs for bounded recompute (the
+	// Task 10 count exclusion drops them below target, so they surface as
+	// tier1/tier2 and heal normally), then demote a sustained node's acked
+	// assignment ONLY once enough trusted replacements exist — never a
+	// durability dip. Mirrors the drain (D-M7-6) pattern: below-floor is the
+	// drain treatment for DISTRUSTED nodes instead of politely-leaving ones.
+	// Entry edge: stamp the marker when a live node's reputation sinks below the
+	// floor. Only live (active/suspect) nodes are marked — unreachable/evicted/
+	// revoked nodes are already excluded from counts by status, and marking them
+	// would start a grace clock nobody is watching. An existing marker is NEVER
+	// re-stamped (below_floor_since IS NULL guard): wobble inside the band must
+	// not reset the sustainment clock.
+	MarkBelowFloorNodes(ctx context.Context, floor float64) (int64, error)
 	// Reconciler: staging → committed, set committed_at and local_bytes.
 	MarkCommitted(ctx context.Context, arg MarkCommittedParams) (int64, error)
 	// Reconciler: staging → failed (upload or remote-commit error).
