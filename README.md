@@ -69,7 +69,7 @@ storage core.
 
 - **Fediverse instances** (Mastodon, Pleroma, Misskey) shifting media storage off
   the homeserver onto a federated donor pool.
-- **FOSS forums & community sites** wanting drag-and-drop image hosting without a
+- **Forums & community sites** wanting drag-and-drop image hosting without a
   third-party host of unpredictable longevity.
 - **ML dataset hosts** distributing reproducible corpora via content-addressed URLs.
 - **Preservation archives** keeping high-resolution scans accessible long after
