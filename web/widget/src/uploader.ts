@@ -57,7 +57,18 @@ export function buildTusOptions(cfg: NormalizedConfig) {
     endpoint: cfg.endpoint,
     chunkSize: cfg.chunkSize,
     limit: cfg.concurrency,
-    allowedMetaFields: ['filename', 'mime_type', 'product', 'collection_id'],
+    // collection_id is declared ONLY when fileMeta() will actually set it.
+    // @uppy/tus does `meta[item] = String(file.meta[item])` for every allowed
+    // field without checking presence, so a field declared here but omitted
+    // from the file's meta is serialised as the literal string "undefined" --
+    // and the coordinator rejects the upload with 400 "collection_id must be
+    // a uuid". The two lists have to agree.
+    allowedMetaFields: [
+      'filename',
+      'mime_type',
+      'product',
+      ...(cfg.collectionId ? ['collection_id'] : []),
+    ],
     async onBeforeRequest(req: TusRequest) {
       const token = await resolveToken(cfg)
       if (token) req.setHeader('Authorization', `Bearer ${token}`)

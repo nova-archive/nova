@@ -78,7 +78,32 @@ describe('buildTusOptions', () => {
     const o = buildTusOptions(normalizeOptions({ endpoint: '/api/v1/uploads', chunkSize: 99 }))
     expect(o.endpoint).toBe('/api/v1/uploads')
     expect(o.chunkSize).toBe(99)
-    expect(o.allowedMetaFields).toEqual(['filename', 'mime_type', 'product', 'collection_id'])
+    expect(o.allowedMetaFields).toEqual(['filename', 'mime_type', 'product'])
+  })
+
+  it('declares collection_id only when one is configured', () => {
+    // @uppy/tus serialises EVERY allowed field with String(file.meta[item]) and
+    // no presence check, so declaring collection_id while fileMeta() omits it
+    // sends the literal string "undefined" and the coordinator answers 400
+    // "collection_id must be a uuid". An anonymous widget upload with no
+    // data-collection attribute hit exactly that.
+    expect(buildTusOptions(normalizeOptions()).allowedMetaFields)
+      .not.toContain('collection_id')
+    expect(buildTusOptions(normalizeOptions({ collectionId: 'c1' })).allowedMetaFields)
+      .toContain('collection_id')
+  })
+
+  it('keeps allowedMetaFields and fileMeta in agreement', () => {
+    // The invariant the bug violated: anything declared allowed must actually
+    // be present in the metadata object, for every configuration.
+    for (const opts of [{ product: 'image' }, { product: 'image', collectionId: 'c1' }]) {
+      const cfg = normalizeOptions(opts)
+      const meta = fileMeta(cfg, { name: 'a.jpg', type: 'image/jpeg' })
+      for (const field of buildTusOptions(cfg).allowedMetaFields) {
+        expect(meta[field], `${field} declared allowed but absent from fileMeta`)
+          .toBeDefined()
+      }
+    }
   })
 
   it('sets limit to cfg.concurrency (default 4)', () => {
