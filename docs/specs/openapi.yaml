@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: Nova HTTP API
-  version: 0.2.0-beta.1+b1afbf2
+  version: 0.2.0-beta.1+ad629d7
   summary: Federated content-addressed blob storage with image transforms.
   description: |
     The public-facing HTTP API surface of a Nova deployment.
