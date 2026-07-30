@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: Nova HTTP API
-  version: 0.0.1-phase0
+  version: 0.2.0-beta.1+b1afbf2
   summary: Federated content-addressed blob storage with image transforms.
   description: |
     The public-facing HTTP API surface of a Nova deployment.
@@ -94,6 +94,10 @@ paths:
           description: Healthy.
           content:
             application/json:
+              example:
+                status: ok
+                version: 0.2.0-beta.1
+                time: '2026-07-30T12:00:00Z'
               schema: { $ref: '#/components/schemas/Health' }
 
   # =========================================================================
@@ -198,7 +202,11 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '410': { $ref: '#/components/responses/Tombstoned' }
         '415':
-          description: The blob exists but is not an image.
+          description: >-
+            The CID resolves, but the stored object is not an image and
+            the image transform pipeline cannot act on it. Fetch it
+            through `/blob/{cid}` instead, which serves any product type
+            as-is.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -235,7 +243,12 @@ paths:
         '200': { $ref: '#/components/responses/ImageBytes' }
         '404': { $ref: '#/components/responses/NotFound' }
         '406':
-          description: Requested output format is not enabled by the operator.
+          description: >-
+            The extension names a format this operator has not enabled.
+            The enabled set is deployment configuration rather than a
+            property of the stored image; `Accept` negotiation is not
+            performed, so request one of the enabled extensions
+            explicitly.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -268,13 +281,24 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ImageBytes' }
         '400':
-          description: Requested dimension is not in the operator whitelist.
+          description: >-
+            The requested dimensions are not on this operator's
+            whitelist. Arbitrary sizes are refused deliberately: each
+            distinct size is a distinct derivative to generate, store
+            and replicate, so the whitelist is what stops a crawler
+            minting unbounded work. Use a whitelisted size or a named
+            preset.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
         '406':
-          description: Requested output format is not enabled by the operator.
+          description: >-
+            The extension names a format this operator has not enabled.
+            The enabled set is deployment configuration rather than a
+            property of the stored image; `Accept` negotiation is not
+            performed, so request one of the enabled extensions
+            explicitly.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -301,13 +325,24 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ImageBytes' }
         '400':
-          description: Requested dimension is not in the operator whitelist.
+          description: >-
+            The requested dimensions are not on this operator's
+            whitelist. Arbitrary sizes are refused deliberately: each
+            distinct size is a distinct derivative to generate, store
+            and replicate, so the whitelist is what stops a crawler
+            minting unbounded work. Use a whitelisted size or a named
+            preset.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
         '406':
-          description: Requested output format is not enabled by the operator.
+          description: >-
+            The extension names a format this operator has not enabled.
+            The enabled set is deployment configuration rather than a
+            property of the stored image; `Accept` negotiation is not
+            performed, so request one of the enabled extensions
+            explicitly.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -334,12 +369,21 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/ImageBytes' }
         '404':
-          description: Either the CID does not exist or the preset is unknown.
+          description: >-
+            Either no object with that CID is known here, or the named
+            preset is not configured on this deployment. The two are
+            deliberately not distinguished, so that probing preset names
+            cannot be used to enumerate stored CIDs.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '406':
-          description: Requested output format is not enabled by the operator.
+          description: >-
+            The extension names a format this operator has not enabled.
+            The enabled set is deployment configuration rather than a
+            property of the stored image; `Accept` negotiation is not
+            performed, so request one of the enabled extensions
+            explicitly.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -359,7 +403,10 @@ paths:
               schema: { $ref: '#/components/schemas/Image' }
         '404': { $ref: '#/components/responses/NotFound' }
         '415':
-          description: Blob exists but is not an image.
+          description: >-
+            The CID resolves, but the stored object is not an image, so
+            there is no image metadata to return. Use `/blob/{cid}.json`
+            for the product-agnostic metadata document.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -387,6 +434,13 @@ paths:
         required: false
         content:
           application/offset+octet-stream:
+            example: |
+              # tus creation-with-upload: the body is the first chunk of raw bytes.
+              # Length and metadata travel in headers, not in the body:
+              #   Upload-Length: 20481
+              #   Upload-Metadata: filename cGhvdG8uanBn,product aW1hZ2U=
+              #   Content-Type: application/offset+octet-stream
+              <20481 bytes of image/jpeg>
             schema: { type: string, format: binary }
       parameters:
         - in: header
@@ -428,7 +482,12 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413':
-          description: Upload exceeds operator's `max_upload_size`.
+          description: >-
+            The declared or actual body length exceeds this operator's
+            `max_upload_size`. The limit is enforced before the bytes
+            are accepted, so nothing was stored and no upload session
+            remains to resume. Split the object or ask the operator to
+            raise the ceiling.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -471,6 +530,12 @@ paths:
         required: true
         content:
           application/offset+octet-stream:
+            example: |
+              # Each PATCH carries the next contiguous run of bytes. Upload-Offset must
+              # equal the server's current offset or the request is rejected with 409:
+              #   Upload-Offset: 16384
+              #   Content-Type: application/offset+octet-stream
+              <4097 bytes continuing the object>
             schema: { type: string, format: binary }
       responses:
         '204':
@@ -479,7 +544,14 @@ paths:
             Upload-Offset: { schema: { type: integer, format: int64 } }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Offset mismatch.
+          description: >-
+            `Upload-Offset` does not match the offset the coordinator
+            holds for this session, so the chunk would leave a gap or
+            overwrite bytes already committed. Issue `HEAD
+            /api/v1/uploads/{id}` to read the authoritative offset and
+            resume from exactly there. This is the normal tus recovery
+            path after a dropped connection, not an error condition in
+            itself.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -508,7 +580,12 @@ paths:
               schema: { $ref: '#/components/schemas/UploadResult' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Upload not yet complete (offset != length).
+          description: >-
+            Finalisation was requested before every byte arrived: the
+            session's offset is short of the declared `Upload-Length`.
+            The session is untouched and still resumable — continue
+            PATCHing from the current offset and call finalize again
+            once they match.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -527,6 +604,12 @@ paths:
         required: true
         content:
           multipart/form-data:
+            example:
+              file: <binary contents of report.pdf>
+              product: document
+              collection_id: 31818242-97c3-4cdf-8025-44ffcb3d0242
+              alt_text: Q3 availability report
+              caption: Generated from the coordinator's own metrics.
             schema:
               type: object
               required: [file]
@@ -548,11 +631,27 @@ paths:
           description: Blob created.
           content:
             application/json:
+              example:
+                cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                byte_size: 204815
+                mime_type: image/jpeg
+                product: image
+                urls:
+                  original: https://nova.thebugreport.dev/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                  json: https://nova.thebugreport.dev/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi.json
+                  presets:
+                    thumb: https://nova.thebugreport.dev/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/p/thumb.webp
+                    medium: https://nova.thebugreport.dev/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/p/medium.webp
               schema: { $ref: '#/components/schemas/UploadResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413':
-          description: Upload exceeds operator's `max_upload_size`.
+          description: >-
+            The declared or actual body length exceeds this operator's
+            `max_upload_size`. The limit is enforced before the bytes
+            are accepted, so nothing was stored and no upload session
+            remains to resume. Split the object or ask the operator to
+            raise the ceiling.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -574,6 +673,11 @@ paths:
         required: true
         content:
           multipart/form-data:
+            example:
+              file: <binary contents of photo.jpg>
+              collection_id: 31818242-97c3-4cdf-8025-44ffcb3d0242
+              alt_text: A patch panel with sixteen cables terminated
+              caption: The rack as it stood in July.
             schema:
               type: object
               required: [file]
@@ -591,16 +695,37 @@ paths:
           description: Image created.
           content:
             application/json:
+              example:
+                cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                byte_size: 204815
+                mime_type: image/jpeg
+                product: image
+                urls:
+                  original: https://nova.thebugreport.dev/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                  json: https://nova.thebugreport.dev/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi.json
+                  presets:
+                    thumb: https://nova.thebugreport.dev/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/p/thumb.webp
+                    medium: https://nova.thebugreport.dev/i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/p/medium.webp
               schema: { $ref: '#/components/schemas/UploadResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '415':
-          description: File MIME type is not an accepted image format.
+          description: >-
+            The uploaded file's detected media type is not one this
+            coordinator accepts as an image. Detection is by content
+            sniffing rather than by the supplied filename or `Content-
+            Type`, so renaming the file will not change the outcome.
+            Upload it through `POST /api/v1/blobs` if you want it stored
+            as a non-image product.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '451':
-          description: Upload rejected by the CID blocklist.
+          description: >-
+            The content hashes to a CID on this operator's blocklist and
+            was refused at ingest. Because the address is derived from
+            the bytes, an identical file will always be refused; nothing
+            was stored.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -626,6 +751,17 @@ paths:
           description: Blob metadata.
           content:
             application/json:
+              example:
+                cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                mime_type: image/jpeg
+                byte_size: 204815
+                uploaded_at: '2026-07-29T11:04:22Z'
+                state: active
+                product: image
+                owner_id: 9a1d4e6f-2b77-4c1a-8f0e-5d3b2a7c9e01
+                urls:
+                  bytes: https://nova.thebugreport.dev/blob/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                  json: https://nova.thebugreport.dev/blob/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi.json
               schema: { $ref: '#/components/schemas/Blob' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -639,12 +775,26 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              alt_text: Scanned page 14 of the 1987 service manual
+              caption: Section 3.2, power supply rework.
             schema: { $ref: '#/components/schemas/BlobUpdate' }
       responses:
         '200':
           description: Blob metadata updated.
           content:
             application/json:
+              example:
+                cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                mime_type: image/jpeg
+                byte_size: 204815
+                uploaded_at: '2026-07-29T11:04:22Z'
+                state: active
+                product: image
+                owner_id: 9a1d4e6f-2b77-4c1a-8f0e-5d3b2a7c9e01
+                urls:
+                  bytes: https://nova.thebugreport.dev/blob/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                  json: https://nova.thebugreport.dev/blob/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi.json
               schema: { $ref: '#/components/schemas/Blob' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -693,6 +843,9 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              alt_text: A patch panel with sixteen cables terminated
+              caption: The rack as it stood in July.
             schema: { $ref: '#/components/schemas/ImageUpdate' }
       responses:
         '200':
@@ -744,12 +897,24 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              name: Forum attachments
+              slug: forum-attachments
+              visibility: public
             schema: { $ref: '#/components/schemas/CollectionCreate' }
       responses:
         '201':
           description: Collection created.
           content:
             application/json:
+              example:
+                id: 31818242-97c3-4cdf-8025-44ffcb3d0242
+                owner_id: 9a1d4e6f-2b77-4c1a-8f0e-5d3b2a7c9e01
+                name: Forum attachments
+                slug: forum-attachments
+                visibility: public
+                created_at: '2026-07-28T09:12:00Z'
+                item_count: 1284
               schema: { $ref: '#/components/schemas/Collection' }
 
   /api/v1/collections/{id}:
@@ -764,6 +929,14 @@ paths:
           description: Collection.
           content:
             application/json:
+              example:
+                id: 31818242-97c3-4cdf-8025-44ffcb3d0242
+                owner_id: 9a1d4e6f-2b77-4c1a-8f0e-5d3b2a7c9e01
+                name: Forum attachments
+                slug: forum-attachments
+                visibility: public
+                created_at: '2026-07-28T09:12:00Z'
+                item_count: 1284
               schema: { $ref: '#/components/schemas/Collection' }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
@@ -775,12 +948,23 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              name: Forum attachments (archived)
+              visibility: unlisted
             schema: { $ref: '#/components/schemas/CollectionUpdate' }
       responses:
         '200':
           description: Updated collection.
           content:
             application/json:
+              example:
+                id: 31818242-97c3-4cdf-8025-44ffcb3d0242
+                owner_id: 9a1d4e6f-2b77-4c1a-8f0e-5d3b2a7c9e01
+                name: Forum attachments
+                slug: forum-attachments
+                visibility: public
+                created_at: '2026-07-28T09:12:00Z'
+                item_count: 1284
               schema: { $ref: '#/components/schemas/Collection' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -806,6 +990,9 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+              position: 3
             schema:
               type: object
               required: [cid]
@@ -817,6 +1004,11 @@ paths:
           description: Item added.
           content:
             application/json:
+              example:
+                collection_id: 31818242-97c3-4cdf-8025-44ffcb3d0242
+                cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+                position: 3
+                added_at: '2026-07-30T12:00:00Z'
               schema: { $ref: '#/components/schemas/CollectionItem' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -855,25 +1047,50 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              username: operator
+              password: correct-horse-battery-staple
             schema: { $ref: '#/components/schemas/LoginRequest' }
       responses:
         '200':
           description: Token pair.
           content:
             application/json:
+              example:
+                access_token: eyJhbGciOiJFZERTQSIsImtpZCI6InNpZy0yMDI2LTA3In0...
+                refresh_token: v1.MEQCIB3q...c2VjcmV0.9f2b1a7c
+                token_type: bearer
+                expires_in: 900
+                kid: sig-2026-07
               schema: { $ref: '#/components/schemas/TokenResponse' }
         '401':
-          description: Invalid credentials (generic; no user-enumeration).
+          description: >-
+            Authentication failed. The response is deliberately
+            identical for an unknown username and a wrong password so
+            the endpoint cannot be used to enumerate accounts, and it is
+            rate-limited per address. Repeated failures will begin
+            returning `503` before they return anything more
+            informative.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '404':
-          description: External-OIDC mode is active; the local issuer is disabled.
+          description: >-
+            This coordinator is configured to delegate authentication to
+            an external OIDC provider, so its own token issuer is
+            switched off and the route does not exist. Obtain a token
+            from the configured provider instead; `GET
+            /api/v1/auth/config` reports which mode is active.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '503':
-          description: Login concurrency/rate limit; retry after a short delay.
+          description: >-
+            The login path is shedding load: either the per-address rate
+            limit tripped or the bounded password-hashing pool is
+            saturated. This is back-pressure rather than a failure —
+            honour `Retry-After` where it is present and retry with
+            backoff. Credentials were not evaluated.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -888,20 +1105,39 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              refresh_token: v1.MEQCIB3q...c2VjcmV0.9f2b1a7c
             schema: { $ref: '#/components/schemas/RefreshRequest' }
       responses:
         '200':
           description: New token pair.
           content:
             application/json:
+              example:
+                access_token: eyJhbGciOiJFZERTQSIsImtpZCI6InNpZy0yMDI2LTA3In0...
+                refresh_token: v1.MEQCIFp7...c2VjcmV0.31d8c04a
+                token_type: bearer
+                expires_in: 900
+                kid: sig-2026-07
               schema: { $ref: '#/components/schemas/TokenResponse' }
         '401':
-          description: Refresh token invalid, expired, revoked, or reused.
+          description: >-
+            The refresh token was rejected. It was expired, already
+            revoked, or — the case worth knowing about — presented a
+            second time. Refresh tokens are single-use, and replay is
+            treated as evidence of theft: the whole token family is
+            revoked, which logs out every session descended from that
+            login. Authenticate again with credentials.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '404':
-          description: External-OIDC mode is active; the local issuer is disabled.
+          description: >-
+            This coordinator is configured to delegate authentication to
+            an external OIDC provider, so its own token issuer is
+            switched off and the route does not exist. Obtain a token
+            from the configured provider instead; `GET
+            /api/v1/auth/config` reports which mode is active.
 
   /api/v1/auth/logout:
     post:
@@ -913,11 +1149,18 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              refresh_token: v1.MEQCIB3q...c2VjcmV0.9f2b1a7c
             schema: { $ref: '#/components/schemas/LogoutRequest' }
       responses:
         '204': { description: Logged out (idempotent). }
         '404':
-          description: External-OIDC mode is active; the local issuer is disabled.
+          description: >-
+            This coordinator is configured to delegate authentication to
+            an external OIDC provider, so its own token issuer is
+            switched off and the route does not exist. Obtain a token
+            from the configured provider instead; `GET
+            /api/v1/auth/config` reports which mode is active.
 
   /api/v1/auth/jwks.json:
     get:
@@ -932,7 +1175,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Jwks' }
         '404':
-          description: External-OIDC mode is active; the local issuer is disabled.
+          description: >-
+            This coordinator is configured to delegate authentication to
+            an external OIDC provider, so its own token issuer is
+            switched off and the route does not exist. Obtain a token
+            from the configured provider instead; `GET
+            /api/v1/auth/config` reports which mode is active.
 
   /api/v1/auth/config:
     get:
@@ -1071,6 +1319,8 @@ paths:
         required: false
         content:
           application/json:
+            example:
+              reason: Host reported compromised by its operator on 2026-07-29.
             schema:
               type: object
               properties:
@@ -1127,6 +1377,12 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+              rule: dmca
+              case_id: 6c3f0a4e-6b1c-4a2f-9d55-1c0d9b7a2e11
+              reason: DMCA notice received; holding bytes for the counter-notice window.
+              legal_hold: true
             schema:
               type: object
               required: [cid, reason]
@@ -1181,6 +1437,10 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+              case_id: 6c3f0a4e-6b1c-4a2f-9d55-1c0d9b7a2e11
+              reason: Uncontested DMCA notice; counter-notice window elapsed.
             schema:
               type: object
               required: [cid, reason]
@@ -1199,7 +1459,13 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Tombstone refused — DEK is under legal hold.
+          description: >-
+            The blob's data encryption key carries a legal hold, and the
+            database refuses to shred a held key. This is the intended
+            interlock: it stops a takedown destroying evidence that a
+            live matter requires. Clear the hold with `POST
+            /api/v1/admin/moderation/clear-legal-hold` first, then
+            retry.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1221,6 +1487,10 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+              case_ref: DMCA-2026-0117
+              reason: Matter closed; hold released so the scheduled shred can proceed.
             schema:
               type: object
               required: [cid, reason]
@@ -1254,6 +1524,9 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+              reason: Counter-notice accepted; quarantine lifted.
             schema:
               type: object
               required: [cid, reason]
@@ -1268,7 +1541,11 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Blob is not in quarantined state.
+          description: >-
+            Restore applies only to a blob currently in `quarantined`.
+            The target is in some other state — already active, or
+            tombstoned, which is terminal because the key is gone. `GET
+            /api/v1/admin/blobs/{cid}` reports the current state.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1290,6 +1567,9 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
+              notes: Uploader supplied a licence; forwarded to the claimant 2026-07-28.
             schema:
               type: object
               required: [cid, notes]
@@ -1359,6 +1639,9 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              cid: bafybeihq2n7hpx6djvsxaqzfhbmi2ftfqkrgqcxk3xrvmlmemkwr4ldwsm
+              reason: Known-bad hash; refuse on ingest as well as on read.
             schema:
               type: object
               required: [cid, reason]
@@ -1540,6 +1823,8 @@ paths:
         required: false
         content:
           application/json:
+            example:
+              grace_seconds: 3600
             schema:
               type: object
               properties:
@@ -1586,6 +1871,9 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              from_version: v1
+              to_version: v2
             schema:
               $ref: '#/components/schemas/RotateMasterRequest'
       responses:
@@ -1609,7 +1897,13 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
-          description: Another master-key version is already `rotating`.
+          description: >-
+            A master-key rotation is already in progress. Only one may
+            run at a time, because two concurrent rewrap passes over the
+            same key material could leave envelopes wrapped under a
+            version neither pass completes. Poll `GET
+            /api/v1/admin/keys/rotation-status` and start the next
+            rotation once this one settles.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1718,6 +2012,9 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              kind: aud
+              value: https://forum.example
             schema:
               type: object
               required: [kind, value]
@@ -1769,6 +2066,10 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              path: /i/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi/640x480.webp
+              ttl_seconds: 86400
+              aud: https://forum.example
             schema:
               type: object
               required: [path, ttl_seconds, aud]
@@ -1796,7 +2097,13 @@ paths:
                   kid: { type: string }
                   exp: { type: integer, description: Expiry as a Unix timestamp (seconds). }
         '400':
-          description: Non-content path, malformed aud, or non-positive ttl.
+          description: >-
+            The signing request was rejected before a URL was minted.
+            One of: `path` is not a content route (only `/blob/{cid}`
+            and `/i/{cid}/...` may be signed); `aud` is not a bare
+            origin of the form `scheme://host[:port]` — a path or a
+            wildcard will be refused; or `ttl_seconds` is zero or
+            negative. No signing key was touched.
 
   # =========================================================================
   # Public legal endpoints
@@ -1816,6 +2123,14 @@ paths:
         required: true
         content:
           application/json:
+            example:
+              claimant_name: Jordan Reyes
+              claimant_email: legal@example.com
+              sworn_statement: I have a good faith belief that use of the material described above is not
+                authorised by the copyright owner, its agent, or the law. I swear, under penalty of perjury,
+                that this information is accurate and that I am the copyright owner or authorised to act
+                on the owner's behalf.
+              target_cid: bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi
             schema: { $ref: '#/components/schemas/DmcaSubmission' }
       responses:
         '202':
@@ -1976,25 +2291,59 @@ components:
           schema: { type: string, format: binary }
 
     BadRequest:
-      description: Malformed request.
+      description: |
+        The request could not be parsed or failed validation before any work was
+        attempted: a malformed CID, a body that is not valid JSON, a missing
+        required field, or a parameter outside its permitted range. The `code`
+        field names the specific failure and `details` carries the offending
+        field where one can be identified. Retrying the identical request will
+        fail identically; fix the request first.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 
     Unauthorized:
-      description: Authentication required.
+      description: |
+        No usable credential was presented. Either the `Authorization` header
+        was absent, or the bearer token was malformed, expired, or signed by a
+        key this coordinator no longer trusts. Obtain a new access token from
+        `POST /api/v1/auth/refresh` and retry once; a second 401 means the
+        refresh token is also spent and the client must log in again.
+
+        Note the difference from `403`: a 401 says the coordinator does not know
+        who you are, not that you may not do this.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 
     Forbidden:
-      description: Authenticated but not authorized for this action.
+      description: |
+        The caller was identified but is not permitted to perform this action.
+        Three distinct situations produce it, distinguishable by `code`:
+
+          - the account's role does not carry the required permission
+            (management routes are `operator`- or `moderator`-only);
+          - the object belongs to another owner and the caller is not an
+            operator;
+          - a signed URL was presented and failed verification — expired,
+            bound to a different `aud`, signed by a revoked `kid`, or
+            tampered with. Those return a `signature_*` code.
+
+        Re-authenticating does not help. The credential is valid; the action is
+        not permitted for it.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
 
     NotFound:
-      description: Resource not found.
+      description: |
+        No object with that identifier is known to this coordinator. For content
+        routes this means the CID has never been ingested here — content
+        addressing makes it a statement about this federation, not about the
+        bytes, so the same CID may well resolve on another one.
+
+        Distinguish from `410`, which means the object *was* here and has been
+        deleted, and from `403`, which means it exists but is not yours to read.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -2012,6 +2361,17 @@ components:
       description: |
         The CID is under moderation hold. Reads are suspended pending
         operator review.
+
+        Quarantine is reversible, and deliberately so: the bytes and the
+        per-blob key both still exist, which is what makes a counter-notice
+        meaningful. If the hold is lifted the same URL resolves again,
+        unchanged, because the address is a hash of content that never moved.
+        If it is not lifted, the blob is tombstoned when the window closes
+        and this becomes a `410`.
+
+        Signed URLs minted for the CID are revoked at the moment of
+        quarantine, so an embedded copy stops rendering without waiting for
+        its own expiry.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -2025,7 +2385,15 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
 
     RangeNotSatisfiable:
-      description: The Range header could not be satisfied.
+      description: |
+        The `Range` header could not be satisfied: the first byte position is
+        at or past the end of the object, or the range set is otherwise
+        unsatisfiable. The response carries a `Content-Range` header naming
+        the true length, so a client can correct itself without a second
+        probe; `HEAD` on the same path reports the length as well.
+
+        A syntactically malformed `Range` is not an error. Per RFC 9110 it is
+        ignored and the complete object is returned with `200`.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
