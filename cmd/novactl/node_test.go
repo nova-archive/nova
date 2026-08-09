@@ -5,6 +5,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -68,12 +69,21 @@ func TestNovactlIssuesCoordinatorClientCert(t *testing.T) {
 	}
 }
 
+const testPinnedNodeImage = "ghcr.io/nova-archive/nova-node@sha256:" +
+	"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 func TestNodeNebulaTemplate(t *testing.T) {
 	dir := t.TempDir()
-	if err := cmdNode([]string{"nebula-template", "--name", "donor-a", "--nebula-ip", "10.42.0.23/24", "--out", dir}); err != nil {
+	if err := cmdNode([]string{
+		"nebula-template", "--name", "donor-a", "--nebula-ip", "10.42.0.23/24",
+		"--image", testPinnedNodeImage, "--out", dir,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"nebula-config.yml", "node.yaml", "compose.yaml", "README.operator.txt"} {
+	// P2-M7.2: the canonical topology is nebula + hardened kubo + nova-node, so
+	// the bundle now includes the Kubo hardening script, and the operator notes
+	// are README.md.
+	for _, f := range []string{"nebula-config.yml", "node.yaml", "compose.yaml", "kubo-init.sh", "README.md"} {
 		b, err := os.ReadFile(filepath.Join(dir, f))
 		if err != nil {
 			t.Fatalf("missing %s: %v", f, err)
@@ -81,5 +91,22 @@ func TestNodeNebulaTemplate(t *testing.T) {
 		if len(b) == 0 {
 			t.Fatalf("%s empty", f)
 		}
+	}
+}
+
+// TestNodeNebulaTemplateRefusesMutableTag pins the D-M7.2-5 invariant at the
+// CLI boundary: a generated operational artifact must never carry a mutable
+// tag, because the operator and the volunteer have to run the same bytes.
+func TestNodeNebulaTemplateRefusesMutableTag(t *testing.T) {
+	dir := t.TempDir()
+	err := cmdNode([]string{
+		"nebula-template", "--name", "donor-a", "--nebula-ip", "10.42.0.23/24",
+		"--image", "ghcr.io/nova-archive/nova-node:latest", "--out", dir,
+	})
+	if err == nil {
+		t.Fatal("a mutable tag must be refused")
+	}
+	if !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("error should name the digest requirement, got %v", err)
 	}
 }

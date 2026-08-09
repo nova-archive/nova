@@ -2,21 +2,17 @@ package main
 
 import (
 	"crypto/x509"
-	"embed"
 	"encoding/pem"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
-	"text/template"
 
 	"github.com/google/uuid"
+	"github.com/nova-archive/nova/internal/deploy"
 	"github.com/nova-archive/nova/internal/federation/ca"
 	"github.com/nova-archive/nova/internal/federation/transport"
 )
-
-//go:embed templates/*.tmpl
-var nodeTemplates embed.FS
 
 // cmdNode dispatches `novactl node <subcommand>`. The DB-direct commands
 // (revoke/rotate-cert/list) are added in a later task.
@@ -216,6 +212,10 @@ func cmdNodeIssueCoordinatorClient(args []string) error {
 	return nil
 }
 
+// cmdNodeNebulaTemplate renders the canonical donor deployment definition from
+// internal/deploy. It survives as a LOW-LEVEL primitive; `novactl node invite`
+// is the documented path (P2-M7.2 D-M7.2-4) because it also issues identities
+// and asserts no operator secret reaches the bundle.
 func cmdNodeNebulaTemplate(args []string) error {
 	fs := flag.NewFlagSet("node nebula-template", flag.ContinueOnError)
 	name := fs.String("name", "donor", "donor name")
@@ -224,35 +224,36 @@ func cmdNodeNebulaTemplate(args []string) error {
 	lhOverlay := fs.String("lighthouse-overlay-ip", "10.42.0.1", "lighthouse overlay IP")
 	lhPublic := fs.String("lighthouse-public-ip", "REPLACE_ME", "lighthouse public IP")
 	coordOverlay := fs.String("coordinator-overlay-ip", "10.42.0.1", "coordinator overlay IP")
+	nodeImage := fs.String("image", "", "digest-pinned nova-node image (required)")
+	storageMax := fs.Int64("storage-max-bytes", 536870912000, "max replica ciphertext bytes (0 = uncapped)")
+	bandwidth := fs.Int64("bandwidth-budget-bytes-per-day", 53687091200, "daily bandwidth budget in bytes")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	data := map[string]string{
-		"Name": *name, "NebulaIP": *nebulaIP,
-		"LighthouseOverlayIP": *lhOverlay, "LighthousePublicIP": *lhPublic,
-		"CoordinatorOverlayIP": *coordOverlay,
+	files, err := deploy.RenderDonorBundle(deploy.DonorParams{
+		Name:                       *name,
+		NebulaIP:                   *nebulaIP,
+		LighthouseOverlayIP:        *lhOverlay,
+		LighthousePublicIP:         *lhPublic,
+		CoordinatorOverlayIP:       *coordOverlay,
+		NodeImage:                  *nodeImage,
+		NebulaImage:                deploy.DefaultNebulaImage,
+		KuboImage:                  deploy.DefaultKuboImage,
+		StorageMaxBytes:            *storageMax,
+		BandwidthBudgetBytesPerDay: *bandwidth,
+	})
+	if err != nil {
+		return err
 	}
-	files := map[string]string{
-		"nebula-config.yml":   "templates/nebula-config.yml.tmpl",
-		"node.yaml":           "templates/node.yaml.tmpl",
-		"compose.yaml":        "templates/donor-compose.yaml.tmpl",
-		"README.operator.txt": "templates/operator-README.txt.tmpl",
-	}
-	for outName, tmplPath := range files {
-		tmpl, err := template.ParseFS(nodeTemplates, tmplPath)
-		if err != nil {
+	for outName, data := range files {
+		perm := os.FileMode(0o644)
+		if filepath.Ext(outName) == ".sh" {
+			perm = 0o755
+		}
+		if err := writeNodeFile(filepath.Join(*out, outName), data, perm); err != nil {
 			return err
 		}
-		f, err := os.Create(filepath.Join(*out, outName))
-		if err != nil {
-			return err
-		}
-		if err := tmpl.Execute(f, data); err != nil {
-			f.Close()
-			return err
-		}
-		f.Close()
 	}
-	fmt.Printf("Nebula + donor templates written to %s (run nebula-cert yourself — see README.operator.txt)\n", *out)
+	fmt.Printf("canonical donor deployment written to %s (run nebula-cert yourself — see README.md)\n", *out)
 	return nil
 }

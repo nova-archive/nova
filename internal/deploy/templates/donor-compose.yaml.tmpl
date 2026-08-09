@@ -1,0 +1,68 @@
+# Nova donor deployment for {{.Name}}.
+#
+# Canonical topology: Nebula + hardened Kubo + nova-node.
+#
+# kubo and nova-node BOTH share the Nebula network namespace. That is what
+# makes node.yaml's loopback kubo_api_addr reachable across containers, and it
+# is what lets nova-node bind the overlay address without NET_ADMIN of its own.
+# Splitting them into separate namespaces silently breaks pinning.
+#
+# No published ports: all federation traffic is mTLS over the overlay.
+name: nova-donor-{{.Name}}
+
+services:
+  nebula:
+    image: {{.NebulaImage}}
+    cap_add: ["NET_ADMIN"]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes:
+      - ./nebula:/etc/nebula:ro
+    restart: unless-stopped
+
+  kubo:
+    # Holds the replica-ciphertext blockstore. nova-node never embeds Kubo; it
+    # pins through this over the loopback API.
+    #
+    # Hardening is applied by kubo-init.sh BEFORE the daemon starts, so a donor
+    # created by the official path is private-by-construction rather than
+    # private-if-the-volunteer-followed-instructions.
+    image: {{.KuboImage}}
+    network_mode: "service:nebula"
+    depends_on: [nebula]
+    environment:
+      - IPFS_SWARM_KEY_FILE=/run/secrets/ipfs_swarm_key
+    entrypoint: ["/bin/sh", "/etc/nova/kubo-init.sh"]
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - ./kubo-init.sh:/etc/nova/kubo-init.sh:ro
+      - kubo-data:/data/ipfs
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  nova-node:
+    image: {{.NodeImage}}
+    network_mode: "service:nebula"
+    depends_on: [nebula, kubo]
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    volumes:
+      - ./node.yaml:/etc/nova/node.yaml:ro
+      # Federation CA + node cert (non-secret). The private key lives in
+      # ./secrets, mounted at /run/secrets.
+      - ./federation:/etc/nova/federation:ro
+      - ./nebula:/etc/nebula:ro
+      - ./secrets:/run/secrets:ro
+      - node-data:/var/lib/nova-node/data
+    command: ["--config", "/etc/nova/node.yaml"]
+    healthcheck:
+      test: ["CMD", "/nova-node", "--healthcheck", "--config", "/etc/nova/node.yaml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  node-data:
+  kubo-data:

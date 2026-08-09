@@ -1,0 +1,56 @@
+# Nova donor bundle — {{.Name}}
+
+Everything in this folder was generated for you. You do not need to edit any
+file to get running.
+
+## 1. Check the three settings that are yours
+
+Open `node.yaml` and look at the top block:
+
+- `storage_max_bytes` — how much disk you are lending ({{.StorageMaxBytes}} bytes)
+- `bandwidth_budget_bytes_per_day` — how much traffic per day ({{.BandwidthBudgetBytesPerDay}} bytes)
+- `storage_dir` — where the node keeps its own state
+
+Change them if you want to lend more or less. Nothing else needs touching.
+
+## 2. Verify the image you are about to run
+
+Your operator pinned an exact image digest in `compose.yaml`. Verify it before
+running anything — see `docs/quickstart/donor.md` for the cosign commands.
+
+    Node image: {{.NodeImage}}
+
+## 3. Start
+
+    docker compose up -d
+
+## 4. Confirm you are serving
+
+    docker compose logs -f nova-node
+
+You are looking for `nova-node registered`, then `node.source.started`. Both
+should appear within a minute of the first start — you do not need to restart
+anything.
+
+## What is in here
+
+| File | What it is |
+|---|---|
+| `compose.yaml` | the three services: overlay, storage, and the Nova node |
+| `node.yaml` | this node's configuration |
+| `nebula-config.yml` | overlay network settings |
+| `kubo-init.sh` | storage hardening, applied automatically at startup |
+| `federation/` | your node's identity for the Nova API |
+| `nebula/` | your node's identity for the overlay network |
+| `secrets/` | private keys — keep this folder to yourself |
+| `invite-manifest.json` | what your operator issued, for support |
+
+Two separate identities are involved: one authorizes you to join the overlay
+network, the other authorizes you to talk to the Nova API. They are not
+interchangeable, which is why there are two folders.
+
+Your overlay address is {{.NebulaIP}} and your operator's coordinator is at
+{{.CoordinatorOverlayIP}}:{{.FederationPort}}.
+
+Problems? Send your operator `invite-manifest.json` and the output of
+`docker compose logs nova-node`. Neither contains a private key.

@@ -1,0 +1,39 @@
+# Nebula overlay configuration for {{.Name}} (overlay IP {{.NebulaIP}}).
+#
+# The Nebula certificate/key here authorize membership of the overlay NETWORK.
+# They are a different trust root from the Nova federation certificate, which
+# authorizes the Nova HTTP API. Do not mix them.
+pki:
+  ca: /etc/nebula/nebula-ca.crt
+  cert: /etc/nebula/nebula.crt
+  key: /run/secrets/nebula_key
+
+static_host_map:
+  "{{.LighthouseOverlayIP}}": ["{{.LighthousePublicIP}}:{{.LighthousePort}}"]
+
+lighthouse:
+  am_lighthouse: false
+  hosts:
+    - "{{.LighthouseOverlayIP}}"
+
+listen:
+  host: 0.0.0.0
+  port: {{.LighthousePort}}
+
+tun:
+  dev: nebula1
+
+firewall:
+  # Outbound is open: this donor initiates registration, heartbeats, pin
+  # synchronization, and repair fetches.
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  # Inbound is restricted to the read-source port. The coordinator dials it for
+  # donor-backed reads and possession audits, and peer donors dial it for
+  # repair. Nothing else needs to reach this host over the overlay.
+  inbound:
+    - port: {{.ReadSourcePort}}
+      proto: tcp
+      host: any
