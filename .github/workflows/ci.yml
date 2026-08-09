@@ -180,6 +180,9 @@ jobs:
       - name: Operational images are digest-pinned
         run: make no-mutable-tags-check
 
+      - name: CA custody — no long-running service can mount issuance authority
+        run: make compose-custody-check
+
   donor-build:
     runs-on: ubuntu-latest
     steps:

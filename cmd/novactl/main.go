@@ -1317,6 +1317,8 @@ func main() {
 		err = cmdConfig(args[1:])
 	case "node":
 		err = cmdNode(args[1:])
+	case "federation":
+		err = cmdFederation(args[1:])
 	case "collection":
 		err = cmdCollection(args[1:])
 	case "pin":
