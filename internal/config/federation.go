@@ -32,11 +32,13 @@ func (f Federation) Validate(dev bool) error {
 			return fmt.Errorf("federation.%s is required when listen_addr is set", name)
 		}
 	}
-	if f.NebulaInterface != "" && !dev {
-		if err := f.checkListenOnInterface(); err != nil {
-			return err
-		}
-	}
+	// P2-M7.2 (D-M7.2-8b): the nebula_interface membership check deliberately
+	// does NOT live here. Config validity must not depend on ephemeral runtime
+	// state — the Nebula sidecar shares the coordinator's network namespace and
+	// so cannot create nebula1 until the coordinator is already running. The
+	// check itself survives as checkListenOnInterface, driven by the bounded
+	// boot wait in WaitForInterfaceAddr.
+	_ = dev
 	return nil
 }
 

@@ -37,6 +37,21 @@ func TestFederationValidateLoopbackSkipsInterfaceGuard(t *testing.T) {
 	}
 }
 
+// TestValidateDoesNotRequireInterfaceToExist pins D-M7.2-8b: config validity
+// must not depend on whether the Nebula sidecar has come up yet. Enforcing it
+// here deadlocked the documented enable path, because network_mode
+// "service:coordinator" needs a running coordinator before nebula1 can exist.
+func TestValidateDoesNotRequireInterfaceToExist(t *testing.T) {
+	f := Federation{
+		ListenAddr:       "10.42.0.1:9443",
+		NebulaInterface:  "nova-no-such-iface",
+		FederationCAPath: "x", FederationCertPath: "y", FederationKeyPath: "z",
+	}
+	if err := f.Validate(false); err != nil {
+		t.Fatalf("Validate must not probe the interface, got %v", err)
+	}
+}
+
 func TestFederationValidateRequiresMaterialWhenEnabled(t *testing.T) {
 	f := Federation{ListenAddr: "10.42.0.1:9443"}
 	if err := f.Validate(false); err == nil {

@@ -153,8 +153,14 @@ type ReplicationFactor struct {
 
 type Federation struct {
 	// M2 additions: listener + mTLS material.
-	ListenAddr         string `yaml:"listen_addr"`
-	NebulaInterface    string `yaml:"nebula_interface"`
+	ListenAddr      string `yaml:"listen_addr"`
+	NebulaInterface string `yaml:"nebula_interface"`
+
+	// P2-M7.2 (D-M7.2-8b): bounded boot wait for NebulaInterface to carry
+	// ListenAddr. Unset uses DefaultInterfaceWaitSeconds; negative disables the
+	// wait entirely (fail fast, the pre-M7.2 behaviour).
+	InterfaceWaitSeconds int `yaml:"interface_wait_seconds"`
+
 	FederationCAPath   string `yaml:"federation_ca_path"`
 	FederationCertPath string `yaml:"federation_cert_path"`
 	FederationKeyPath  string `yaml:"federation_key_path"`
