@@ -4,7 +4,8 @@
 // hands a volunteer and the checked-in artifacts under deploy/donor/ (generated
 // by `make gen-deploy`). Before P2-M7.2 these were parallel implementations
 // that had already diverged on ports, topology, paths, secrets and
-// milestone-era comments — see docs/nova-upstream-findings.md §22.
+// milestone-era comments. See the P2-M7.2 design spec under
+// docs/superpowers/specs/phase2/ for the full evidence table.
 //
 // novactl is a CONSUMER of this package, not its owner.
 package deploy

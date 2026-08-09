@@ -193,7 +193,8 @@ design's milestone breakdown
 
 ### Phase 2 — P2-M7.x field-findings remediation track (first-deployment feedback)
 
-Source: `docs/nova-upstream-findings.md` — 23 findings collected in practice, by
+Source: the operator's first-deployment field findings (kept out of the repo) —
+23 items collected in practice, by
 following the shipped documentation, while standing up a public operator node on
 a fresh Debian 13 VPS (2026-07-27/28), mirroring real content (2026-07-30), and
 onboarding the first external donor (2026-08-08). Not a code-reading audit;
@@ -379,8 +380,8 @@ Nebula lighthouses + Kubo bootstrap peers. Reframes `T1.27`; explicitly rejects
 independent writable masters. Design + simulation evidence:
 `docs/superpowers/specs/phase6/2026-06-12-resilience-and-post-1.0-architecture-design.md`.
 
-**Sequencing (2026-08-08, from the `docs/nova-upstream-findings.md` architecture
-analysis).** Implement in the order **HA → peering → erasure coding**. That is
+**Sequencing (2026-08-08, from the first-deployment architecture analysis).**
+Implement in the order **HA → peering → erasure coding**. That is
 not the order they are usually discussed in; the reason is that each fixes a
 different failure and only HA is on the availability path. **HA is the largest
 availability win**, and Nova's own simulation shows adding coordinator processes

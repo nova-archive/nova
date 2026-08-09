@@ -3,8 +3,8 @@
 //
 // Before P2-M7.2 deploy/donor/ and the generated invite bundle were parallel
 // implementations that had already diverged on ports, topology, paths and
-// secrets (docs/nova-upstream-findings.md §22.5). They now come from one
-// source, and `make gen-deploy-check` fails the build if they drift again.
+// secrets. They now come from one source, and `make gen-deploy-check` fails
+// the build if they drift again.
 package main
 
 import (
