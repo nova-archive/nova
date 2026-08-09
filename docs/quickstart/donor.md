@@ -1,156 +1,188 @@
-# Running a Nova donor node (`nova-node`)
+# Running a Nova donor node
 
-> **Status: P2-M7 volunteer release.** This is the complete donor walkthrough:
-> verify → enroll → run → confirm → upgrade → leave. The operational
-> runbooks live in [`../runbooks/donor-lifecycle.md`](../runbooks/donor-lifecycle.md)
-> and [`../runbooks/failure-drills.md`](../runbooks/failure-drills.md); network
-> posture guidance is in
-> [`../VOLUNTEER_DEPLOYMENT_GUIDANCE.md`](../VOLUNTEER_DEPLOYMENT_GUIDANCE.md).
+You are lending some disk and some bandwidth to someone's Nova archive. Your
+machine stores encrypted pieces of their data and hands them back when asked.
 
-A donor pins **opaque ciphertext** for a federation. You never hold keys, never
-see plaintext, and expose no public ports. Everything below assumes your
-federation operator has invited you and will issue your certificates.
+**You cannot read what you store.** It arrives encrypted and stays that way.
+Nova is built so that donating storage does not mean being trusted with
+content — see [what you are agreeing to](#what-you-are-agreeing-to).
 
-## 1. Verify the image (before running anything)
+Your operator sends you a folder. You check it, decide how much to lend, and
+start it. About ten minutes.
 
-`nova-node` images are published to `ghcr.io/nova-archive/nova-node`, pushed
-**by digest** and signed with **cosign keyless (GitHub OIDC)**. There is one
-trust path: keyless signatures from this repository's `ci.yml` on `main`.
-Nova does not publish a local-key signing path.
+## Before you start
 
-**Pin a digest, not a tag.** Your operator's invite names the release digest.
+- Linux with Docker and the `docker compose` plugin.
+- Disk you can spare. 100 GB is a useful contribution; more is welcome.
+- A machine that stays on. A laptop that sleeps is not a good donor —
+  see [choosing a host](../VOLUNTEER_DEPLOYMENT_GUIDANCE.md).
+- On Windows: [read the WSL2 guide first](../platforms/wsl2-donor.md).
+
+---
+
+## 1. Check what you were sent
+
+Unpack the folder. You should see:
+
+```
+compose.yaml           node.yaml          nebula-config.yml
+kubo-init.sh           README.md          invite-manifest.json
+federation/            nebula/            secrets/
+```
+
+`secrets/` holds your private keys. Keep the folder to yourself.
+
+---
+
+## 2. Verify the image before running it
+
+Your operator pinned an exact image. Confirm it is genuinely from the Nova
+project and not something substituted along the way.
+
+Get the digest from your bundle:
 
 ```sh
-DIGEST=sha256:<digest-from-your-operator>
+grep image: compose.yaml
+```
 
-# Signature: the signing identity is the ci.yml workflow on refs/heads/main
-# of nova-archive/nova, via the GitHub Actions OIDC issuer. (Derived from
-# .github/workflows/ci.yml `donor-sbom-sign`; if the workflow file moves,
-# re-derive the identity from the workflow that signed your digest.)
+Then, with `DIGEST` set to the `nova-node` digest you just saw:
+
+```sh
+DIGEST=sha256:<digest-from-compose.yaml>
+
 cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github\.com/nova-archive/nova/\.github/workflows/ci\.yml@refs/heads/main$' \
   ghcr.io/nova-archive/nova-node@$DIGEST
 
-# SBOM attestation (SPDX JSON, attested to the SAME digest):
 cosign verify-attestation --type spdxjson \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-identity-regexp '^https://github\.com/nova-archive/nova/\.github/workflows/ci\.yml@refs/heads/main$' \
   ghcr.io/nova-archive/nova-node@$DIGEST
 
-# Build provenance (GitHub attestation; needs the gh CLI):
 gh attestation verify oci://ghcr.io/nova-archive/nova-node@$DIGEST \
   --repo nova-archive/nova
 ```
 
-All three must verify. If any fails, stop and contact your operator — do not
-run the image.
+All three must pass. **If any fails, stop and tell your operator.** Do not run
+the image.
 
-## 2. Enroll
+Images are published by digest and signed with cosign keyless via GitHub OIDC.
+That is the only trust path; Nova publishes no local-key signing path.
 
-Your **operator** issues your identity; you never generate federation
-certificates yourself.
+---
 
-The operator runs:
+## 3. Decide what you are lending
 
-```sh
-novactl node issue --dir <ca-dir> --name <your-name> --out <bundle-dir>
-```
-
-and sends you the bundle: `federation.crt`, `federation.key`,
-`federation-ca.crt`, and `node-manifest.json` (your `node_id` and cert
-fingerprint — keep it; it is how you identify yourself in support requests).
-
-Nebula overlay enrollment (lighthouse address, `nebula-cert` signing, and the
-port/firewall posture) follows
-[`../VOLUNTEER_DEPLOYMENT_GUIDANCE.md`](../VOLUNTEER_DEPLOYMENT_GUIDANCE.md).
-The operator can generate a config skeleton for you:
-
-```sh
-novactl node nebula-template --name <your-name> --nebula-ip 10.42.0.NN/24 --out <dir>
-```
-
-That template emits an annotated `node.yaml`. The fields that matter:
+Open `node.yaml`. The top three settings are yours:
 
 ```yaml
-coordinator_url: "https://<coordinator-overlay-ip>:9443"   # the FEDERATION listener
-federation_ca_path:   /etc/nova/federation/federation-ca.crt
-federation_cert_path: /etc/nova/federation/federation.crt
-federation_key_path:  /etc/nova/federation/federation.key
-storage_dir: /var/lib/nova-node
-bandwidth_budget_bytes_per_day: 53687091200   # 50 GiB/day cap — your knob
-kubo_api_addr: "http://127.0.0.1:5001"        # the loopback Kubo sidecar
-source_nebula_addr: "<your-overlay-ip>:9555"  # advertised read-source address
-source_read_listen_addr: "0.0.0.0:9555"       # bind for the read-source mTLS listener
+# How much disk this node may fill. 0 = no limit.
+storage_max_bytes: 536870912000          # 500 GiB
+
+# How much traffic per day. Must be above zero.
+bandwidth_budget_bytes_per_day: 53687091200   # 50 GiB/day
+
+# Where the node keeps its own state.
+storage_dir: /var/lib/nova-node/data
 ```
 
-## 3. Run
+Change them to whatever you are comfortable with. Nova will not exceed them —
+if a transfer would go over, it refuses rather than borrowing your capacity.
 
-Use the compose file from the template (`compose.yaml`): a Nebula sidecar plus
-`nova-node` sharing its network namespace, no published ports. Pin the digest
-you verified in step 1:
+Some useful numbers:
 
-```yaml
-  nova-node:
-    image: ghcr.io/nova-archive/nova-node@sha256:<digest>
-```
+| | bytes |
+|---|---|
+| 100 GiB | `107374182400` |
+| 250 GiB | `268435456000` |
+| 500 GiB | `536870912000` |
+| 1 TiB | `1099511627776` |
+
+Nothing else in `node.yaml` needs editing. Every other value points at a file
+in the folder you were sent.
+
+---
+
+## 4. Start
 
 ```sh
 docker compose up -d
-docker compose ps    # nova-node healthcheck: `--healthcheck --config ...`
 ```
 
-Two first-boot behaviors are **normal** (not failures):
+---
 
-- **Initial cadence:** a fresh donor heartbeats every 300 s and polls for pin
-  work every 600 s until its FIRST heartbeat delivers the federation's real
-  timers. Expect up to ~10 minutes before the first assignments flow.
-- **Read-source starts on the second boot:** the donor's read-source listener
-  binds only when a persisted registration already exists at boot
-  (fail-closed identity binding). Restart the container once after your first
-  successful registration; the log line `nova-node: read-source on ...`
-  confirms it.
-
-## 4. Confirm you are serving
-
-Ask your operator to run:
+## 5. Confirm it is working
 
 ```sh
-novactl node list
+docker compose logs -f nova-node
 ```
 
-Your node should show `active` with `LAST_SEEN` moving. On the operator's
-`/metrics` plane, `nova_nodes{status="active",...}` includes you, and
-possession audits (`nova_audit_results_total{result="pass"}`) begin within the
-audit cadence — passing audits are the proof you are truly storing and serving
-your assigned bytes.
+You want two lines, usually within a minute:
 
-## 5. Upgrade / rollback
-
-Upgrades are a digest re-pin: verify the NEW digest (step 1), edit the compose
-image line, `docker compose up -d`. Rollback is the same operation with the
-previous digest.
-
-Mixed versions are supported across one milestone: an N−1 donor interoperates
-with the current coordinator (and vice versa) — join, replication, and audits
-are covered by the release's cross-version gate (`make crossversion-e2e`,
-D-M7-3). Don't run further behind than one milestone.
-
-## 6. Leaving gracefully
-
-Tell your operator you want to leave; they run:
-
-```sh
-novactl node drain --id <your-node-id>
+```
+nova-node registered      node_id=19e8f7b9-...
+node.source.started       listen=0.0.0.0:9555
 ```
 
-Draining means: no new placements, your replicas stop counting toward
-durability, but your node **keeps serving** as a repair source while its data
-is re-replicated elsewhere.
+`registered` means your operator can see you. `node.source.started` means you
+are serving. **You should not need to restart anything** — if you were told
+otherwise by an older guide, that was a bug and it is fixed.
 
-**Keep the donor RUNNING until the operator confirms zero drain debt**
-(`nova_node_drain_pending_cids{node_id=...} == 0`). Shutting down early makes
-the federation heal from scratch instead of from you. Once the operator
-confirms and revokes your node, you can `docker compose down -v` and delete
-the data directory. Full procedure (including the mistaken-drain `undrain`
-path): [`../runbooks/donor-lifecycle.md`](../runbooks/donor-lifecycle.md).
+Press Ctrl-C to stop watching; the node keeps running.
+
+*If you see neither line:* check `docker compose logs nebula`. The overlay
+network has to come up before anything else can.
+
+*If you see `registered` but not `node.source.started`:* send your operator
+the log output.
+
+---
+
+## That's it
+
+Your operator will see you as `probationary` at first. That is normal — trust
+rises on its own as you demonstrate you are holding what you said you would.
+
+---
+
+## Later
+
+**Change how much you are lending:** edit `node.yaml`, then
+`docker compose up -d`. Lowering a limit below what you already store is fine;
+Nova moves the excess elsewhere.
+
+**Stop for a while:** `docker compose stop`. Brief outages are expected and
+handled. If you will be down for days, tell your operator so they can move your
+data first.
+
+**Stop for good:** tell your operator **before** you delete anything. They
+drain you first — copying your pieces elsewhere — and confirm when it is safe.
+Deleting the folder without draining loses redundancy.
+
+**Update:** your operator tells you the digest. See
+[`docs/UPGRADING.md`](../UPGRADING.md). Never `docker pull` a moving tag; the
+whole point of the digest is that you and your operator run the same bytes.
+
+---
+
+## What you are agreeing to
+
+- **You store encrypted data you cannot read.** No key that decrypts content
+  ever reaches your machine.
+- **You are not a public server.** Nothing is published to the open internet.
+  Your node only talks to your operator's private network.
+- **Your limits are yours.** Nova will not exceed the disk and bandwidth you
+  set.
+- **You can leave.** Tell your operator, let them drain you, delete the folder.
+
+What you get in return is that someone's archive survives losing any single
+machine, including theirs.
+
+---
+
+## More
+
+- [Every `node.yaml` setting](../reference/donor-configuration.md)
+- [Choosing a host, and why not your home connection](../VOLUNTEER_DEPLOYMENT_GUIDANCE.md)
+- [Windows / WSL2](../platforms/wsl2-donor.md)

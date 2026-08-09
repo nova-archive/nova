@@ -30,9 +30,11 @@ mapfile -t targets < <(
 #                        chosen per release by the operator issuing the invite,
 #                        and node invite refuses a mutable tag at runtime.
 #   nova-node:dev        a locally built image, never pulled.
+#   nova-admin:dev       likewise — built from docker/admin.Dockerfile, whose
+#                        own FROM lines ARE digest-pinned and are checked here.
 #   {{.                  a template placeholder resolved at render time, which
 #                        DonorParams.Validate already digest-checks.
-allow_re='REPLACE-WITH-DIGEST|nova-node:dev|\{\{\.'
+allow_re='REPLACE-WITH-DIGEST|nova-node:dev|nova-admin:dev|\{\{\.'
 
 for f in "${targets[@]}"; do
   [ -f "$f" ] || continue

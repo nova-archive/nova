@@ -330,63 +330,13 @@ curl -ks --resolve "nova.example.org:8445:127.0.0.1" \
   https://nova.example.org:8445/api/v1/auth/login
 ```
 
-## Choosing a TLS mode
+## Next: the settings
 
-| Mode | What happens | Privacy note |
-| --- | --- | --- |
-| `dev-self-signed` | The wizard generates a throwaway CA + leaf. Browsers warn; `curl -k` accepts it. Dev and staging only. | Nothing leaves your machine. |
-| `static` | You supply paths to your own fullchain + key PEMs (drop them in the config volume's TLS dir). You own renewal. | No third party is contacted; disclosure depends on where your cert came from. |
-| `http-01` | Fully automated Let's Encrypt: the certbot sidecar writes a placeholder so nginx can start, obtains the real certificate on first boot, renews it on a 12-hour check loop, and nginx hot-reloads on every deploy. Zero manual certbot steps. Requires your hostname to resolve publicly and port 80 traffic to reach the stack (forward `:80 → :8442`). | Your hostname is published to public **Certificate Transparency logs** (crt.sh and friends). If that is a deanonymization concern, pick another mode. |
-| `dns-01` / `onion` | The wizard renders the config and prints operator-handoff instructions: supply DNS-API credentials out of band (`dns-01`) or run Tor and supply the cert (`onion`). Not automated — see the per-mode guidance in [`legal/OPERATOR_CHECKLIST.md`](legal/OPERATOR_CHECKLIST.md). | `dns-01` certs still land in CT logs but need no inbound port 80; `onion` keeps your service out of public DNS and CT entirely. |
+Everything you *can* configure — TLS modes and their privacy trade-offs,
+headless/scripted setup, external OIDC, the federation block — is in
+[`docs/reference/operator-configuration.md`](reference/operator-configuration.md).
 
-## Headless / scripted setup
-
-Everything the wizard does is also available unattended via
-`novactl setup --config-file`, which shares the same validation and
-crash-safe commit ordering. Write an answers file:
-
-```yaml
-# answers.yaml — Nova first-run answers (see internal/setup/answers.go)
-hostname: nova.example.org
-contact_email: ops@example.org
-display_name: Example Community Archive    # optional
-admin_email: you@example.org
-admin_password: use-a-long-passphrase      # 12 chars minimum
-tls_mode: dev-self-signed                  # dev-self-signed|http-01|dns-01|static|onion
-# cert_path: /etc/nova/tls/fullchain.pem   # static mode only
-# key_path: /etc/nova/tls/privkey.pem      # static mode only
-auth_mode: local                           # local|external
-# issuer_url: https://idp.example.org      # external mode only
-# client_id: nova-admin                    # external mode only
-public_uploads: true
-tos_url: https://nova.example.org/tos      # required when public_uploads: true
-paranoid: false
-```
-
-Then run migrations + setup in a one-off coordinator container (compose
-starts Postgres for you; the headless path needs no bootstrap token —
-it never opens the network seam). This is an *alternative* first-run
-path: run it from a clean slate, **instead of** the setup profile. If
-you already started the setup profile, wipe it first with
-`docker compose -f docker/docker-compose.yml --env-file docker/.env --profile setup down -v`
-(pre-setup there is nothing to lose; the one-off container cannot write
-into a secrets volume the setup boot has already claimed):
-
-```sh
-docker compose -f docker/docker-compose.yml --env-file docker/.env \
-  run --rm -T --entrypoint /bin/sh \
-  -v "$PWD/answers.yaml:/answers.yaml:ro" \
-  coordinator -c "/usr/local/bin/migrate up && /usr/local/bin/novactl setup --config-file /answers.yaml"
-```
-
-Follow with the same prod-profile commands from
-[step 3](#3-restart-into-production). The headless path is also how
-you configure an **external OIDC** provider (`auth_mode: external`),
-which the web wizard does not offer.
-
-The same answers file drives CI: [`scripts/smoke.sh`](../scripts/smoke.sh)
-is a living end-to-end example of exactly this flow — headless setup,
-prod profile, upload, read-back, transform, delete.
+This page deliberately stops at "it works".
 
 ## Next steps
 

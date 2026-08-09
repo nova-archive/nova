@@ -8,6 +8,11 @@ This file is artifact notes only. It is deliberately not a walkthrough: the
 federation bootstrap is one documented path, and duplicating it here is how the
 two drifted apart in the first place.
 
+**Turning on federation:**
+[`docs/quickstart/federation-operator.md`](../../docs/quickstart/federation-operator.md).
+**Every setting:**
+[`docs/reference/operator-configuration.md`](../../docs/reference/operator-configuration.md).
+
 ## Federation block in `operator.yaml`
 
 ```yaml

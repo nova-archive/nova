@@ -77,23 +77,35 @@ for f in "${files[@]}"; do
     esac
     [ "$in_fence" -eq 1 ] || continue
 
-    # Only consider lines that invoke novactl as a command.
-    case "$line" in
-      *novactl\ *) ;;
-      *) continue ;;
-    esac
     case "$line" in
       *"novactl-check: ignore"*) continue ;;
+    esac
+
+    # Consider lines that invoke novactl directly, AND lines that invoke it via
+    # the nova-admin / nova-doctor services, whose image ENTRYPOINT is novactl.
+    # The documented federation path uses the service form exclusively, so
+    # without this the flagship commands would go unchecked.
+    case "$line" in
+      *novactl\ *) ;;
+      *"run --rm nova-admin "*|*"run --rm nova-doctor "*) ;;
+      *) continue ;;
     esac
 
     # Strip markdown/comment noise and isolate the invocation.
     cmd="${line#"${line%%[![:space:]]*}"}"      # leading whitespace
     cmd="${cmd#\$ }"                              # shell prompt
     cmd="${cmd#docker exec * }"                   # container prefix
-    cmd="${cmd##*novactl }"                       # everything after "novactl "
+    case "$cmd" in
+      *novactl\ *) cmd="${cmd##*novactl }" ;;     # direct invocation
+      *"run --rm nova-admin "*)  cmd="${cmd##*run --rm nova-admin }" ;;
+      *"run --rm nova-doctor "*) cmd="${cmd##*run --rm nova-doctor }" ;;
+    esac
     cmd="${cmd%%#*}"                              # trailing comment
     cmd="${cmd%\\}"                               # line-continuation backslash
     cmd="${cmd%"${cmd##*[![:space:]]}"}"          # trailing whitespace
+    # Reassembling continuations leaves a leading space, which would make the
+    # first token empty and silently skip the command.
+    cmd="${cmd#"${cmd%%[![:space:]]*}"}"
 
     # Skip prose mentions ("run `novactl auth login` to fetch a token"),
     # placeholder-only references, and multi-line continuations we cannot

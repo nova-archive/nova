@@ -186,82 +186,17 @@ This is collective rather than enforced. The federation's
 operator monitors the diversification ratio and announces in the
 community if any provider exceeds 40 % of capacity.
 
-## Setup walkthrough
+## Setting up
 
-1. **Provision a host.** Use the criteria above. Have an SSH
-   keypair ready.
+This page is about *judgment* — where to run, what to lend, what to expect.
+The actual steps live in one place so they cannot drift apart:
 
-2. **Install a container runtime.** Docker Engine on Linux is the
-   recommended path:
-   ```sh
-   curl -fsSL https://get.docker.com | sh
-   ```
-   Avoid Docker Desktop on Mac/Windows (it sends usage telemetry).
+- **Donors:** [`docs/quickstart/donor.md`](quickstart/donor.md)
+- **On Windows:** [`docs/platforms/wsl2-donor.md`](platforms/wsl2-donor.md)
+- **Every setting:** [`docs/reference/donor-configuration.md`](reference/donor-configuration.md)
 
-3. **Receive your federation invite.** Nova authenticates donors at **two
-   layers**, so the bundle carries **two certificate + key pairs** — do not
-   conflate them:
-   - **Nebula** cert + key (`nebula.crt`, `nebula.key`) — authorizes mesh
-     (overlay) membership.
-   - **Federation client** cert + key (`federation.crt`, `federation.key`) —
-     authorizes your node's HTTP calls to `/fed/v1` (mTLS, distinct from the
-     Nebula identity).
-   - The federation's CA cert (`ca.crt`).
-   - The IPFS swarm key (`swarm.key`).
-   - The Nebula lighthouse address and the coordinator's federation URL.
-
-   **Private-key handling.** The two `.key` files are secrets. Receive them over
-   a private channel, store them `chmod 600`, mount them read-only, and never
-   share or commit them. If a key is ever exposed, ask the operator to **revoke**
-   it immediately (a `novactl node revoke` on their side fails your next mTLS
-   handshake) and issue a fresh bundle.
-
-4. **Create your node directory:**
-   ```sh
-   mkdir -p ~/nova-node
-   cd ~/nova-node
-   # place donor.crt, ca.crt, swarm.key here
-   ```
-
-5. **Write your `node.yaml`** with bandwidth limits, throttle
-   window, and storage path.
-
-6. **Bring up Nebula.** Nova runs Nebula as a **separate host/sidecar process**,
-   not inside `nova-node` — so the node container needs no `NET_ADMIN` capability.
-   Start Nebula with your `nebula.crt`/`nebula.key`/`ca.crt` and lighthouse first;
-   note the overlay interface address it creates (e.g. `10.42.0.x`). `nova-node`
-   binds its inbound HTTPS server to **that Nebula address only** — never
-   `0.0.0.0` — which is why the run command below publishes **no ports**.
-
-7. **Verify the image signature and pin a digest.** The donor image is
-   cosign-signed with SBOM + provenance. Do **not** run `:latest` in production:
-   ```sh
-   cosign verify ghcr.io/nova-archive/nova-node:v0.2.0   # confirm signature + identity
-   docker pull   ghcr.io/nova-archive/nova-node:v0.2.0
-   docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/nova-archive/nova-node:v0.2.0
-   # record the @sha256:… digest and run that, so the bytes can never change under you
-   ```
-
-8. **Run the container** (digest-pinned, no published ports, hardened):
-   ```sh
-   docker run -d \
-       --name nova-node \
-       --restart unless-stopped \
-       -v $(pwd):/etc/nova-node:ro \
-       -v $(pwd)/data:/var/lib/nova-node \
-       --read-only \
-       --cap-drop ALL \
-       --security-opt no-new-privileges \
-       ghcr.io/nova-archive/nova-node@sha256:<digest-from-step-7>
-   ```
-   The config volume (certs, keys, `node.yaml`, `swarm.key`) is mounted
-   read-only; the node only writes to the data volume.
-
-9. **Verify in your operator's admin dashboard** that your node appears and
-   heartbeats. New nodes start in a **probationary** trust state and receive a
-   capped amount of data — and are never made the sole copy of critical content —
-   until they graduate on age plus successfully-passed possession audits. This is
-   expected; your contribution ramps up as your node proves itself.
+Your operator sends you a ready-made bundle; you should not be assembling
+configuration by hand.
 
 ## What to back up (and what not to)
 
