@@ -18,7 +18,7 @@ import (
 // (revoke/rotate-cert/list) are added in a later task.
 func cmdNode(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: novactl node <ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|set-domain|nebula-template|trust|drain|undrain>")
+		return fmt.Errorf("usage: novactl node <invite|ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|set-domain|nebula-template|trust|drain|undrain>")
 	}
 	switch args[0] {
 	case "ca-init":
@@ -35,6 +35,8 @@ func cmdNode(args []string) error {
 		return cmdNodeList(args[1:])
 	case "set-domain":
 		return cmdNodeSetDomain(args[1:])
+	case "invite":
+		return cmdNodeInvite(args[1:])
 	case "nebula-template":
 		return cmdNodeNebulaTemplate(args[1:])
 	case "trust":
