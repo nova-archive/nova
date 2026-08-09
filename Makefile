@@ -79,6 +79,21 @@ docker-refresh-digests:
 migrations-frozen:
 	./scripts/check-migrations-frozen.sh
 
+.PHONY: gen-deploy gen-deploy-check deploy-gates
+# P2-M7.2 D-M7.2-5: deploy/donor/ is GENERATED from internal/deploy/templates/.
+# Edit the templates, not the output.
+gen-deploy:
+	go run ./cmd/gen-deploy
+
+gen-deploy-check:
+	./scripts/check-gen-deploy.sh
+
+# P2-M7.2 D-M7.2-10: artifact-correctness gates — node.yaml completeness
+# (reflection over nodeconfig.Config), rendered-config validity (the production
+# loader against a fixture tree), and bundle topology.
+deploy-gates:
+	go test ./internal/deploy/... -count=1
+
 .PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
 
 sqlc-generate:
