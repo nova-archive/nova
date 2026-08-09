@@ -120,7 +120,7 @@ func cmdNodeDrain(args []string) error {
 	idStr := fs.String("id", "", "node id (uuid)")
 	force := fs.Bool("force", false, "drain even if assignment_sync_state != current")
 	noConfirm := fs.Bool("no-confirm", false, "skip confirmation")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	pgID, err := parsePGUUID(*idStr)
@@ -154,7 +154,7 @@ func cmdNodeDrain(args []string) error {
 func cmdNodeUndrain(args []string) error {
 	fs := flag.NewFlagSet("node undrain", flag.ContinueOnError)
 	idStr := fs.String("id", "", "node id (uuid)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	pgID, err := parsePGUUID(*idStr)

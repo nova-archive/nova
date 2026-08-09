@@ -33,7 +33,7 @@ func pinMutate(args []string, name string, fn func(ctx context.Context, tx pgx.T
 	fs := flag.NewFlagSet("pin "+name, flag.ContinueOnError)
 	cid := fs.String("cid", "", "blob CID (required)")
 	nodeStr := fs.String("node", "", "donor node UUID (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	node, err := uuid.Parse(*nodeStr)
@@ -65,7 +65,7 @@ func cmdPinList(args []string) error {
 	fs := flag.NewFlagSet("pin list", flag.ContinueOnError)
 	cid := fs.String("cid", "", "list by blob CID")
 	nodeStr := fs.String("node", "", "list by donor node UUID")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	return withNodeDB(func(ctx context.Context, q *gen.Queries) error {

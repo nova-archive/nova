@@ -219,7 +219,7 @@ func cmdLogin(args []string) error {
 	fs := flag.NewFlagSet("auth login", flag.ContinueOnError)
 	url := fs.String("url", defaultBaseURL, "Nova coordinator base URL")
 	username := fs.String("username", "", "Nova username")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -455,7 +455,7 @@ func cmdSignedURLSign(args []string) error {
 	path := fs.String("path", "", "content path to sign (/blob/{cid} or /i/{cid}/...)")
 	ttl := fs.Int("ttl", 3600, "URL lifetime in seconds")
 	aud := fs.String("aud", "", "embedding origin, e.g. https://example.com")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if *path == "" || *aud == "" {
@@ -524,6 +524,10 @@ func confirm(prompt string) bool {
 // loadCreds reads the stored credentials and returns a user-friendly error if
 // the file is absent.
 func loadCreds() (credentials, error) {
+	if checkFlagsOnly {
+		// --check-flags: never touch the credential cache or the network.
+		return credentials{}, errCheckFlagsOK
+	}
 	path, err := credsPath()
 	if err != nil {
 		return credentials{}, err
@@ -581,7 +585,7 @@ func cmdModerationQuarantine(args []string) error {
 	reason := fs.String("reason", "", "reason for quarantine")
 	tombstoneAfter := fs.String("tombstone-after", "", "tombstone delay, e.g. 14d")
 	legalHold := fs.Bool("legal-hold", false, "place a legal hold (also sets rule to severe_content)")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		return err
 	}
 
@@ -627,7 +631,7 @@ func cmdModerationTakedown(args []string) error {
 	caseID := fs.String("case", "", "moderation case ID")
 	reason := fs.String("reason", "", "reason for takedown")
 	noConfirm := fs.Bool("no-confirm", false, "skip the destructive-action confirmation prompt")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		return err
 	}
 
@@ -673,7 +677,7 @@ func cmdModerationClearLegalHold(args []string) error {
 	caseRef := fs.String("case-id", "", "case reference")
 	reason := fs.String("reason", "", "reason for releasing the hold")
 	noConfirm := fs.Bool("no-confirm", false, "skip the destructive-action confirmation prompt")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		return err
 	}
 
@@ -722,7 +726,7 @@ func cmdModerationRestore(args []string) error {
 	cid := args[0]
 	fs := flag.NewFlagSet("moderation restore", flag.ContinueOnError)
 	reason := fs.String("reason", "", "reason for restoring the blob")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		return err
 	}
 
@@ -748,7 +752,7 @@ func cmdModerationRestore(args []string) error {
 func cmdModerationList(args []string) error {
 	fs := flag.NewFlagSet("moderation list", flag.ContinueOnError)
 	perPage := fs.Int("per-page", 20, "number of results per page")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -861,7 +865,7 @@ func cmdKeysRotateMaster(args []string) error {
 	from := fs.String("from", "", "retiring version label (e.g. v1)")
 	to := fs.String("to", "", "new active version label (e.g. v2)")
 	noConfirm := fs.Bool("no-confirm", false, "skip the confirmation prompt")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	// Validate required flags before touching credentials or network.
@@ -1039,7 +1043,7 @@ func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	interactive := fs.Bool("interactive", false, "prompt for each field on stdin")
 	configFile := fs.String("config-file", "", "path to YAML answers file")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -1278,6 +1282,16 @@ func usage() {
 
 func main() {
 	args := os.Args[1:]
+
+	// --check-flags parses the invocation and stops before doing any work, so
+	// CI can verify every command in the operator documentation is one this
+	// binary can actually execute (P2-M7.2, D-M7.2-10). Must be the first
+	// argument.
+	if len(args) > 0 && args[0] == "--check-flags" {
+		checkFlagsOnly = true
+		args = args[1:]
+	}
+
 	if len(args) < 1 {
 		usage()
 		os.Exit(2)
@@ -1292,7 +1306,9 @@ func main() {
 	case "moderation":
 		err = cmdModeration(args[1:])
 	case "keys":
-		err = cmdKeys(os.Args[2:])
+		// args[1:], not os.Args[2:] — every other branch slices the already
+		// normalized args, and the two diverge once a global flag is present.
+		err = cmdKeys(args[1:])
 	case "setup":
 		err = cmdSetup(args[1:])
 	case "upload-token":
@@ -1311,6 +1327,11 @@ func main() {
 		os.Exit(2)
 	}
 
+	// errCheckFlagsOK means the flags parsed and we deliberately stopped short
+	// of doing anything. That is the success case for --check-flags.
+	if errors.Is(err, errCheckFlagsOK) {
+		return
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "novactl: %v\n", err)
 		os.Exit(1)

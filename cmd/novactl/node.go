@@ -77,7 +77,7 @@ func cmdNodeCAInit(args []string) error {
 	dir := fs.String("dir", ".", "output directory for CA + coordinator server cert")
 	coordIP := fs.String("coordinator-ip", "127.0.0.1", "coordinator Nebula overlay IP for the server cert SAN")
 	coordDNS := fs.String("coordinator-dns", "localhost", "coordinator DNS SAN")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	caCertPEM, caKeyPEM, err := ca.GenerateCA()
@@ -116,7 +116,7 @@ func cmdNodeIssue(args []string) error {
 	dir := fs.String("dir", ".", "directory holding federation-ca.crt + federation-ca.key")
 	name := fs.String("name", "", "donor display name (required)")
 	out := fs.String("out", "", "output dir for the donor bundle (default ./<name>)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if *name == "" {
@@ -170,7 +170,7 @@ func cmdNodeIssueCoordinatorClient(args []string) error {
 	fs := flag.NewFlagSet("node issue-coordinator-client", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "directory holding federation-ca.crt + federation-ca.key")
 	out := fs.String("out", "", "output dir for the coordinator client bundle (default ./coordinator-client)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	outDir := *out
@@ -227,7 +227,7 @@ func cmdNodeNebulaTemplate(args []string) error {
 	nodeImage := fs.String("image", "", "digest-pinned nova-node image (required)")
 	storageMax := fs.Int64("storage-max-bytes", 536870912000, "max replica ciphertext bytes (0 = uncapped)")
 	bandwidth := fs.Int64("bandwidth-budget-bytes-per-day", 53687091200, "daily bandwidth budget in bytes")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	files, err := deploy.RenderDonorBundle(deploy.DonorParams{

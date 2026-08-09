@@ -1,84 +1,108 @@
-# Nova Operator Deployment
+# Operator deployment artifacts
 
-This directory contains operator-side deployment artifacts (coordinator config,
-compose overrides, etc.). Donors use `deploy/donor/` instead.
+Operator-side deployment files. Donors use `deploy/donor/` instead — and note
+that `deploy/donor/` is **generated** from `internal/deploy/templates/`; edit the
+templates and run `make gen-deploy`.
+
+This file is artifact notes only. It is deliberately not a walkthrough: the
+federation bootstrap is one documented path, and duplicating it here is how the
+two drifted apart in the first place.
 
 ## Federation block in `operator.yaml`
 
 ```yaml
 federation:
-  listen_addr: "10.100.0.1:8443"   # Nebula overlay IP:port; never 0.0.0.0
-  nebula_interface: nebula1         # guard: refuses to bind unless this interface exists
+  listen_addr: "10.42.0.1:9443"    # overlay IP:port; never 0.0.0.0
+  nebula_interface: nebula1        # the overlay interface to bind
+  interface_wait_seconds: 120      # bounded boot wait; negative = fail fast
   federation_ca_path:   /etc/nova/federation/federation-ca.crt
   federation_cert_path: /etc/nova/federation/coordinator-federation.crt
   federation_key_path:  /run/secrets/nova_coordinator_federation_key
+  repair_signing_key_path: /run/secrets/nova_repair_signing_key
+  federation_client_cert_path: /etc/nova/federation/federation-client.crt
+  federation_client_key_path:  /run/secrets/nova_coordinator_client_key
 ```
 
-`listen_addr` must be an address on the `nebula_interface`. The coordinator
-verifies this at startup and refuses to bind on a non-overlay address.
+`listen_addr` must be an address on `nebula_interface`.
 
-## Bootstrapping the CA and coordinator cert
+**Startup behaviour (P2-M7.2).** The coordinator does **not** fail to boot when
+the interface is absent. It starts its public and admin listeners, waits up to
+`interface_wait_seconds` for the overlay, then binds. If the wait elapses it
+stays alive and serving with federation **not ready** rather than exiting —
+exiting would deadlock the Nebula sidecar, which shares the coordinator's
+network namespace and so needs the coordinator running before it can create the
+interface.
 
-Run once on the operator host (requires `DATABASE_URL` for the CA-seed record):
+Readiness is reported on the coordinator-only metrics listener:
 
 ```sh
-novactl node ca-init \
-  --out-ca-cert   /etc/nova/federation/federation-ca.crt \
-  --out-ca-key    /run/secrets/nova_ca_key \
-  --out-coord-cert /etc/nova/federation/coordinator-federation.crt \
-  --out-coord-key  /run/secrets/nova_coordinator_federation_key
+curl -s http://127.0.0.1:2112/readyz
 ```
 
-This produces:
-- `federation-ca.{crt,key}` — the operator CA (keep the key offline or in a
-  secrets manager; only the `.crt` needs to be distributed to donors).
-- `coordinator-federation.{crt,key}` — the coordinator's mTLS identity; point
-  `operator.yaml` `federation_cert_path` / `federation_key_path` at these.
+`operator.yaml` is read once at boot. Changing the `federation:` block requires
+recreating the coordinator; it is not hot-reloaded.
 
-## Nebula sidecar
+## Port vocabulary
 
-The coordinator runs a Nebula sidecar (same pattern as donors). The federation
-listener binds the overlay address only. The `nebula_interface` guard enforces
-this at boot — the process exits if the named interface is absent or the
-`listen_addr` is not on it.
+| Port | Purpose |
+|---|---|
+| `4242/udp` | Nebula lighthouse / rendezvous |
+| `9443/tcp` | coordinator federation mTLS, overlay only |
+| `9555/tcp` | donor read-source mTLS, overlay only |
 
-## Provisioning and revoking donors
+The public nginx HTTPS port is separate and means nothing else.
 
-Issue a new donor cert (requires `DATABASE_URL`):
+## Two trust roots
+
+Nebula PKI and Nova federation mTLS are **separate** and not interchangeable:
+
+- **Nebula** certificates authorize membership of the overlay *network*.
+- **Nova federation** certificates authorize the Nova *HTTP API*.
+
+Neither CA private key may leave operator custody, and neither belongs in a
+donor bundle.
+
+## Certificate primitives
+
+These are low-level building blocks. They are pure local file operations and do
+**not** need `DATABASE_URL`.
 
 ```sh
-novactl node issue --node-id <uuid> \
-  --ca-cert /etc/nova/federation/federation-ca.crt \
-  --ca-key  /run/secrets/nova_ca_key \
-  --out-cert /tmp/donor-federation.crt \
-  --out-key  /tmp/donor-federation.key
+novactl node ca-init --dir /etc/nova/federation \
+  --coordinator-ip 10.42.0.1 --coordinator-dns nova.example.org
+
+novactl node issue --dir /etc/nova/federation --name alice-desktop --out ./alice
+
+novactl node issue-coordinator-client --dir /etc/nova/federation --out ./coordinator-client
+
+novactl node nebula-template --name alice-desktop --nebula-ip 10.42.0.10/24 \
+  --image ghcr.io/nova-archive/nova-node@sha256:REPLACE --out ./alice
 ```
 
-Generate a Nebula config template for the donor:
+`node issue` **generates** the node id; it is not caller-supplied.
+`node nebula-template` requires a digest-pinned `--image` — generated artifacts
+must never carry a mutable tag.
 
-```sh
-novactl node nebula-template --node-id <uuid> --out /tmp/donor-nebula-config.yaml
-```
+## Registry commands
 
-List registered nodes:
+These are DB-direct and **do** require `DATABASE_URL`.
 
 ```sh
 novactl node list
+
+novactl node revoke --id <uuid>
+
+novactl node rotate-cert --id <uuid> --dir /etc/nova/federation
+
+novactl node set-domain --id <uuid> --provider example-vps --asn 64500 --region us-east
+
+novactl node drain --id <uuid>
+novactl node undrain --id <uuid>
 ```
 
-Revoke a compromised cert (marks the node revoked in the DB; coordinator
-enforces at the next heartbeat):
+Revocation is enforced at the node's next request. Cert rotation is a downtime
+cutover: the old certificate is refused as soon as the new fingerprint is
+stored, so the donor must restart with the replacement bundle.
 
-```sh
-novactl node revoke --node-id <uuid>
-```
-
-Rotate a donor's federation cert (issues replacement, marks old cert revoked):
-
-```sh
-novactl node rotate-cert --node-id <uuid> \
-  --ca-cert /etc/nova/federation/federation-ca.crt \
-  --ca-key  /run/secrets/nova_ca_key
-```
-
-All `novactl node` subcommands connect to the database via `DATABASE_URL`.
+For the drain-vs-revoke-vs-suspend decision and the safe-to-revoke conditions,
+see `docs/runbooks/donor-lifecycle.md`.

@@ -75,7 +75,7 @@ type configSetResponse struct {
 func cmdConfigGet(args []string) error {
 	fs := flag.NewFlagSet("config get", flag.ContinueOnError)
 	effects := fs.Bool("effects", false, "also print per-field effect and source information")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -136,7 +136,7 @@ func cmdConfigGet(args []string) error {
 func cmdConfigSet(args []string) error {
 	fs := flag.NewFlagSet("config set", flag.ContinueOnError)
 	rawJSON := fs.Bool("json", false, "treat value as raw JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -197,7 +197,7 @@ func cmdConfigSet(args []string) error {
 func cmdConfigApply(args []string) error {
 	fs := flag.NewFlagSet("config apply", flag.ContinueOnError)
 	configFile := fs.String("config-file", "", "path to YAML config file (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if *configFile == "" {

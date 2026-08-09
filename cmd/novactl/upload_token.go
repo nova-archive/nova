@@ -48,7 +48,7 @@ func cmdUploadTokenCreate(args []string) error {
 	product := fs.String("product", "", "allowed product type: image/video/audio/archive/document/raw")
 	maxFileSize := fs.Int64("max-file-size", 0, "maximum file size in bytes (0 = server default)")
 	expires := fs.String("expires", "", "token lifetime as a Go duration, e.g. 720h (30 days); 'd' unit not supported")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -163,7 +163,7 @@ func cmdUploadTokenRevoke(args []string) error {
 	id := args[0]
 	fs := flag.NewFlagSet("upload-token revoke", flag.ContinueOnError)
 	noConfirm := fs.Bool("no-confirm", false, "skip the confirmation prompt")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		return err
 	}
 

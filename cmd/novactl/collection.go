@@ -31,7 +31,7 @@ func cmdCollectionCreate(args []string) error {
 	visibility := fs.String("visibility", "public", "public|unlisted|private")
 	owner := fs.String("owner", "", "owner user UUID (default: the sole operator user)")
 	publicArchival := fs.Bool("public-archival", false, "opt out of envelope encryption (requires --visibility public)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if *name == "" || *slug == "" {

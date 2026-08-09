@@ -18,6 +18,9 @@ import (
 
 // withNodeDB opens a pool from DATABASE_URL and runs fn with queries.
 func withNodeDB(fn func(ctx context.Context, q *gen.Queries) error) error {
+	if checkFlagsOnly {
+		return errCheckFlagsOK // --check-flags: never open a database
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return errors.New("DATABASE_URL must be set for node registry commands")
@@ -32,6 +35,9 @@ func withNodeDB(fn func(ctx context.Context, q *gen.Queries) error) error {
 }
 
 func withNodeDBPool(fn func(ctx context.Context, pool *pgxpool.Pool) error) error {
+	if checkFlagsOnly {
+		return errCheckFlagsOK // --check-flags: never open a database
+	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return errors.New("DATABASE_URL must be set for pin commands")
@@ -69,7 +75,7 @@ func cmdNodeRevoke(args []string) error {
 	fs := flag.NewFlagSet("node revoke", flag.ContinueOnError)
 	idStr := fs.String("id", "", "node id (uuid)")
 	noConfirm := fs.Bool("no-confirm", false, "skip confirmation")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	pgID, err := parsePGUUID(*idStr)
@@ -111,7 +117,7 @@ func cmdNodeRotateCert(args []string) error {
 	dir := fs.String("dir", ".", "directory holding federation-ca.crt + federation-ca.key")
 	name := fs.String("name", "donor", "donor display name for the new cert")
 	out := fs.String("out", "", "output dir for the replacement bundle (default ./<id>-rotated)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	id, err := uuid.Parse(*idStr)
@@ -175,7 +181,7 @@ func cmdNodeSetDomain(args []string) error {
 	provider := fs.String("provider", "", "operator-verified hosting provider")
 	asn := fs.String("asn", "", "operator-verified ASN")
 	region := fs.String("region", "", "operator-verified region")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	pgID, err := parsePGUUID(*idStr)

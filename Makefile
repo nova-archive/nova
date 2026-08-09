@@ -94,6 +94,22 @@ gen-deploy-check:
 deploy-gates:
 	go test ./internal/deploy/... -count=1
 
+.PHONY: docs-cli-check port-vocabulary-check no-mutable-tags-check artifact-gates
+# P2-M7.2 D-M7.2-10: docs rot is what produced the federation productization
+# finding — six sources of truth that had already diverged, with no test
+# noticing. These make that class of drift a build failure.
+docs-cli-check:
+	./scripts/check-docs-cli.sh
+
+port-vocabulary-check:
+	./scripts/check-port-vocabulary.sh
+
+no-mutable-tags-check:
+	./scripts/check-no-mutable-tags.sh
+
+# Everything the deployment-artifacts CI job runs, in one local target.
+artifact-gates: gen-deploy-check deploy-gates docs-cli-check port-vocabulary-check no-mutable-tags-check
+
 .PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
 
 sqlc-generate:
