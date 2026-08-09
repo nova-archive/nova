@@ -47,6 +47,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -400,6 +401,15 @@ func run() error {
 	// branch would silently federation-gate observability). Bind happens HERE,
 	// synchronously — a bind failure while enabled is startup-fatal.
 	runs := []func(context.Context) error{c.Run}
+
+	// P2-M7.2 (D-M7.2-8c): federation readiness is tracked from here so /readyz
+	// can report "waiting for nebula1" before the federation block below runs.
+	var fedIface string
+	if opCfg != nil {
+		fedIface = opCfg.Federation.NebulaInterface
+	}
+	fedReady := newFederationReadiness(fedIface)
+
 	var mtr *metrics.Metrics
 	if addr, enabled := resolveMetricsListenAddr(opCfg, os.LookupEnv); enabled {
 		floor := config.DefaultReputationFloor
@@ -414,12 +424,19 @@ func run() error {
 			return fmt.Errorf("metrics_listen_addr: %w", err)
 		}
 		slog.Info("metrics listener bound", "listen", mln.Addr().String())
+		// P2-M7.2 (D-M7.2-8c): /readyz rides the operator-only metrics listener
+		// alongside /metrics. It must NOT go on the public vhost — /health is
+		// pure liveness by contract and the overlay address is topology.
+		mmux := http.NewServeMux()
+		mmux.Handle("/metrics", mtr.Handler())
+		mmux.HandleFunc("/readyz", fedReady.Handler())
 		runs = append(runs, func(ctx context.Context) error {
-			return metrics.ServeListener(ctx, mln, mtr.Handler())
+			return metrics.ServeListener(ctx, mln, mmux)
 		})
 	}
 	if mtr != nil {
 		c.Storage().SetReadObserver(metricsReadObserver{mtr})
+		fedReady.SetObserver(mtr.ObserveFederationReady)
 	}
 
 	// Federation control channel (P2-M2). Enabled when operator.yaml sets
@@ -509,10 +526,39 @@ func run() error {
 			})
 			slog.Info("federation client identity loaded; donor-backed read tier enabled")
 		}
-		if err := fedSrv.Listen(); err != nil {
-			return fmt.Errorf("federation listen %s: %w", fed.ListenAddr, err)
+		// P2-M7.2 (D-M7.2-8b): bind-or-degrade, bounded. The Nebula sidecar runs
+		// with network_mode "service:coordinator", so it cannot create nebula1
+		// until THIS process is already running. Exiting on a missing interface
+		// therefore deadlocks the documented enable path and flaps the sidecar's
+		// attach target. Wait boundedly; on timeout stay alive and serving with
+		// federation not ready. Teardown-as-a-unit still holds for a listener
+		// that binds and later fails — only the initial bind is retryable.
+		bindFederation := func(ctx context.Context) error {
+			if fed.NebulaInterface != "" && !dev {
+				wait := fed.InterfaceWaitTimeout()
+				slog.Info("federation.listener.waiting",
+					"iface", fed.NebulaInterface, "listen", fed.ListenAddr, "timeout", wait)
+				if err := config.WaitForInterfaceAddr(ctx, fed.NebulaInterface, fed.ListenAddr, wait, time.Second); err != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					slog.Error("federation.listener.wait_timeout",
+						"iface", fed.NebulaInterface, "listen", fed.ListenAddr, "err", err)
+					fedReady.Set(false)
+					<-ctx.Done() // degraded, NOT fatal: hold the slot without exiting
+					return ctx.Err()
+				}
+			}
+			if err := fedSrv.Listen(); err != nil {
+				slog.Error("federation.listener.bind_failed", "listen", fed.ListenAddr, "err", err)
+				fedReady.Set(false)
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			slog.Info("federation listener bound", "listen", fedSrv.Addr())
+			fedReady.SetBound(fedSrv.Addr(), fed.NebulaInterface)
+			return fedSrv.Run(ctx)
 		}
-		slog.Info("federation listener bound", "listen", fedSrv.Addr())
 
 		// P2-M5 healing orchestrator: single-leader liveness sweep + reconcile drain
 		// + healing tick. Runs alongside the federation listener; it owns no durable
@@ -632,7 +678,7 @@ func run() error {
 			})
 			go psched.Run(ctx) // Run() already calls ReconcileOnStartup internally.
 		}
-		runs = append(runs, fedSrv.Run, func(ctx context.Context) error { orch.Run(ctx); return nil })
+		runs = append(runs, bindFederation, func(ctx context.Context) error { orch.Run(ctx); return nil })
 	}
 	return runBoth(ctx, runs...)
 }

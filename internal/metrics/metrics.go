@@ -27,6 +27,7 @@ type Metrics struct {
 	egressRefusals    *prometheus.CounterVec // reason
 	sourceSelFailures *prometheus.CounterVec // reason
 	belowFloorRequeue prometheus.Counter     // CIDs requeued by the below-floor sweep
+	federationReady   prometheus.Gauge       // 1 when the federation listener is bound
 }
 
 // New builds the registry. belowFloorGraceSecs is the P2-M7.1
@@ -67,9 +68,13 @@ func New(pool *pgxpool.Pool, reputationFloor, belowFloorGraceSecs float64) *Metr
 		Name: "nova_below_floor_requeued_total",
 		Help: "CIDs enqueued for re-replication by the below-floor sweep (process-local; resets on restart).",
 	})
+	m.federationReady = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "nova_federation_listener_ready",
+		Help: "1 when the federation mTLS listener is bound to the overlay, 0 while waiting or degraded (P2-M7.2).",
+	})
 	m.reg.MustRegister(m.registerFailures, m.trustTransitions, m.reputationMoved,
 		m.auditLatency, m.donorFetch, m.donorFetchLatency, m.egressRefusals,
-		m.sourceSelFailures, m.belowFloorRequeue,
+		m.sourceSelFailures, m.belowFloorRequeue, m.federationReady,
 		newDBCollector(pool, reputationFloor, belowFloorGraceSecs))
 	return m
 }
@@ -101,6 +106,16 @@ func (m *Metrics) ObserveSourceSelectionFailure(reason string) {
 }
 
 // ObserveBelowFloorRequeue records n CIDs enqueued by one below-floor sweep.
+// ObserveFederationReady records whether the federation listener is bound
+// (P2-M7.2 D-M7.2-8c). No labels: readiness is a single process-wide fact.
+func (m *Metrics) ObserveFederationReady(ready bool) {
+	if ready {
+		m.federationReady.Set(1)
+		return
+	}
+	m.federationReady.Set(0)
+}
+
 func (m *Metrics) ObserveBelowFloorRequeue(n int) {
 	if n > 0 {
 		m.belowFloorRequeue.Add(float64(n))
