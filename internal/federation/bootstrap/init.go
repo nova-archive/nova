@@ -377,3 +377,8 @@ func readManifest(activeDir string) (Manifest, error) {
 	}
 	return mf, nil
 }
+
+// ReadManifest reads the non-secret manifest from an active PKI directory.
+// doctor and invite read addresses and fingerprints from here rather than
+// re-deriving them from key material.
+func ReadManifest(activeDir string) (Manifest, error) { return readManifest(activeDir) }

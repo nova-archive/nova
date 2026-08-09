@@ -375,3 +375,12 @@ func fingerprintBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
+
+// certPoolFromPEM builds a pool from a PEM bundle.
+func certPoolFromPEM(pemBytes []byte) (*x509.CertPool, error) {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("no certificates found in PEM bundle")
+	}
+	return pool, nil
+}

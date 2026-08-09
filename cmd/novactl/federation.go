@@ -11,6 +11,8 @@ func cmdFederation(args []string) error {
 	switch args[0] {
 	case "init":
 		return cmdFederationInit(args[1:])
+	case "doctor":
+		return cmdFederationDoctor(args[1:])
 	case "compose-policy":
 		return cmdFederationComposePolicy(args[1:])
 	case "--help", "-h", "help":

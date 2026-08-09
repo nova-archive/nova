@@ -111,6 +111,14 @@ no-mutable-tags-check:
 compose-custody-check:
 	./scripts/check-compose-custody.sh
 
+# P2-M7.2 D-M7.2-3: all three doctor planes, one consolidated report. Plane B
+# needs the coordinator network namespace, so it runs via the nova-doctor
+# service; Plane C is a static check over the rendered compose definition.
+.PHONY: federation-doctor
+federation-doctor:
+	@go run ./cmd/novactl federation doctor || true
+	@$(MAKE) --no-print-directory compose-custody-check
+
 # Everything the deployment-artifacts CI job runs, in one local target.
 artifact-gates: gen-deploy-check deploy-gates docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check
 
