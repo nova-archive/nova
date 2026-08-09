@@ -1,0 +1,91 @@
+# Nova operator federation overlay (P2-M7.2).
+#
+# Apply ON TOP of docker/docker-compose.yml:
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f deploy/operator/compose.federation.yaml \
+#                  --profile prod --profile federation up -d
+#
+# The base stack is UNCHANGED by this file apart from publishing the Nebula
+# lighthouse port. An operator who never enables federation sees no difference.
+#
+# Custody model: the federation and Nebula CA keys live in nova-fedpki, which
+# ONLY nova-admin mounts. The coordinator and Nebula get their own runtime
+# identities and never hold issuance authority — verified structurally by
+# `novactl federation compose-policy`, not by inspecting running containers.
+
+services:
+  # The coordinator itself is untouched except for the lighthouse port. Nebula
+  # shares this container's network namespace (see below), so UDP/4242 must be
+  # published here rather than on the nebula service.
+  coordinator:
+    ports:
+      - "4242:4242/udp"
+
+  nebula:
+    profiles: ["federation"]
+    image: nebulaoss/nebula:1.11.0@sha256:1bee6515faf687e590ab42e14a769d406bf1dc59cb03e21520ae50669adc0581
+    # Share the coordinator's network namespace so nebula1 appears INSIDE the
+    # coordinator without giving the coordinator NET_ADMIN and without changing
+    # its Docker network identity (which would break the nginx upstream and the
+    # Postgres connection).
+    #
+    # This is why the coordinator waits for nebula1 rather than failing on it:
+    # this container cannot attach until the coordinator is already running, so
+    # a fail-fast coordinator would deadlock its own sidecar. See D-M7.2-8a.
+    network_mode: "service:coordinator"
+    depends_on:
+      - coordinator
+    cap_add: ["NET_ADMIN"]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      # Runtime identity only. The Nebula CA KEY stays in nova-fedpki.
+      - nova-config:/etc/nebula:ro
+      - nova-secrets:/run/secrets:ro
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  # Run-to-completion administrative tooling. Holds issuance authority; never a
+  # daemon. Invoked as:
+  #   docker compose --profile federation run --rm nova-admin <args>
+  nova-admin:
+    profiles: ["federation"]
+    build:
+      context: ..
+      dockerfile: docker/admin.Dockerfile
+    image: nova-admin:dev
+    environment:
+      DATABASE_URL: "postgres://nova:${POSTGRES_PASSWORD}@postgres:5432/nova?sslmode=disable"
+    volumes:
+      - nova-config:/etc/nova
+      - nova-secrets:/run/secrets
+      # The ONLY mount of issuance authority anywhere in the deployment.
+      - nova-fedpki:/var/lib/nova/fedpki
+      # Bundle output, and the read-only adoption path for an existing
+      # hand-built PKI (--adopt-from /import).
+      - ./invites:/invites
+      - ./import:/import:ro
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    restart: "no"
+
+  # Live overlay diagnosis. Shares the coordinator's network namespace so it can
+  # observe nebula1 and probe the federation listener. Deliberately does NOT
+  # mount nova-fedpki: an mTLS probe needs the CA CERTIFICATE and the
+  # coordinator CLIENT identity, never a CA key.
+  nova-doctor:
+    profiles: ["federation"]
+    build:
+      context: ..
+      dockerfile: docker/admin.Dockerfile
+    image: nova-admin:dev
+    network_mode: "service:coordinator"
+    depends_on:
+      - coordinator
+    volumes:
+      - nova-config:/etc/nova:ro
+      - nova-secrets:/run/secrets:ro
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    restart: "no"

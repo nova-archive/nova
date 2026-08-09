@@ -302,3 +302,9 @@ volumes:
     driver: local
   nova-letsencrypt:
     driver: local
+  # P2-M7.2: admin-only federation PKI. Declared here so the volume exists,
+  # but mounted ONLY by nova-admin in deploy/operator/compose.federation.yaml.
+  # No long-running service may mount it — issuance authority never enters a
+  # daemon container. The compose-custody gate enforces that structurally.
+  nova-fedpki:
+    driver: local

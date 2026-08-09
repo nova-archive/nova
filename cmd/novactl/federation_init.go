@@ -22,6 +22,10 @@ func cmdFederationInit(args []string) error {
 	hostname := fs.String("hostname", "", "coordinator hostname for the server certificate SAN (required)")
 	adoptFrom := fs.String("adopt-from", "", "read-only directory holding an existing hand-built PKI to adopt")
 	skipPreflight := fs.Bool("skip-preflight", false, "skip /dev/net/tun and route-conflict checks")
+	runtimeConfig := fs.String("runtime-config-dir", "/etc/nova",
+		"config volume: runtime certificates are installed here (CA keys never are)")
+	runtimeSecrets := fs.String("runtime-secrets-dir", "/run/secrets",
+		"secrets volume: runtime private keys are installed here (CA keys never are)")
 
 	// Destructive. Deliberately not spelled --force: overwriting generated
 	// config and destroying a federation CA are not the same act.
@@ -42,6 +46,8 @@ func cmdFederationInit(args []string) error {
 		Hostname:                  *hostname,
 		AdoptFrom:                 *adoptFrom,
 		SkipPreflight:             *skipPreflight,
+		RuntimeConfigDir:          *runtimeConfig,
+		RuntimeSecretsDir:         *runtimeSecrets,
 		ReplaceAuthority:          *replace,
 		DestroyExistingFederation: *destroy,
 		RegisteredDonorCount:      registeredDonorCount,

@@ -417,3 +417,67 @@ func TestPackageNeverTouchesTheDatabase(t *testing.T) {
 		}
 	}
 }
+
+// --- runtime custody split -------------------------------------------------
+
+// TestInstallRuntime_CopiesIdentitiesButNeverCAKeys is the filesystem half of
+// the custody model. No long-running service mounts the PKI volume, so runtime
+// identities must be copied out — but the two CA private keys must not be.
+func TestInstallRuntime_CopiesIdentitiesButNeverCAKeys(t *testing.T) {
+	root := t.TempDir()
+	cfg, secrets := t.TempDir(), t.TempDir()
+
+	p := baseParams(root)
+	p.RuntimeConfigDir = cfg
+	p.RuntimeSecretsDir = secrets
+	if _, err := bootstrap.Init(p); err != nil {
+		t.Fatal(err)
+	}
+
+	// The coordinator must be able to read these.
+	for _, rel := range []string{
+		filepath.Join("federation", bootstrap.FileFederationCACert),
+		filepath.Join("federation", bootstrap.FileCoordinatorCert),
+		filepath.Join("federation", bootstrap.FileClientCert),
+		filepath.Join("nebula", bootstrap.FileNebulaCACert),
+	} {
+		if _, err := os.Stat(filepath.Join(cfg, rel)); err != nil {
+			t.Errorf("runtime config is missing %s", rel)
+		}
+	}
+	for _, name := range []string{
+		bootstrap.RuntimeCoordinatorKey, bootstrap.RuntimeClientKey,
+		bootstrap.RuntimeRepairKey, bootstrap.RuntimeSwarmKey,
+	} {
+		info, err := os.Stat(filepath.Join(secrets, name))
+		if err != nil {
+			t.Errorf("runtime secrets is missing %s", name)
+			continue
+		}
+		if mode := info.Mode().Perm(); mode&0o077 != 0 {
+			t.Errorf("%s mode = %o, want no group/other access", name, mode)
+		}
+	}
+
+	// And the CA keys must NOT have travelled.
+	for _, dir := range []string{cfg, secrets} {
+		for _, name := range []string{bootstrap.FileFederationCAKey, bootstrap.FileNebulaCAKey} {
+			if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+				t.Errorf("%s escaped into the runtime volume %s", name, dir)
+			}
+		}
+	}
+	if err := bootstrap.AssertNoCAKeysInRuntime(cfg, secrets); err != nil {
+		t.Fatalf("custody assertion failed: %v", err)
+	}
+}
+
+func TestAssertNoCAKeysInRuntime_CatchesALeakedCAKey(t *testing.T) {
+	secrets := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secrets, bootstrap.FileFederationCAKey), []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := bootstrap.AssertNoCAKeysInRuntime("", secrets); err == nil {
+		t.Fatal("a CA key under a runtime volume must be a custody violation")
+	}
+}

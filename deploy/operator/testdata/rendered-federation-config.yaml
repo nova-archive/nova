@@ -1,0 +1,360 @@
+name: nova
+services:
+  certbot:
+    profiles:
+      - prod
+    cap_add:
+      - DAC_OVERRIDE
+    cap_drop:
+      - ALL
+    container_name: nova-certbot
+    entrypoint:
+      - /bin/sh
+      - /certbot-loop.sh
+    environment:
+      NOVA_CONTACT_EMAIL: ""
+      NOVA_HOSTNAME: ""
+    healthcheck:
+      test:
+        - CMD
+        - pgrep
+        - -f
+        - certbot-loop.sh
+      timeout: 5s
+      interval: 30s
+      retries: 3
+      start_period: 30s
+    image: certbot/certbot:latest@sha256:0107d084c225631fc64a8313e19adb07275f7296fde338f7dfa93986c80b2e3e
+    networks:
+      default: null
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - type: bind
+        source: /home/archbug/projects/nova/docker/certbot/certbot-loop.sh
+        target: /certbot-loop.sh
+        read_only: true
+        bind: {}
+      - type: volume
+        source: nova-config
+        target: /etc/nova
+        volume: {}
+      - type: volume
+        source: nova-letsencrypt
+        target: /etc/letsencrypt
+        volume: {}
+      - type: volume
+        source: acme-webroot
+        target: /var/lib/certbot/webroot
+        volume: {}
+  coordinator:
+    build:
+      context: /home/archbug/projects/nova
+      dockerfile: docker/coordinator.Dockerfile
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_READ_SEARCH
+    cap_drop:
+      - ALL
+    container_name: nova-coordinator
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+    environment:
+      DATABASE_URL: postgres://nova:0b0105b3abd60bba4a0f2459ccd4da63@postgres:5432/nova?sslmode=disable
+      IPFS_SWARM_KEY_FILE: /run/secrets/swarm.key
+      NOVA_CONFIG_DIR: /etc/nova
+      NOVA_CONFIG_FILE: /etc/nova/operator.yaml
+      NOVA_KUBO_REPO: /var/lib/nova/kubo
+      NOVA_LISTEN_ADDR: :9000
+      NOVA_MASTER_KEY_ACTIVE: v1
+      NOVA_OIDC_SIGNING_KEY_FILE: /run/secrets/oidc-signing-key
+      NOVA_PUBLIC_UPLOADS: ""
+      NOVA_SECRETS_DIR: /run/secrets
+      NOVA_TOS_URL: ""
+      NOVA_TRUSTED_PROXIES: 127.0.0.1/32,::1/128
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://127.0.0.1:9000/health
+      timeout: 5s
+      interval: 30s
+      retries: 3
+      start_period: 30s
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 4242
+        published: "4242"
+        protocol: udp
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: volume
+        source: nova-config
+        target: /etc/nova
+        volume: {}
+      - type: volume
+        source: nova-secrets
+        target: /run/secrets
+        volume: {}
+      - type: volume
+        source: nova-kubo
+        target: /var/lib/nova/kubo
+        volume: {}
+      - type: volume
+        source: nova-tmp
+        target: /var/tmp/nova-uploads
+        volume: {}
+  nebula:
+    profiles:
+      - federation
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      coordinator:
+        condition: service_started
+        required: true
+    devices:
+      - source: /dev/net/tun
+        target: /dev/net/tun
+        permissions: rwm
+    image: nebulaoss/nebula:1.11.0@sha256:1bee6515faf687e590ab42e14a769d406bf1dc59cb03e21520ae50669adc0581
+    network_mode: service:coordinator
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - type: volume
+        source: nova-config
+        target: /etc/nebula
+        read_only: true
+        volume: {}
+      - type: volume
+        source: nova-secrets
+        target: /run/secrets
+        read_only: true
+        volume: {}
+  nginx:
+    profiles:
+      - prod
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_READ_SEARCH
+    cap_drop:
+      - ALL
+    command:
+      - /bin/sh
+      - /cert-watch.sh
+    container_name: nova-nginx
+    depends_on:
+      coordinator:
+        condition: service_started
+        required: true
+    healthcheck:
+      test:
+        - CMD
+        - nginx
+        - -t
+      timeout: 5s
+      interval: 30s
+      retries: 3
+      start_period: 30s
+    image: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 80
+        published: "8442"
+        protocol: tcp
+      - mode: ingress
+        target: 443
+        published: "8443"
+        protocol: tcp
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 8445
+        published: "8445"
+        protocol: tcp
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /var/cache/nginx
+      - /run
+      - /tmp
+    volumes:
+      - type: bind
+        source: /home/archbug/projects/nova/docker/nginx/include-nova.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+        bind: {}
+      - type: bind
+        source: /home/archbug/projects/nova/docker/nginx/cert-watch.sh
+        target: /cert-watch.sh
+        read_only: true
+        bind: {}
+      - type: volume
+        source: nova-config
+        target: /etc/nova
+        read_only: true
+        volume: {}
+      - type: volume
+        source: acme-webroot
+        target: /var/lib/certbot/webroot
+        read_only: true
+        volume: {}
+  nova-admin:
+    profiles:
+      - federation
+    build:
+      context: /home/archbug/projects/nova
+      dockerfile: docker/admin.Dockerfile
+    cap_drop:
+      - ALL
+    environment:
+      DATABASE_URL: postgres://nova:0b0105b3abd60bba4a0f2459ccd4da63@postgres:5432/nova?sslmode=disable
+    image: nova-admin:dev
+    networks:
+      default: null
+    restart: 'no'
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - type: volume
+        source: nova-config
+        target: /etc/nova
+        volume: {}
+      - type: volume
+        source: nova-secrets
+        target: /run/secrets
+        volume: {}
+      - type: volume
+        source: nova-fedpki
+        target: /var/lib/nova/fedpki
+        volume: {}
+      - type: bind
+        source: /home/archbug/projects/nova/docker/invites
+        target: /invites
+        bind: {}
+      - type: bind
+        source: /home/archbug/projects/nova/docker/import
+        target: /import
+        read_only: true
+        bind: {}
+  nova-doctor:
+    profiles:
+      - federation
+    build:
+      context: /home/archbug/projects/nova
+      dockerfile: docker/admin.Dockerfile
+    cap_drop:
+      - ALL
+    depends_on:
+      coordinator:
+        condition: service_started
+        required: true
+    image: nova-admin:dev
+    network_mode: service:coordinator
+    restart: 'no'
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - type: volume
+        source: nova-config
+        target: /etc/nova
+        read_only: true
+        volume: {}
+      - type: volume
+        source: nova-secrets
+        target: /run/secrets
+        read_only: true
+        volume: {}
+  postgres:
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    cap_drop:
+      - ALL
+    container_name: nova-postgres
+    environment:
+      POSTGRES_DB: nova
+      POSTGRES_INITDB_ARGS: --locale=C --encoding=UTF8
+      POSTGRES_PASSWORD: 0b0105b3abd60bba4a0f2459ccd4da63
+      POSTGRES_USER: nova
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U nova -d nova
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 30s
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        host_ip: 127.0.0.1
+        target: 5432
+        published: "5432"
+        protocol: tcp
+    read_only: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /run/postgresql
+    volumes:
+      - type: volume
+        source: postgres-data
+        target: /var/lib/postgresql/data
+        volume: {}
+networks:
+  default:
+    name: nova_default
+volumes:
+  acme-webroot:
+    name: nova_acme-webroot
+    driver: local
+  nova-config:
+    name: nova_nova-config
+    driver: local
+  nova-fedpki:
+    name: nova_nova-fedpki
+    driver: local
+  nova-kubo:
+    name: nova_nova-kubo
+    driver: local
+  nova-letsencrypt:
+    name: nova_nova-letsencrypt
+    driver: local
+  nova-secrets:
+    name: nova_nova-secrets
+    driver: local
+  nova-tmp:
+    name: nova_nova-tmp
+    driver: local
+  postgres-data:
+    name: nova_postgres-data
+    driver: local

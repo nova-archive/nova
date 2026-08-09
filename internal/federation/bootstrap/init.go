@@ -58,6 +58,13 @@ type Params struct {
 	DestroyExistingFederation bool
 	RegisteredDonorCount      func() (int, error)
 
+	// Runtime destinations. Runtime identities are copied out of the admin-only
+	// PKI volume into these, because no long-running service mounts the PKI
+	// volume — the coordinator could not otherwise read its own certificate.
+	// CA private keys are never copied (D-M7.2-2 step 8).
+	RuntimeConfigDir  string
+	RuntimeSecretsDir string
+
 	// SkipPreflight bypasses /dev/net/tun and route-conflict checks (tests).
 	SkipPreflight bool
 
@@ -215,6 +222,14 @@ func Init(p Params) (Result, error) {
 
 	_ = stage.Discard()
 	if err := DiscardOrphans(p.Root, ""); err != nil {
+		return res, err
+	}
+
+	if err := InstallRuntime(p.Root, p.RuntimeConfigDir, p.RuntimeSecretsDir); err != nil {
+		return res, err
+	}
+	// Belt and braces: prove the custody split actually held on disk.
+	if err := AssertNoCAKeysInRuntime(p.RuntimeConfigDir, p.RuntimeSecretsDir); err != nil {
 		return res, err
 	}
 
