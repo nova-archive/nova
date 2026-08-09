@@ -9,6 +9,8 @@ func cmdFederation(args []string) error {
 		return fmt.Errorf("usage: novactl federation <init|doctor|compose-policy>")
 	}
 	switch args[0] {
+	case "init":
+		return cmdFederationInit(args[1:])
 	case "compose-policy":
 		return cmdFederationComposePolicy(args[1:])
 	case "--help", "-h", "help":
