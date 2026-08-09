@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -84,42 +85,63 @@ func run(args []string, stdout, stderr io.Writer) error {
 // EXISTING federation cert/key/CA, but here as the SERVER side
 // (RequireAndVerifyClientCert) so only the coordinator's federation cert is
 // accepted.
-func startReadSource(
-	cfg *nodeconfig.Config,
-	caPEM, certPEM, keyPEM []byte,
-	regStore state.RegistrationStore,
-	pinner source.Pinner,
-	auditBlocks source.AuditBlockReader,
-	progress source.ProgressLookup,
-	keyProvider source.PubKeyProvider,
-) (*http.Server, net.Listener, bool, error) {
-	if cfg.SourceReadListenAddr == "" {
-		return nil, nil, false, nil // read-source not configured: replication-only
+// readSourceStarter owns the read-source server's lifecycle so it can be
+// started from either the boot path (a persisted registration exists) or the
+// agent's onRegistered hook (first boot), without the two racing.
+//
+// Before P2-M7.2 this decision was made once at boot: an unregistered donor
+// logged node.source.deferred and never started, and since registration happens
+// later inside Agent.Run, a first-boot donor could not serve until the operator
+// restarted the process. A restart is a recovery action, not a protocol step
+// (D-M7.2-7).
+type readSourceStarter struct {
+	cfg         *nodeconfig.Config
+	caPEM       []byte
+	certPEM     []byte
+	keyPEM      []byte
+	pinner      source.Pinner
+	auditBlocks source.AuditBlockReader
+	progress    source.ProgressLookup
+	keyProvider source.PubKeyProvider
+	stdout      io.Writer
+	srvErr      chan error
+
+	mu      sync.Mutex
+	started bool
+	srv     *http.Server
+	listens int // test seam: counts successful binds
+}
+
+// Start is idempotent — the second and later calls are no-ops. It is safe to
+// call concurrently from the boot path and the registration hook.
+func (s *readSourceStarter) Start(nodeID string) error {
+	if s.cfg.SourceReadListenAddr == "" {
+		return nil // read-source not configured: replication-only donor
 	}
-	reg, ok, err := regStore.LoadRegistration(context.Background())
+	if nodeID == "" {
+		return nil // nothing to bind grants to yet
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started {
+		return nil
+	}
+
+	tlsCfg, err := transport.ServerTLSConfig(s.caPEM, s.certPEM, s.keyPEM)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("read-source: load registration: %w", err)
-	}
-	if !ok || reg.NodeID == "" {
-		// Not yet registered: the source server would refuse every request
-		// (node_id binding can't match). Start it on the next boot instead.
-		slog.Info("node.source.deferred", "reason", "not_registered_yet")
-		return nil, nil, false, nil
-	}
-	tlsCfg, err := transport.ServerTLSConfig(caPEM, certPEM, keyPEM)
-	if err != nil {
-		return nil, nil, false, fmt.Errorf("read-source server tls: %w", err)
+		return fmt.Errorf("read-source server tls: %w", err)
 	}
 	handler := source.NewServer(source.Deps{
-		Pinner:      pinner,
-		Budget:      bandwidth.NewDailyBucket(cfg.EgressBudgetBytesPerDay, time.Now()),
-		PubKey:      keyProvider,
-		Progress:    progress,
-		NodeID:      reg.NodeID,
+		Pinner:      s.pinner,
+		Budget:      bandwidth.NewDailyBucket(s.cfg.EgressBudgetBytesPerDay, time.Now()),
+		PubKey:      s.keyProvider,
+		Progress:    s.progress,
+		NodeID:      nodeID,
 		BootTime:    time.Now(),
 		ReplayCache: replay.New(),
-		AuditBlocks: auditBlocks,
-		AuditBudget: bandwidth.NewDailyBucket(int64(float64(cfg.EgressBudgetBytesPerDay)*cfg.AuditBudgetFraction), time.Now()),
+		AuditBlocks: s.auditBlocks,
+		AuditBudget: bandwidth.NewDailyBucket(int64(float64(s.cfg.EgressBudgetBytesPerDay)*s.cfg.AuditBudgetFraction), time.Now()),
 	})
 	srv := &http.Server{
 		Handler:           handler,
@@ -127,12 +149,37 @@ func startReadSource(
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	inner, err := net.Listen("tcp", cfg.SourceReadListenAddr)
+	inner, err := net.Listen("tcp", s.cfg.SourceReadListenAddr)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("read-source listen %s: %w", cfg.SourceReadListenAddr, err)
+		return fmt.Errorf("read-source listen %s: %w", s.cfg.SourceReadListenAddr, err)
 	}
 	ln := transport.NewTLSListener(inner, tlsCfg)
-	return srv, ln, true, nil
+
+	s.started, s.srv = true, srv
+	s.listens++
+	if s.stdout != nil {
+		fmt.Fprintf(s.stdout, "nova-node: read-source on %s\n", s.cfg.SourceReadListenAddr)
+	}
+	slog.Info("node.source.started", "listen", s.cfg.SourceReadListenAddr, "node_id", nodeID)
+
+	go func() {
+		if e := srv.Serve(ln); e != nil && !errors.Is(e, http.ErrServerClosed) {
+			select {
+			case s.srvErr <- e:
+			default:
+			}
+		}
+	}()
+	return nil
+}
+
+func (s *readSourceStarter) Close() {
+	s.mu.Lock()
+	srv := s.srv
+	s.mu.Unlock()
+	if srv != nil {
+		_ = srv.Close()
+	}
 }
 
 func probeHealth(addr string) error {
@@ -218,30 +265,41 @@ func serve(cfg *nodeconfig.Config, stdout io.Writer) error {
 	keyProvider := &source.KeyProvider{}
 	ag = agent.WithPubKeySink(ag, keyProvider)
 
+	// M4.1 read-source server: a SEPARATE Nebula-bound mTLS listener distinct
+	// from the /health mux. The verify chain binds read-grants to this donor's
+	// node_id, so it cannot start before registration — but P2-M7.2 (D-M7.2-7)
+	// removes the requirement that "after registration" means "next boot". The
+	// starter is idempotent and is driven from both paths below.
+	rs := &readSourceStarter{
+		cfg: cfg, caPEM: caPEM, certPEM: certPEM, keyPEM: keyPEM,
+		pinner: pinner, auditBlocks: pinner, progress: progress, keyProvider: keyProvider,
+		stdout: stdout, srvErr: srvErr,
+	}
+	defer rs.Close()
+
+	// First boot: registration does not exist yet, so the agent tells us the
+	// moment it does. Installed BEFORE Run so the hook cannot be missed.
+	ag.SetOnRegistered(func(nodeID string) {
+		if e := rs.Start(nodeID); e != nil {
+			slog.Error("node.source.start_failed", "err", e)
+		}
+	})
+
 	go func() {
 		if e := ag.Run(ctx); e != nil && ctx.Err() == nil {
 			slog.Error("nova-node agent stopped", "err", e)
 		}
 	}()
 
-	// M4.1 read-source server: a SEPARATE Nebula-bound mTLS listener distinct
-	// from the /health mux. Only started when configured AND this donor already
-	// knows its node_id (from a persisted registration) — the verify chain binds
-	// read-grants to the donor's node_id, so a not-yet-registered donor cannot
-	// serve until its next boot. Fail-closed by construction.
-	if srcSrv, srcLn, ok, serr := startReadSource(cfg, caPEM, certPEM, keyPEM, regStore, pinner, pinner, progress, keyProvider); serr != nil {
-		return serr
-	} else if ok {
-		defer srcSrv.Close()
-		fmt.Fprintf(stdout, "nova-node: read-source on %s\n", cfg.SourceReadListenAddr)
-		go func() {
-			if e := srcSrv.Serve(srcLn); e != nil && !errors.Is(e, http.ErrServerClosed) {
-				select {
-				case srvErr <- e:
-				default:
-				}
-			}
-		}()
+	// Restart path: a persisted registration means we can start immediately
+	// without waiting for the agent. Start is idempotent, so the two paths
+	// cannot double-bind.
+	if reg, ok, rerr := regStore.LoadRegistration(ctx); rerr != nil {
+		return fmt.Errorf("read-source: load registration: %w", rerr)
+	} else if ok && reg.NodeID != "" {
+		if e := rs.Start(reg.NodeID); e != nil {
+			return e
+		}
 	}
 
 	var runErr error

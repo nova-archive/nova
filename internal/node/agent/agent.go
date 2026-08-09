@@ -85,7 +85,17 @@ type Agent struct {
 
 	// budget, when set, reports egress telemetry on each heartbeat (M5, D-M5-6-TEL).
 	budget BudgetReporter
+
+	// onRegistered fires exactly once, after a NEW registration is durably
+	// saved and before the first heartbeat. cmd/node uses it to start the
+	// read-source server in-process, so a first-boot donor serves without
+	// needing a restart (P2-M7.2, D-M7.2-7). It does NOT fire when Run loads an
+	// existing registration — that path starts read-source directly at boot.
+	onRegistered func(nodeID string)
 }
+
+// SetOnRegistered installs the post-registration hook. See Agent.onRegistered.
+func (a *Agent) SetOnRegistered(fn func(nodeID string)) { a.onRegistered = fn }
 
 // WithBudget wires the donor's egress budget reporter so each heartbeat carries
 // the best-effort step_capacity hint (D-M5-6-TEL).
@@ -185,6 +195,12 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		a.nodeID = resp.NodeID
 		slog.Info("nova-node registered", "node_id", resp.NodeID, "protocol", resp.SelectedProtocol)
+		// Read-source starts here, not on the next boot (D-M7.2-7). The
+		// registration is already durable, so a crash between this hook and the
+		// first heartbeat still leaves a recoverable donor.
+		if a.onRegistered != nil {
+			a.onRegistered(resp.NodeID)
+		}
 	} else {
 		a.nodeID = existing.NodeID
 	}
@@ -199,6 +215,17 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.progress != nil {
 		a.ReplicatePending(ctx)
 	}
+
+	// Immediate first heartbeat (D-M7.2-7). The sync above was already
+	// immediate; the heartbeat was not, so a fresh donor stayed invisible to the
+	// coordinator's liveness view for a full interval (300s by default). Normal
+	// cadence begins after this.
+	if resp, err := a.client.Heartbeat(ctx, a.heartbeatReq(0, 0)); err != nil {
+		slog.Warn("nova-node first heartbeat failed", "err", err)
+	} else {
+		a.captureRepairPubKey(resp.RepairTokenPublicKey)
+	}
+
 	hb := time.NewTicker(a.hbInterval)
 	defer hb.Stop()
 	poll := time.NewTicker(a.pollInterval)
