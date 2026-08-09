@@ -183,6 +183,9 @@ jobs:
       - name: CA custody — no long-running service can mount issuance authority
         run: make compose-custody-check
 
+      - name: An existing federation can cross this release using only UPGRADING.md
+        run: make live-upgrade-e2e
+
   donor-build:
     runs-on: ubuntu-latest
     steps:

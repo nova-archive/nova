@@ -140,6 +140,18 @@ bench-corpus-ci:
 bench-corpus-explain:
 	go test -v -timeout 20m -run 'TestExplainPlans|TestScratchDSNGuard|TestSeedSkewedCorpus' ./internal/benchcorpus
 
+.PHONY: federation-deploy-e2e live-upgrade-e2e
+# P2-M7.2 D-M7.2-11. federation-deploy-e2e needs TUN and privileged
+# networking, so it is a local / self-hosted release gate like crossversion-e2e.
+federation-deploy-e2e:
+	./scripts/federation_deploy_e2e.sh
+
+# live-upgrade-e2e is pure novactl against temp dirs — no TUN, no daemon — so it
+# runs hermetically on every PR. An existing federation must cross every
+# milestone in this track using only docs/UPGRADING.md.
+live-upgrade-e2e:
+	./scripts/live_upgrade_e2e.sh
+
 .PHONY: crossversion-e2e
 # P2-M7 D-M7-3: local gate; requires docker + libvips headers. PAIRING=all|head-head|head-coord-old-donor|old-coord-head-donor
 crossversion-e2e:
