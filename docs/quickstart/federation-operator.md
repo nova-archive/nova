@@ -28,7 +28,8 @@ with your server's public IP.
 ## 1. Create the federation identity
 
 ```sh
-docker compose -f docker/docker-compose.yml \
+docker compose --env-file docker/.env \
+               -f docker/docker-compose.yml \
                -f deploy/operator/compose.federation.yaml \
                --profile federation run --rm nova-admin \
   federation init \
@@ -55,19 +56,22 @@ federation ready at /var/lib/nova/fedpki/active
 *If it fails on a route conflict:* something already uses that range. Pick a
 different `--overlay-cidr`.
 
-**Already have a hand-built federation?** See
-[*Adopting an existing setup*](#adopting-an-existing-setup) below before
-running this.
-
 This is safe to run twice. A second run changes nothing and says
 `created: 0`.
+
+> **Upgrading rather than starting fresh?** If you built a federation CA by
+> hand before Nova had `federation init`, do **not** run the command above as
+> written — it would mint a new CA and orphan your existing donors. Follow
+> [`docs/UPGRADING.md`](../UPGRADING.md) instead, which adopts your existing
+> authority.
 
 ---
 
 ## 2. Restart with federation enabled
 
 ```sh
-docker compose -f docker/docker-compose.yml \
+docker compose --env-file docker/.env \
+               -f docker/docker-compose.yml \
                -f deploy/operator/compose.federation.yaml \
                --profile prod --profile federation up -d
 ```
@@ -102,7 +106,8 @@ time.
 ## 4. Check everything before inviting anyone
 
 ```sh
-docker compose -f docker/docker-compose.yml \
+docker compose --env-file docker/.env \
+               -f docker/docker-compose.yml \
                -f deploy/operator/compose.federation.yaml \
                --profile federation run --rm nova-doctor \
   federation doctor --live
@@ -134,7 +139,8 @@ they are the one who finds out.
 One command produces everything your donor needs.
 
 ```sh
-docker compose -f docker/docker-compose.yml \
+docker compose --env-file docker/.env \
+               -f docker/docker-compose.yml \
                -f deploy/operator/compose.federation.yaml \
                --profile federation run --rm nova-admin \
   node invite \
@@ -251,32 +257,6 @@ docker run --rm -v nova_nova-fedpki:/pki:ro -v "$PWD":/out debian:bookworm-slim 
 
 Store it somewhere encrypted and off this machine. Everything else Nova can
 rebuild; this it cannot.
-
----
-
-## Adopting an existing setup
-
-If you already built a federation CA by hand, `federation init` **adopts** it
-rather than replacing it. Your donors keep working.
-
-Put your existing files in `deploy/operator/import/`:
-
-| File | What it is |
-|---|---|
-| `federation-ca.crt` / `federation-ca.key` | your federation CA |
-| `coordinator-federation.crt` / `.key` | the coordinator's identity |
-| `nebula-ca.crt` / `nebula-ca.key` | your Nebula CA |
-| `swarm.key` | your Kubo swarm key |
-
-Then add `--adopt-from /import` to the step 1 command.
-
-Nova copies them in, fills in only what is missing, and never writes to
-`/import`. Anything that disagrees with what you asked for stops the command
-with an explanation rather than overwriting it.
-
-Your existing `swarm.key` is never regenerated — a new one would silently cut
-every current donor off from your storage network while leaving them looking
-healthy.
 
 ---
 

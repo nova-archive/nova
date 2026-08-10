@@ -23,15 +23,22 @@ out-of-band repair is not an acceptable upgrade path.
 2. **Record what you are running:**
    ```sh
    git -C /srv/nova describe --tags --always
-   docker compose -f docker/docker-compose.yml ps --format '{{.Service}} {{.Image}}'
+   docker compose --env-file docker/.env -f docker/docker-compose.yml ps --format '{{.Service}} {{.Image}}'
    ```
-3. **Back up authority.** The federation CA cannot be rebuilt:
+3. **Back up Postgres and the `nova-secrets` volume.**
+
+   **If federation is already initialised**, also back up the federation
+   authority — the CA cannot be rebuilt:
    ```sh
    docker run --rm -v nova_nova-fedpki:/pki:ro -v "$PWD":/out debian:bookworm-slim \
      tar czf /out/nova-fedpki-backup.tar.gz -C /pki .
    ```
-   Also back up Postgres and the `nova-secrets` volume. **A backup you have
-   never restored does not count as a backup.**
+   `nova_nova-fedpki` exists only once `federation init` has run. A
+   non-federated operator, or one adopting a pre-productization federation for
+   the first time, will not have it yet — in the latter case back up wherever
+   the existing authority currently lives instead.
+
+   **A backup you have never restored does not count as a backup.**
 4. **Do not upgrade donors at the same time as the coordinator.** Coordinator
    first, donors afterwards, in small batches.
 
@@ -63,12 +70,22 @@ Your CA, your donors and your swarm key are all preserved. Nothing re-enrolls.
 | `nebula-ca.crt` / `nebula-ca.key` | your Nebula CA |
 | `swarm.key` | your Kubo swarm key |
 
-Copy them — do not move them. Nova only reads from here.
+Copy them — do not move them. Nova reads from this directory and never writes
+to it; it is mounted read-only.
+
+Your existing `swarm.key` is never regenerated. A new one would silently cut
+every current donor off from your storage network while leaving them looking
+perfectly healthy — registered, up, and unable to exchange anything.
+
+If your hand-built setup genuinely never had some of these (a Nebula CA, for
+instance), leave them out rather than inventing them. Adoption creates what is
+missing and preserves what is not.
 
 **2. Adopt:**
 
 ```sh
-docker compose -f docker/docker-compose.yml \
+docker compose --env-file docker/.env \
+               -f docker/docker-compose.yml \
                -f deploy/operator/compose.federation.yaml \
                --profile federation run --rm nova-admin \
   federation init \
@@ -90,7 +107,8 @@ repair signing key, which earlier documentation never mentioned.
 **3. Recreate with the overlay:**
 
 ```sh
-docker compose -f docker/docker-compose.yml \
+docker compose --env-file docker/.env \
+               -f docker/docker-compose.yml \
                -f deploy/operator/compose.federation.yaml \
                --profile prod --profile federation up -d
 ```
@@ -98,7 +116,8 @@ docker compose -f docker/docker-compose.yml \
 **4. Verify:**
 
 ```sh
-docker compose -f docker/docker-compose.yml \
+docker compose --env-file docker/.env \
+               -f docker/docker-compose.yml \
                -f deploy/operator/compose.federation.yaml \
                --profile federation run --rm nova-doctor \
   federation doctor --live
