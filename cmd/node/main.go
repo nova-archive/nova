@@ -35,6 +35,7 @@ import (
 	"github.com/nova-archive/nova/internal/node/ipfsclient"
 	"github.com/nova-archive/nova/internal/node/source"
 	"github.com/nova-archive/nova/internal/node/state"
+	"github.com/nova-archive/nova/internal/release/catalog"
 )
 
 func main() {
@@ -66,6 +67,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	// they cannot get the process to start (P2-M7.3, P0-c).
 	if *showVersion {
 		fmt.Fprintln(stdout, "nova-node", buildinfo.String())
+		fmt.Fprintln(stdout, " ", catalog.Compiled().String())
 		return nil
 	}
 	if *configPath == "" {

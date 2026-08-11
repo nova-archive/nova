@@ -186,6 +186,9 @@ jobs:
       - name: Every checked-in release intent validates
         run: make release-validate
 
+      - name: The compiled-in release catalog matches the intent
+        run: make catalog-check
+
       - name: An existing federation can cross this release using only UPGRADING.md
         run: make live-upgrade-e2e
 

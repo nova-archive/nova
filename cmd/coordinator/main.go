@@ -81,6 +81,7 @@ import (
 	"github.com/nova-archive/nova/internal/metrics"
 	"github.com/nova-archive/nova/internal/notify"
 	"github.com/nova-archive/nova/internal/orchestrator"
+	"github.com/nova-archive/nova/internal/release"
 	"github.com/nova-archive/nova/internal/secret"
 	"github.com/nova-archive/nova/internal/setup"
 	novaimage "github.com/nova-archive/nova/nova-image"
@@ -101,6 +102,7 @@ func run() error {
 	// asks for it precisely when the process will not start (P2-M7.3, P0-c).
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println("nova-coordinator", buildinfo.String())
+		fmt.Println(" ", release.Compiled().String())
 		return nil
 	}
 

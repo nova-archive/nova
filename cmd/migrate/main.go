@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/nova-archive/nova/internal/buildinfo"
 	"github.com/nova-archive/nova/internal/db/migrations"
+	"github.com/nova-archive/nova/internal/release"
 	"github.com/pressly/goose/v3"
 )
 
@@ -40,6 +41,7 @@ func run() error {
 	// these are deliberately different spellings (P2-M7.3, P0-c).
 	if len(args) > 0 && args[0] == "--version" {
 		fmt.Println("migrate", buildinfo.String())
+		fmt.Println(" ", release.Compiled().String())
 		return nil
 	}
 

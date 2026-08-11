@@ -17,6 +17,12 @@ ALLOWED=(
   "$MOD/internal/federation/transport"
   "$MOD/internal/federation/replay"   # P2-M4.1: donor read-source single-use jti replay cache + boot-floor (pure stdlib sync+time)
   "$MOD/internal/ipfs/importspec"   # P2-M4: shared deterministic-import params (no Kubo, no go-cid)
+  "$MOD/internal/buildinfo"         # P2-M7.3 P0-c: three link-time strings, zero imports. A donor
+                                    # that cannot say what it is makes the fleet census unanswerable.
+  "$MOD/internal/release/catalog"   # P2-M7.3 D-M7.3-2c: the compiled-in release identity. A LEAF
+                                    # package (fmt + time only) precisely so the donor is not dragged
+                                    # into distribution/reference, image-spec, go-digest and x/mod to
+                                    # print one version line — internal/release itself stays out.
   "gopkg.in/yaml.v3"   # donor config parsing — the only third-party runtime dep
 )
 

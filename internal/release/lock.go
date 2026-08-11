@@ -23,13 +23,13 @@ const LockSchema = 1
 // consumer — the bootstrap script, the target admin, the donor updater — looks
 // in the same place.
 const (
-	MemberIntent    = "intent.json"
-	MemberPolicy    = "verification-policy.txt"
-	MemberEvidence  = "evidence/"
+	MemberIntent     = "intent.json"
+	MemberPolicy     = "verification-policy.txt"
+	MemberEvidence   = "evidence/"
 	MemberComposeEnv = "release.env"
-	MemberUpgrading = "UPGRADING.md"
-	MemberBootstrap = "scripts/nova-release"
-	MemberHashes    = "hashes.txt"
+	MemberUpgrading  = "UPGRADING.md"
+	MemberBootstrap  = "scripts/nova-release"
+	MemberHashes     = "hashes.txt"
 )
 
 // requiredMembers must appear in every lock's payload map. Evidence statements

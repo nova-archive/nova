@@ -46,38 +46,10 @@ const IntentSchema = 1
 // leave issuance authority running unsigned, unpinned bytes.
 var ArtifactNames = []string{"nova-coordinator", "nova-node", "nova-admin"}
 
-// Predecessor identifies what a release is an upgrade FROM.
-//
-// It accepts a COMMIT because Nova's first contract-bearing release upgrades
-// from a baseline that has no product version: the remote tag namespace holds
-// only two lightweight pre-contract refs, and the deployment in the field is a
-// local build of a commit. A scenario that can only name versions cannot
-// describe the one transition that actually has to work.
-type Predecessor struct {
-	// Kind is "commit" or "version". Exactly one of Commit/Version is set.
-	Kind    string `json:"kind"`
-	Commit  string `json:"commit,omitempty"`
-	Version string `json:"version,omitempty"`
-
-	// Schema is the goose schema version that predecessor runs.
-	Schema int64 `json:"schema"`
-
-	// SupportEpoch is when this artifact's support window starts. The baseline
-	// has no release date, so its epoch is DECLARED here rather than inferred
-	// from a tag that does not exist.
-	SupportEpoch time.Time `json:"support_epoch"`
-}
-
-// ID renders the predecessor as the stable string scenarios and the census use.
-func (p Predecessor) ID() string {
-	if p.Kind == "commit" {
-		return "commit:" + p.Commit
-	}
-	return p.Version
-}
-
-// Validate checks that exactly one identity is present and well-formed.
-func (p Predecessor) Validate() error {
+// validatePredecessor checks that exactly one identity is present and
+// well-formed. It lives here rather than on the type because the type is in the
+// dependency-free catalog package and SemVer validation needs x/mod.
+func validatePredecessor(p Predecessor) error {
 	switch p.Kind {
 	case "commit":
 		if p.Version != "" {
@@ -122,16 +94,6 @@ type DeclaredClaim struct {
 	// ProvenByGate names the gate that must demonstrate it. A claim whose gate
 	// does not cover it is rejected — see scenario.go.
 	ProvenByGate string `json:"proven_by_gate"`
-}
-
-// CapabilityProfiles is the core-plus-per-role capability model the census and
-// the deprecation channel consult offline (D-M7.3-21a).
-type CapabilityProfiles struct {
-	// Core is required at registration. Everything else is route-gated.
-	Core []string `json:"core"`
-	// Roles maps a role name to the capabilities it needs. Missing one excludes
-	// a donor from that role and from nothing else.
-	Roles map[string][]string `json:"roles"`
 }
 
 // Intent is the checked-in, reviewed-before-build release decision.
@@ -233,7 +195,7 @@ func (in Intent) Validate() error {
 			"that names none makes no compatibility commitment at all")
 	}
 	for i, p := range in.SupportedPredecessors {
-		if err := p.Validate(); err != nil {
+		if err := validatePredecessor(p); err != nil {
 			return fmt.Errorf("intent: supported_predecessors[%d]: %w", i, err)
 		}
 		if p.Schema > int64(in.TargetSchema) {

@@ -42,6 +42,7 @@ import (
 	"github.com/nova-archive/nova/internal/buildinfo"
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/db/gen"
+	"github.com/nova-archive/nova/internal/release"
 	"github.com/nova-archive/nova/internal/setup"
 )
 
@@ -1304,6 +1305,7 @@ func main() {
 		// Build identity, not the DB schema version. `migrate version` keeps
 		// that meaning; here there is nothing to collide with (P2-M7.3, P0-c).
 		fmt.Println("novactl", buildinfo.String())
+		fmt.Println(" ", release.Compiled().String())
 		return
 	case "auth":
 		err = runAuth(args[1:])

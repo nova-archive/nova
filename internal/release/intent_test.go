@@ -182,7 +182,7 @@ func TestPredecessorAcceptsCommitAndVersionButNotBoth(t *testing.T) {
 
 	c := base
 	c.Kind, c.Commit = "commit", "143c459"
-	if err := c.Validate(); err != nil {
+	if err := validatePredecessor(c); err != nil {
 		t.Errorf("a commit predecessor must be legal: %v", err)
 	}
 	if got := c.ID(); got != "commit:143c459" {
@@ -191,13 +191,13 @@ func TestPredecessorAcceptsCommitAndVersionButNotBoth(t *testing.T) {
 
 	v := base
 	v.Kind, v.Version = "version", "v0.3.0"
-	if err := v.Validate(); err != nil {
+	if err := validatePredecessor(v); err != nil {
 		t.Errorf("a version predecessor must be legal: %v", err)
 	}
 
 	both := base
 	both.Kind, both.Commit, both.Version = "commit", "143c459", "v0.3.0"
-	if err := both.Validate(); err == nil {
+	if err := validatePredecessor(both); err == nil {
 		t.Error("a predecessor carrying both identities is ambiguous and must be rejected")
 	}
 }

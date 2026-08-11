@@ -11,9 +11,11 @@
 //	novarel validate [dir]        every checked-in intent parses and validates
 //	novarel digest <file>         the sha256 an intent or lock is referenced by
 //	novarel show <intent>         the intent as the release workflow reads it
+//	novarel catalog [--check]     generate (or verify) the compiled-in catalog
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -23,7 +25,10 @@ import (
 	"github.com/nova-archive/nova/internal/release"
 )
 
-const defaultIntentDir = "releases/intent"
+const (
+	defaultIntentDir = "releases/intent"
+	catalogOut       = "internal/release/catalog/catalog_gen.go"
+)
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -61,6 +66,9 @@ func run(args []string) error {
 			return fmt.Errorf("usage: novarel show <intent>")
 		}
 		return show(args[1])
+	case "catalog":
+		check := len(args) > 1 && args[1] == "--check"
+		return generateCatalog(defaultIntentDir, catalogOut, check)
 	default:
 		usage()
 		return fmt.Errorf("unknown subcommand %q", args[0])
@@ -68,12 +76,14 @@ func run(args []string) error {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: novarel <validate|digest|show>
+	fmt.Fprint(os.Stderr, `usage: novarel <validate|digest|show|catalog>
 
   validate [dir]   every intent under dir (default `+defaultIntentDir+`) parses,
                    validates, and is named for the version it declares
   digest <file>    the sha256 the release workflow references this file by
   show <intent>    the parsed intent, as the workflow reads it
+  catalog          regenerate internal/release/catalog_gen.go from the current intent
+  catalog --check  fail if the generated catalog has drifted from the intent
 `)
 }
 
@@ -123,5 +133,47 @@ func show(path string) error {
 		return err
 	}
 	fmt.Println(string(out))
+	return nil
+}
+
+// generateCatalog writes (or verifies) the compiled-in catalog.
+//
+// The drift gate compares BYTES. Comparing meaning would let a regeneration
+// that reorders a map pass while producing a different binary, and the whole
+// point of the catalog is that the binary and the reviewed intent agree.
+func generateCatalog(intentDir, out string, checkOnly bool) error {
+	path, err := release.CurrentIntentPath(intentDir)
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	in, err := release.ParseIntent(b)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	want, err := release.RenderCatalog(release.CatalogFrom(in, b))
+	if err != nil {
+		return err
+	}
+
+	if checkOnly {
+		got, err := os.ReadFile(out)
+		if err != nil {
+			return fmt.Errorf("%s: %w (run `make catalog`)", out, err)
+		}
+		if !bytes.Equal(got, want) {
+			return fmt.Errorf("%s has drifted from %s; run `make catalog` and commit the result", out, path)
+		}
+		fmt.Printf("ok  %s matches %s\n", out, path)
+		return nil
+	}
+
+	if err := os.WriteFile(out, want, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s from %s (%s)\n", out, path, release.IntentDigest(b))
 	return nil
 }
