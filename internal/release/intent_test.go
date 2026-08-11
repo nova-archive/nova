@@ -306,3 +306,22 @@ func TestCommittedIntentAgreesWithTheCode(t *testing.T) {
 		t.Errorf("target_schema = %d, want 19", in.TargetSchema)
 	}
 }
+
+// readCommittedIntent loads the current checked-in intent, for tests that must
+// exercise what SHIPS rather than a fixture.
+func readCommittedIntent(t *testing.T) ([]byte, Intent) {
+	t.Helper()
+	path, err := CurrentIntentPath(intentsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := ParseIntent(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b, in
+}
