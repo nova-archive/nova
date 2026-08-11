@@ -42,9 +42,11 @@ func m7pg(t *testing.T, id string) pgtype.UUID {
 // full read/repair capability set + the (real) source address.
 func seedM7Node(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id uuid.UUID, addr string, sourceable bool) {
 	t.Helper()
-	caps, src := "{pin-change-log/v1,snapshot/v1}", ""
+	// blob-transfer/v1 is what makes a donor a legal assignment destination
+	// (P2-M7.3 D-M7.3-22); every donor in this fleet advertises it.
+	caps, src := "{pin-change-log/v1,snapshot/v1,blob-transfer/v1}", ""
 	if sourceable {
-		caps = "{pin-change-log/v1,snapshot/v1,read-source/v1,repair-stream/v1,audit-block-hash/v1}"
+		caps = "{pin-change-log/v1,snapshot/v1,blob-transfer/v1,read-source/v1,repair-stream/v1,audit-block-hash/v1}"
 		src = addr
 	}
 	_, err := pool.Exec(ctx, `

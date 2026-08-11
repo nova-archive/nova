@@ -309,6 +309,11 @@ type Querier interface {
 	// preferring those with known free space >= the blob's envelope size (unknown
 	// free space is treated as OK; the donor's own storage_max_bytes is the real
 	// safety gate). Ordered for best-link selection: free-OK first, then reputation.
+	//
+	// P2-M7.3 D-M7.3-22: blob-transfer/v1 is route-gated rather than required at
+	// registration, so the filter has to live at every path that CREATES work. This
+	// is the initial-placement path (pkg/coordinator/admission/assigner.go). Without
+	// it, route-gating would hand assignments to donors that cannot fetch them.
 	ListAdmissionCandidates(ctx context.Context, arg ListAdmissionCandidatesParams) ([]ListAdmissionCandidatesRow, error)
 	// actor_id is nullable — system actions (e.g. the scheduled-tombstone sweep)
 	// record actor_id=NULL; coalesce so the listing never crashes on a NULL actor.
@@ -431,6 +436,12 @@ type Querier interface {
 	MarkSoftDeleted(ctx context.Context, cid string) (int64, error)
 	// Atomic, lost-update-safe (D-M6-7): clamp to [0,1].
 	MoveReputation(ctx context.Context, arg MoveReputationParams) (float32, error)
+	// P2-M7.3 D-M7.3-22: the last assignment path. AssignPin and
+	// AssignPinWithSource are DB-direct seams (novactl `pin assign`, the admission
+	// assigner, the M5 scheduler) that bypass both candidate queries entirely, so
+	// "assignments never target a donor that cannot fetch" is only true if this
+	// one checks too. Returns false for an unknown node.
+	NodeAdvertisesCapability(ctx context.Context, arg NodeAdvertisesCapabilityParams) (bool, error)
 	NodeHasChangesAfter(ctx context.Context, arg NodeHasChangesAfterParams) (bool, error)
 	// Cache hit on a probationary row: promote to protected segment (throttled like TouchLastAccessed).
 	PromoteToProtected(ctx context.Context, arg PromoteToProtectedParams) error

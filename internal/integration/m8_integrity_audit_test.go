@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -139,13 +140,20 @@ func TestIntegrationM8IntegrityAuditsThroughNginx(t *testing.T) {
 	requireListStatus(t, base, "", http.StatusUnauthorized)
 	requireListStatus(t, base, upTok, http.StatusForbidden)
 
-	// 5. Create-ahead: the boot-time maintainer provisioned the next monthly
-	//    partition so inserts won't hit the 2026-07-01 cliff.
+	// 5. Create-ahead: the boot-time maintainer provisioned NEXT MONTH's
+	//    partition, so inserts never reach a calendar cliff.
+	//
+	//    The month is computed from the clock, not written down. This assertion
+	//    used to name integrity_audits_2026_07 literally, which passed until
+	//    July 2026 and then failed forever — the same calendar-cliff bug the
+	//    maintainer exists to prevent, reproduced in the test that checks it.
+	next := time.Now().UTC().AddDate(0, 1, 0)
+	wantPartition := fmt.Sprintf("integrity_audits_%04d_%02d", next.Year(), int(next.Month()))
 	require.Eventually(t, func() bool {
 		var n int
-		_ = pool.QueryRow(ctx, `SELECT count(*) FROM pg_class WHERE relname = 'integrity_audits_2026_07'`).Scan(&n)
+		_ = pool.QueryRow(ctx, `SELECT count(*) FROM pg_class WHERE relname = $1`, wantPartition).Scan(&n)
 		return n > 0
-	}, 5*time.Second, 50*time.Millisecond, "maintainer should create the next month's partition")
+	}, 5*time.Second, 50*time.Millisecond, "maintainer should create %s", wantPartition)
 }
 
 func listAudits(t *testing.T, base, token, query string) integrityListResp {

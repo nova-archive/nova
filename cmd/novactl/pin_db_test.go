@@ -17,7 +17,7 @@ func TestPinAssignListUnpin(t *testing.T) {
 	// seed node + blob + manifest (GetBlobSize reads blob_manifests.envelope_size,
 	// so AssignPin requires a manifest row for the CID)
 	node := uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO nodes (id,nebula_cert_fingerprint,federation_cert_fingerprint,capacity_bytes,bandwidth_budget_bytes_per_day) VALUES ($1,$2,$3,0,0)`,
+	if _, err := pool.Exec(ctx, `INSERT INTO nodes (id,nebula_cert_fingerprint,federation_cert_fingerprint,capacity_bytes,bandwidth_budget_bytes_per_day,advertised_capabilities) VALUES ($1,$2,$3,0,0,ARRAY['blob-transfer/v1'])`,
 		pgtype.UUID{Bytes: node, Valid: true}, "neb", "fed"); err != nil {
 		t.Fatalf("seed node: %v", err)
 	}

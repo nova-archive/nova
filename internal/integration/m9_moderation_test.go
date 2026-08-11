@@ -165,11 +165,16 @@ func TestIntegrationM9ModerationThroughNginx(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, m9GetStatus(t, base, upTok, "/api/v1/admin/moderation/queue"))
 
 	// ---- The boot-time maintainer create-aheads audit_log partitions (M9).
+	//
+	// Computed from the clock: naming a literal month made this assertion
+	// expire, which is the calendar cliff the maintainer exists to prevent.
+	next := time.Now().UTC().AddDate(0, 1, 0)
+	wantPartition := fmt.Sprintf("audit_log_%04d_%02d", next.Year(), int(next.Month()))
 	require.Eventually(t, func() bool {
 		var n int
-		_ = pool.QueryRow(ctx, `SELECT count(*) FROM pg_class WHERE relname='audit_log_2026_07'`).Scan(&n)
+		_ = pool.QueryRow(ctx, `SELECT count(*) FROM pg_class WHERE relname = $1`, wantPartition).Scan(&n)
 		return n > 0
-	}, 5*time.Second, 50*time.Millisecond, "maintainer create-aheads audit_log partitions")
+	}, 5*time.Second, 50*time.Millisecond, "maintainer create-aheads %s", wantPartition)
 }
 
 func m9SetSchedulePast(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cidStr string) {

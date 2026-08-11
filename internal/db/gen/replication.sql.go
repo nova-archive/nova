@@ -184,6 +184,11 @@ WHERE n.status = 'active'
   AND (n.below_floor_since IS NULL
        OR n.below_floor_since > now() - make_interval(secs => $2::float))
                                      -- P2-M7.1 D-M7.1-3: sustained-below-floor is never a new-placement destination
+  AND n.advertised_capabilities @> ARRAY['blob-transfer/v1']
+                                     -- P2-M7.3 D-M7.3-22: a repair destination
+                                     -- must be able to FETCH what it is sent.
+                                     -- Route-gating only works if every
+                                     -- work-creating path filters.
   AND NOT EXISTS (SELECT 1 FROM pin_assignments pa WHERE pa.cid = $1 AND pa.node_id = n.id)
 ORDER BY n.id
 `

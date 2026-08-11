@@ -154,19 +154,29 @@ func TestAssignerSkipsNonSourceCapable(t *testing.T) {
 
 	// 2. Missing source_nebula_addr.
 	id2 := uuid.New()
-	seedNode(t, ctx, pool, id2, 0.5, &free, []string{"read-source/v1"}, "active", "probationary", "")
+	seedNode(t, ctx, pool, id2, 0.5, &free,
+		[]string{"read-source/v1", "blob-transfer/v1"}, "active", "probationary", "")
 
 	// 3. Suspended (trust_state = 'suspended').
 	id3 := uuid.New()
-	seedNode(t, ctx, pool, id3, 0.5, &free, []string{"read-source/v1"}, "active", "suspended", "10.0.1.3:5000")
+	seedNode(t, ctx, pool, id3, 0.5, &free,
+		[]string{"read-source/v1", "blob-transfer/v1"}, "active", "suspended", "10.0.1.3:5000")
 
 	// 4. Non-live status (evicted).
 	id4 := uuid.New()
-	seedNode(t, ctx, pool, id4, 0.5, &free, []string{"read-source/v1"}, "evicted", "probationary", "10.0.1.4:5000")
+	seedNode(t, ctx, pool, id4, 0.5, &free,
+		[]string{"read-source/v1", "blob-transfer/v1"}, "evicted", "probationary", "10.0.1.4:5000")
 
 	// 5. Revoked status.
 	id5 := uuid.New()
-	seedNode(t, ctx, pool, id5, 0.5, &free, []string{"read-source/v1"}, "revoked", "probationary", "10.0.1.5:5000")
+	seedNode(t, ctx, pool, id5, 0.5, &free,
+		[]string{"read-source/v1", "blob-transfer/v1"}, "revoked", "probationary", "10.0.1.5:5000")
+
+	// 6. Missing blob-transfer/v1: read-source-capable and correctly addressed,
+	// but unable to FETCH what it would be assigned (P2-M7.3 D-M7.3-22).
+	id6 := uuid.New()
+	seedNode(t, ctx, pool, id6, 0.5, &free,
+		[]string{"read-source/v1"}, "active", "probationary", "10.0.1.6:5000")
 
 	assigned, err := a.Assign(ctx, cidStr, "important")
 	require.NoError(t, err)
@@ -180,6 +190,7 @@ func TestAssignerSkipsNonSourceCapable(t *testing.T) {
 	_ = id3
 	_ = id4
 	_ = id5
+	_ = id6
 }
 
 func TestAssignerUnderReplicatedLogsAndPartial(t *testing.T) {
@@ -199,9 +210,11 @@ func TestAssignerUnderReplicatedLogsAndPartial(t *testing.T) {
 	// Seed only 2 eligible nodes (< R=3 for important).
 	free := int64(100000)
 	id1 := uuid.New()
-	seedNode(t, ctx, pool, id1, 0.8, &free, []string{"read-source/v1"}, "active", "probationary", "10.0.2.1:5000")
+	seedNode(t, ctx, pool, id1, 0.8, &free,
+		[]string{"read-source/v1", "blob-transfer/v1"}, "active", "probationary", "10.0.2.1:5000")
 	id2 := uuid.New()
-	seedNode(t, ctx, pool, id2, 0.6, &free, []string{"read-source/v1"}, "active", "probationary", "10.0.2.2:5000")
+	seedNode(t, ctx, pool, id2, 0.6, &free,
+		[]string{"read-source/v1", "blob-transfer/v1"}, "active", "probationary", "10.0.2.2:5000")
 
 	assigned, err := a.Assign(ctx, cidStr, "important")
 	require.NoError(t, err) // under-replicated is NOT an error — returns partial count

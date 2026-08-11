@@ -459,7 +459,7 @@ func run() error {
 		retention, prunePoll := fed.FederationRetention()
 		fedCfg := fedcoord.Config{
 			ListenAddr:           fed.ListenAddr,
-			RequiredCapabilities: []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer},
+			RequiredCapabilities: fedcoord.ProductionRequiredCapabilities,
 			Timers:               wire.ConfigUpdates{HeartbeatIntervalSeconds: hb, PinsPollIntervalSeconds: poll, MaxPinConcurrency: conc},
 			TLS:                  fedcoord.TLSMaterial{CAPEM: caPEM, CertPEM: certPEM, KeyPEM: keyPEM},
 			ChangeLogRetention:   retention,

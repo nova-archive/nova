@@ -22,8 +22,13 @@ import (
 // The canonical M7 required profile is {pin-change-log/v1, snapshot/v1}; the
 // four route-gated capabilities must NOT appear in it (a capability cannot be
 // both — required rejects at register, route-gated degrades per feature).
-var requiredProfile = []string{wire.CapPinChangeLog, wire.CapSnapshot}
-var routeGated = []string{wire.CapBlobTransfer, wire.CapReadSource, wire.CapRepairStream, wire.CapAuditBlockHash}
+//
+// P2-M7.3 D-M7.3-22: these are now the SHARED profiles cmd/coordinator wires,
+// not locally declared copies. The disjointness assertion below used to be
+// evaluated against a profile this file built itself, so it passed while
+// production required blob-transfer/v1 and contradicted it.
+var requiredProfile = ProductionRequiredCapabilities
+var routeGated = RouteGatedCapabilities
 
 func registerWith(t *testing.T, s *Server, caPEM, caKeyPEM []byte, protocols, caps []string) *httptest.ResponseRecorder {
 	t.Helper()

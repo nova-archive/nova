@@ -131,6 +131,27 @@ uses the operator-verified `failure_domain_id` / `donor_principal_id` set
 coordinator-side (see `HEALING_PROTOCOL.md`), never the donor's self-declared
 geo.
 
+**Required versus route-gated capabilities (normative).** A capability is
+either **required** or **route-gated**, never both.
+
+| Class | Members | Meaning |
+|---|---|---|
+| Required | `pin-change-log/v1`, `snapshot/v1` | A donor that does not advertise it is refused registration. Reserved for what the control plane cannot function without: consuming the change log, and reconciling by snapshot. |
+| Route-gated | `blob-transfer/v1`, `read-source/v1`, `repair-stream/v1`, `audit-block-hash/v1` | A donor that does not advertise it registers normally, keeps every replica it already holds, and is simply never sent work of that kind. |
+
+`required_capabilities` in the registration response is the required set only.
+
+Route-gating is enforced at **every path that creates work**, not at the door:
+initial placement (`ListAdmissionCandidates`), healing and repair placement
+(`ListPlacementCandidates`), and the direct assignment primitives
+(`AssignPin`, `AssignPinWithSource`). A capability that gates routing at only
+some of those paths is a defect, because the remaining paths will hand a donor
+work it has no way to perform.
+
+Losing a route-gated capability **never** removes an acknowledged replica.
+Holding data and accepting new fetch-requiring assignments are different
+things, and durability must not depend on the second.
+
 ### `POST /fed/v1/heartbeat`
 
 Sent every `heartbeat_interval_seconds`. Updates `nodes.last_seen_at`

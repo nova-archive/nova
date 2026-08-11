@@ -64,10 +64,13 @@ func seedBlob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cid, class 
 // seedNode inserts a node with the given liveness + sourceability attributes.
 func seedNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id, status, syncState string, readSourceable bool) {
 	t.Helper()
-	caps := "{}"
+	// P2-M7.3 D-M7.3-22: every real donor advertises blob-transfer/v1 — it is
+	// what lets it fetch an assignment — and every assignment path now filters
+	// on it. A fixture without it is a donor placement would never choose.
+	caps := "{blob-transfer/v1}"
 	addr := ""
 	if readSourceable {
-		caps = "{read-source/v1}"
+		caps = "{read-source/v1,blob-transfer/v1}"
 		addr = "10.0.0.9:9443"
 	}
 	_, err := pool.Exec(ctx, `
@@ -94,10 +97,10 @@ func TestRecomputeCID_CountsCountableAckedOnly(t *testing.T) {
 	pool := dbtest.New(t, ctx)
 
 	seedBlob(t, ctx, pool, "c1", "important", true)
-	seedNode(t, ctx, pool, "11111111-1111-1111-1111-111111111111", "active", "current", true)       // counts + sourceable
-	seedNode(t, ctx, pool, "22222222-2222-2222-2222-222222222222", "suspect", "current", false)     // counts, not sourceable
-	seedNode(t, ctx, pool, "33333333-3333-3333-3333-333333333333", "unreachable", "current", true)  // excluded (status)
-	seedNode(t, ctx, pool, "44444444-4444-4444-4444-444444444444", "active", "reconciling", true)   // excluded (sync)
+	seedNode(t, ctx, pool, "11111111-1111-1111-1111-111111111111", "active", "current", true)      // counts + sourceable
+	seedNode(t, ctx, pool, "22222222-2222-2222-2222-222222222222", "suspect", "current", false)    // counts, not sourceable
+	seedNode(t, ctx, pool, "33333333-3333-3333-3333-333333333333", "unreachable", "current", true) // excluded (status)
+	seedNode(t, ctx, pool, "44444444-4444-4444-4444-444444444444", "active", "reconciling", true)  // excluded (sync)
 	for _, n := range []string{"11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222",
 		"33333333-3333-3333-3333-333333333333", "44444444-4444-4444-4444-444444444444"} {
 		assignPinState(t, ctx, pool, "c1", n, "acked")

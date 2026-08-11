@@ -197,7 +197,7 @@ func TestBelowFloorDeprioritizedNotExcludedFromSelection(t *testing.T) {
 	// Repair-source selection: B wins while both hold the CID, despite A's
 	// higher reputation × capacity weight.
 	_, err = pool.Exec(ctx, `
-		UPDATE nodes SET advertised_capabilities = '{read-source/v1,repair-stream/v1}'
+		UPDATE nodes SET advertised_capabilities = '{read-source/v1,repair-stream/v1,blob-transfer/v1}'
 		WHERE id = ANY(ARRAY[$1, $2]::uuid[])`, bfNodeA, bfNodeB)
 	require.NoError(t, err)
 	src, err := q.ListRepairSourceHolders(ctx, gen.ListRepairSourceHoldersParams{
@@ -251,7 +251,7 @@ func TestBelowFloorAndDrainSortKeyOrder(t *testing.T) {
 
 	// The repair-source selection must agree: draining B outranks below-floor A.
 	_, err = pool.Exec(ctx, `
-		UPDATE nodes SET advertised_capabilities = '{read-source/v1,repair-stream/v1}'
+		UPDATE nodes SET advertised_capabilities = '{read-source/v1,repair-stream/v1,blob-transfer/v1}'
 		WHERE id = ANY(ARRAY[$1, $2]::uuid[])`, bfNodeA, bfNodeB)
 	require.NoError(t, err)
 	seedBlob(t, ctx, pool, "bf-order-cid", "normal", true)

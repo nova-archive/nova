@@ -15,7 +15,17 @@ import (
 func registerOK(t *testing.T, s *Server, caPEM, caKeyPEM []byte, id uuid.UUID) *x509.Certificate {
 	t.Helper()
 	leaf := issuedClient(t, caPEM, caKeyPEM, id)
-	body, _ := json.Marshal(wire.RegisterRequest{SupportedProtocols: []string{wire.ProtocolV1}})
+	// A normal, fully capable donor. P2-M7.3 D-M7.3-22 route-gates
+	// blob-transfer/v1 at every assignment path, so a fixture that advertises
+	// nothing is a donor no assignment path would ever choose — which is not
+	// what these tests are about. Tests that DO exercise a missing capability
+	// register explicitly (registerWith) or update the row afterwards.
+	body, _ := json.Marshal(wire.RegisterRequest{
+		SupportedProtocols: []string{wire.ProtocolV1},
+		Capabilities: []string{
+			wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer,
+		},
+	})
 	w := httptest.NewRecorder()
 	s.handleRegister(w, reqWithCert(http.MethodPost, "/fed/v1/register", body, leaf))
 	if w.Code != http.StatusCreated {

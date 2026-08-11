@@ -673,6 +673,7 @@ FROM nodes n
 WHERE n.status IN ('active','suspect')
   AND n.trust_state <> 'suspended'
   AND n.advertised_capabilities @> ARRAY['read-source/v1']
+  AND n.advertised_capabilities @> ARRAY['blob-transfer/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
 ORDER BY (n.last_free_bytes IS NULL OR n.last_free_bytes >= $1) DESC,
          n.reputation_score DESC, n.id
@@ -694,6 +695,11 @@ type ListAdmissionCandidatesRow struct {
 // preferring those with known free space >= the blob's envelope size (unknown
 // free space is treated as OK; the donor's own storage_max_bytes is the real
 // safety gate). Ordered for best-link selection: free-OK first, then reputation.
+//
+// P2-M7.3 D-M7.3-22: blob-transfer/v1 is route-gated rather than required at
+// registration, so the filter has to live at every path that CREATES work. This
+// is the initial-placement path (pkg/coordinator/admission/assigner.go). Without
+// it, route-gating would hand assignments to donors that cannot fetch them.
 func (q *Queries) ListAdmissionCandidates(ctx context.Context, arg ListAdmissionCandidatesParams) ([]ListAdmissionCandidatesRow, error) {
 	rows, err := q.db.Query(ctx, listAdmissionCandidates, arg.MinFreeBytes, arg.Lim)
 	if err != nil {
@@ -896,6 +902,30 @@ UPDATE nodes SET revoked_signaled_at = now() WHERE id = $1
 func (q *Queries) MarkRevokedSignaled(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markRevokedSignaled, id)
 	return err
+}
+
+const nodeAdvertisesCapability = `-- name: NodeAdvertisesCapability :one
+SELECT COALESCE(
+  (SELECT n.advertised_capabilities @> ARRAY[$2::text] FROM nodes n WHERE n.id = $1),
+  false
+)::boolean
+`
+
+type NodeAdvertisesCapabilityParams struct {
+	ID         pgtype.UUID
+	Capability string
+}
+
+// P2-M7.3 D-M7.3-22: the last assignment path. AssignPin and
+// AssignPinWithSource are DB-direct seams (novactl `pin assign`, the admission
+// assigner, the M5 scheduler) that bypass both candidate queries entirely, so
+// "assignments never target a donor that cannot fetch" is only true if this
+// one checks too. Returns false for an unknown node.
+func (q *Queries) NodeAdvertisesCapability(ctx context.Context, arg NodeAdvertisesCapabilityParams) (bool, error) {
+	row := q.db.QueryRow(ctx, nodeAdvertisesCapability, arg.ID, arg.Capability)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const nodeHasChangesAfter = `-- name: NodeHasChangesAfter :one

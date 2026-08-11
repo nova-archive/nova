@@ -26,6 +26,41 @@ var (
 	ErrSourceNotSourceable = errors.New("coordinator: repair source is not repair-sourceable")
 )
 
+// ErrDestCannotFetch is returned when an assignment would target a donor that
+// does not advertise blob-transfer/v1 (P2-M7.3, D-M7.3-22). The donor keeps
+// everything it already holds; it simply cannot be given work it has no way to
+// perform.
+var ErrDestCannotFetch = errors.New("coordinator: assignment destination does not advertise " + wire.CapBlobTransfer)
+
+// AllowAssignmentToDonorsWithoutBlobTransfer is a TEST-ONLY override for the
+// two DB-direct assignment seams.
+//
+// It exists because those seams predate route-gating and some fixtures assign
+// to synthetic nodes that advertise nothing. It is deliberately long, exported
+// and unreferenced by any non-test code, so `grep` finds every use and a
+// production caller reaching for it is obvious in review. Never set it outside
+// a test.
+var AllowAssignmentToDonorsWithoutBlobTransfer = false
+
+// assertDestCanFetch is the guard at the last assignment path. The candidate
+// queries filter the two SELECT-driven paths; this covers the seams that skip
+// them (novactl `pin assign`, the admission assigner, the M5 scheduler).
+func assertDestCanFetch(ctx context.Context, q *gen.Queries, dest uuid.UUID) error {
+	if AllowAssignmentToDonorsWithoutBlobTransfer {
+		return nil
+	}
+	ok, err := q.NodeAdvertisesCapability(ctx, gen.NodeAdvertisesCapabilityParams{
+		ID: pgUUIDFrom(dest), Capability: wire.CapBlobTransfer,
+	})
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrDestCannotFetch
+	}
+	return nil
+}
+
 // AssignPinWithSource is the M5 scheduler's reservation primitive (D-M5-8a): it
 // makes (cid,dest) a pending desired assignment bound to a durable repair source
 // and appends a source-bearing assign change. source == uuid.Nil stores SQL NULL
@@ -40,6 +75,9 @@ func AssignPinWithSource(ctx context.Context, tx pgx.Tx, cid string, dest, sourc
 		return Assignment{}, ErrSourceIsDest
 	}
 	q := gen.New(tx)
+	if err := assertDestCanFetch(ctx, q, dest); err != nil {
+		return Assignment{}, err
+	}
 	if err := q.AcquireChangeLogLock(ctx); err != nil {
 		return Assignment{}, err
 	}
@@ -83,6 +121,9 @@ func AssignPinWithSource(ctx context.Context, tx pgx.Tx, cid string, dest, sourc
 // scheduler later).
 func AssignPin(ctx context.Context, tx pgx.Tx, cid string, nodeID uuid.UUID) (Assignment, error) {
 	q := gen.New(tx)
+	if err := assertDestCanFetch(ctx, q, nodeID); err != nil {
+		return Assignment{}, err
+	}
 	if err := q.AcquireChangeLogLock(ctx); err != nil {
 		return Assignment{}, err
 	}
