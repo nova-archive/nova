@@ -11,9 +11,17 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ENV CGO_ENABLED=1
-RUN go build -trimpath -ldflags="-s -w" -o /out/coordinator ./cmd/coordinator \
- && go build -trimpath -ldflags="-s -w" -o /out/novactl     ./cmd/novactl \
- && go build -trimpath -ldflags="-s -w" -o /out/migrate     ./cmd/migrate
+# P2-M7.3 P0-c: every binary in this image is stamped from the same three build
+# args, so an image and the binaries inside it cannot disagree about what they
+# are. Unstamped defaults are honest ("dev"/"unknown"), not empty.
+ARG NOVA_VERSION=dev
+ARG NOVA_REVISION=unknown
+ARG NOVA_BUILD_DATE=unknown
+RUN BI=github.com/nova-archive/nova/internal/buildinfo; \
+    LD="-s -w -X $BI.version=${NOVA_VERSION} -X $BI.revision=${NOVA_REVISION} -X $BI.buildDate=${NOVA_BUILD_DATE}"; \
+    go build -trimpath -ldflags="$LD" -o /out/coordinator ./cmd/coordinator \
+ && go build -trimpath -ldflags="$LD" -o /out/novactl     ./cmd/novactl \
+ && go build -trimpath -ldflags="$LD" -o /out/migrate     ./cmd/migrate
 
 # ---- node-builder: admin + widget + setup hermetic bundles ----
 FROM node:22-bookworm@sha256:c601a46abb4d2ab80a9dc3da208d50d1122642d53f17a101926ace71e5a9bf1c AS node-builder
@@ -47,4 +55,19 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 ENV NOVA_ADMIN_DIST_DIR=/usr/share/nova/admin \
     NOVA_WIDGET_DIST_DIR=/usr/share/nova/widget \
     NOVA_SETUP_DIST_DIR=/usr/share/nova/setup
+
+# OCI labels carry the same identity as the stamped binaries. `docker inspect`
+# is how an operator answers "what is actually running" without exec'ing into a
+# container, and how the release lock's descriptors are cross-checked.
+ARG NOVA_VERSION=dev
+ARG NOVA_REVISION=unknown
+ARG NOVA_BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="nova-coordinator" \
+      org.opencontainers.image.description="Nova coordinator: read path, upload path, federation control plane" \
+      org.opencontainers.image.version="${NOVA_VERSION}" \
+      org.opencontainers.image.revision="${NOVA_REVISION}" \
+      org.opencontainers.image.created="${NOVA_BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/nova-archive/nova" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -237,6 +237,10 @@ jobs:
           file: docker/node.Dockerfile
           push: true
           tags: ghcr.io/nova-archive/nova-node:sha-${{ github.sha }}
+          build-args: |
+            NOVA_VERSION=sha-${{ github.sha }}
+            NOVA_REVISION=${{ github.sha }}
+            NOVA_BUILD_DATE=${{ github.event.repository.updated_at }}
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
       - name: Sign the image digest (keyless)
         run: cosign sign --yes ghcr.io/nova-archive/nova-node@${{ steps.push.outputs.digest }}
@@ -303,6 +307,10 @@ jobs:
           file: docker/coordinator.Dockerfile
           push: true
           tags: ghcr.io/nova-archive/nova-coordinator:sha-${{ github.sha }}
+          build-args: |
+            NOVA_VERSION=sha-${{ github.sha }}
+            NOVA_REVISION=${{ github.sha }}
+            NOVA_BUILD_DATE=${{ github.event.repository.updated_at }}
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
       - name: Sign the image digest (keyless)
         run: cosign sign --yes ghcr.io/nova-archive/nova-coordinator@${{ steps.push.outputs.digest }}

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/nova-archive/nova/internal/buildinfo"
 	"github.com/nova-archive/nova/internal/db/migrations"
 	"github.com/pressly/goose/v3"
 )
@@ -32,12 +33,21 @@ func main() {
 }
 
 func run() error {
+	args := os.Args[1:]
+
+	// --version is build identity and needs no database. `migrate version`
+	// keeps its existing meaning — the applied schema version — which is why
+	// these are deliberately different spellings (P2-M7.3, P0-c).
+	if len(args) > 0 && args[0] == "--version" {
+		fmt.Println("migrate", buildinfo.String())
+		return nil
+	}
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return errors.New("DATABASE_URL is not set")
 	}
 
-	args := os.Args[1:]
 	if len(args) == 0 {
 		return errors.New("usage: migrate <up|down|status|version>")
 	}

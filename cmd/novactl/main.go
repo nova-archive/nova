@@ -39,6 +39,7 @@ import (
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
+	"github.com/nova-archive/nova/internal/buildinfo"
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/setup"
@@ -1299,6 +1300,11 @@ func main() {
 
 	var err error
 	switch args[0] {
+	case "--version", "version":
+		// Build identity, not the DB schema version. `migrate version` keeps
+		// that meaning; here there is nothing to collide with (P2-M7.3, P0-c).
+		fmt.Println("novactl", buildinfo.String())
+		return
 	case "auth":
 		err = runAuth(args[1:])
 	case "signed-url":

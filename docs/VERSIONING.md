@@ -29,18 +29,32 @@ number.
 
 ## How the version is stamped
 
-The Go build injects the version via ldflags:
+Every binary reads `internal/buildinfo`, and the Go build injects all
+three values via ldflags:
 
 ```sh
-go build -ldflags "-X main.buildVersion=$(git describe --tags --always --dirty)" ./cmd/coordinator
+BI=github.com/nova-archive/nova/internal/buildinfo
+go build -ldflags "-X $BI.version=$(git describe --tags --always --dirty) \
+                   -X $BI.revision=$(git rev-parse --short=7 HEAD) \
+                   -X $BI.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ./cmd/coordinator
 ```
 
-The `make build-coordinator` target does this automatically (`VERSION`
-is computed from `git describe`). At runtime the `NOVA_VERSION`
-environment variable overrides the stamped value — container images set
-it explicitly so the running version is unambiguous. When neither a
-stamp nor the env var is present (e.g. `go run`), the binary reports
-`dev`.
+`$(GO_LDFLAGS)` in the Makefile carries all three, and **every** build
+target uses it. The three Dockerfiles take `NOVA_VERSION`,
+`NOVA_REVISION` and `NOVA_BUILD_DATE` as build args, pass them to the
+same flags, and set the matching `org.opencontainers.image.*` labels, so
+an image and the binaries inside it cannot disagree. `--version` on any
+binary prints what it was stamped with.
+
+An unstamped build (`go run`, a bare `go build`) reports `dev` /
+`unknown` rather than an empty string, so a census can tell "this is a
+developer build" from "this field was never populated".
+
+**There is no runtime override.** `NOVA_VERSION` used to outrank the
+stamp at runtime; as of P2-M7.3 it does nothing. An environment variable
+that can lie about immutable build information has no legitimate use
+once a binary is stamped, and the fleet census must not be able to
+launder a claim through one.
 
 ## Release checklist (per milestone)
 

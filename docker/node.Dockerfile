@@ -9,7 +9,15 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ENV CGO_ENABLED=0
-RUN go build -trimpath -ldflags="-s -w" -o /out/nova-node ./cmd/node
+# P2-M7.3 P0-c: cmd/node previously had no version symbol at all, so a donor
+# could not report what it was running and the census could not be correct.
+ARG NOVA_VERSION=dev
+ARG NOVA_REVISION=unknown
+ARG NOVA_BUILD_DATE=unknown
+RUN BI=github.com/nova-archive/nova/internal/buildinfo; \
+    go build -trimpath \
+      -ldflags="-s -w -X $BI.version=${NOVA_VERSION} -X $BI.revision=${NOVA_REVISION} -X $BI.buildDate=${NOVA_BUILD_DATE}" \
+      -o /out/nova-node ./cmd/node
 
 # An empty directory to seed the storage mount point (see the runtime stage).
 RUN mkdir -p /seed/storage
@@ -27,6 +35,17 @@ COPY --from=build /out/nova-node /usr/local/bin/nova-node
 # numeric form of distroless `nonroot` — used literally so the COPY does not
 # depend on a passwd lookup in the target image.
 COPY --from=build --chown=65532:65532 /seed/storage /var/lib/nova-node/data
+
+ARG NOVA_VERSION=dev
+ARG NOVA_REVISION=unknown
+ARG NOVA_BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="nova-node" \
+      org.opencontainers.image.description="Nova donor pinning node" \
+      org.opencontainers.image.version="${NOVA_VERSION}" \
+      org.opencontainers.image.revision="${NOVA_REVISION}" \
+      org.opencontainers.image.created="${NOVA_BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/nova-archive/nova" \
+      org.opencontainers.image.licenses="Apache-2.0"
 
 USER nonroot:nonroot
 # The binary checks itself; the image needs no curl/wget.

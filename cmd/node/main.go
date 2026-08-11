@@ -7,6 +7,7 @@
 //	--config PATH    node.yaml path (required)
 //	--validate       load + validate, then exit (0 ok / non-zero on error)
 //	--healthcheck    GET the configured health endpoint, then exit (container HEALTHCHECK)
+//	--version        print build information and exit
 package main
 
 import (
@@ -25,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nova-archive/nova/internal/buildinfo"
 	"github.com/nova-archive/nova/internal/federation/replay"
 	"github.com/nova-archive/nova/internal/federation/transport"
 	"github.com/nova-archive/nova/internal/node/agent"
@@ -55,9 +57,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 		configPath  = fs.String("config", "", "path to node.yaml")
 		validate    = fs.Bool("validate", false, "validate config and exit")
 		healthcheck = fs.Bool("healthcheck", false, "probe the health endpoint and exit")
+		showVersion = fs.Bool("version", false, "print build information and exit")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// Before --config, because build identity is what an operator asks for when
+	// they cannot get the process to start (P2-M7.3, P0-c).
+	if *showVersion {
+		fmt.Fprintln(stdout, "nova-node", buildinfo.String())
+		return nil
 	}
 	if *configPath == "" {
 		return fmt.Errorf("--config is required")

@@ -11,7 +11,6 @@
 //	NOVA_KUBO_REPO            Kubo repo dir (required)
 //	IPFS_SWARM_KEY_FILE       swarm key path (required in private mode)
 //	NOVA_AUTH_ANONYMOUS       "true" to request anonymous mode (refused in prod builds)
-//	NOVA_VERSION              version string for /health (overrides the build-stamped version; default is the git-describe stamp, else "dev")
 //	NOVA_UPLOAD_TMP_DIR       tus chunk dir (default <tmpdir>/nova-uploads)
 //	NOVA_MAX_UPLOAD_SIZE_BYTES   max upload size (default 100 MiB)
 //	NOVA_MAX_CONCURRENT_ASSEMBLY concurrent in-memory encrypts (default 8)
@@ -68,6 +67,7 @@ import (
 	"github.com/nova-archive/nova/internal/auth/signedurl"
 	"github.com/nova-archive/nova/internal/auth/token"
 	"github.com/nova-archive/nova/internal/auth/uploadtoken"
+	"github.com/nova-archive/nova/internal/buildinfo"
 	"github.com/nova-archive/nova/internal/config"
 	"github.com/nova-archive/nova/internal/config/reload"
 	"github.com/nova-archive/nova/internal/db"
@@ -89,12 +89,6 @@ import (
 	"github.com/nova-archive/nova/pkg/coordinator/storage"
 )
 
-// buildVersion is stamped at build time via -ldflags "-X main.buildVersion=..."
-// (see the Makefile and docs/VERSIONING.md). It is the fallback used when the
-// NOVA_VERSION env var is unset; "dev" when neither a stamp nor the env var is
-// present (e.g. plain `go run`).
-var buildVersion = "dev"
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "coordinator: %v\n", err)
@@ -103,6 +97,13 @@ func main() {
 }
 
 func run() error {
+	// Build identity needs no database, no keystore and no config. An operator
+	// asks for it precisely when the process will not start (P2-M7.3, P0-c).
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println("nova-coordinator", buildinfo.String())
+		return nil
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -141,10 +142,7 @@ func run() error {
 		if listen == "" {
 			listen = ":9000"
 		}
-		version := os.Getenv("NOVA_VERSION")
-		if version == "" {
-			version = buildVersion
-		}
+		version := buildinfo.Version()
 		secretsDir := os.Getenv("NOVA_SECRETS_DIR")
 		if secretsDir == "" {
 			secretsDir = "/run/secrets"
@@ -183,10 +181,7 @@ func run() error {
 	if listen == "" {
 		listen = ":9000"
 	}
-	version := os.Getenv("NOVA_VERSION")
-	if version == "" {
-		version = buildVersion
-	}
+	version := buildinfo.Version()
 
 	tmpDir := os.Getenv("NOVA_UPLOAD_TMP_DIR")
 	if tmpDir == "" {

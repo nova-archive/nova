@@ -19,10 +19,16 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
-ARG VERSION=dev
+# P2-M7.3 P0-c: one stamping surface across all three images. This previously
+# set main.buildVersion, a symbol cmd/novactl does not define, so the flag was
+# accepted and discarded and the shipped novactl reported "dev".
+ARG NOVA_VERSION=dev
+ARG NOVA_REVISION=unknown
+ARG NOVA_BUILD_DATE=unknown
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    BI=github.com/nova-archive/nova/internal/buildinfo; \
     CGO_ENABLED=0 go build -trimpath \
-      -ldflags "-s -w -X main.buildVersion=${VERSION}" \
+      -ldflags "-s -w -X $BI.version=${NOVA_VERSION} -X $BI.revision=${NOVA_REVISION} -X $BI.buildDate=${NOVA_BUILD_DATE}" \
       -o /out/novactl ./cmd/novactl
 
 # --- pinned nebula-cert ----------------------------------------------------
@@ -39,13 +45,27 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --system --uid 10001 --create-home --home-dir /home/nova nova
 
-COPY --from=build   /out/novactl        /usr/local/bin/novactl
-COPY --from=nebula  /usr/bin/nebula-cert /usr/local/bin/nebula-cert
+COPY --from=build   /out/novactl  /usr/local/bin/novactl
+# nebula-cert lives at the image ROOT in nebulaoss/nebula, not /usr/bin. The
+# previous path made this stage fail outright; nothing caught it because no CI
+# job built the admin image, and D-M7.3-3 makes it a released artifact.
+COPY --from=nebula  /nebula-cert  /usr/local/bin/nebula-cert
 
 # The PKI volume is admin-only; create the mount point with tight permissions.
 RUN mkdir -p /var/lib/nova/fedpki /invites /import \
  && chown -R nova:nova /var/lib/nova /invites \
  && chmod 0700 /var/lib/nova/fedpki
+
+ARG NOVA_VERSION=dev
+ARG NOVA_REVISION=unknown
+ARG NOVA_BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="nova-admin" \
+      org.opencontainers.image.description="Nova admin tooling: novactl plus a pinned nebula-cert" \
+      org.opencontainers.image.version="${NOVA_VERSION}" \
+      org.opencontainers.image.revision="${NOVA_REVISION}" \
+      org.opencontainers.image.created="${NOVA_BUILD_DATE}" \
+      org.opencontainers.image.source="https://github.com/nova-archive/nova" \
+      org.opencontainers.image.licenses="Apache-2.0"
 
 USER nova
 WORKDIR /home/nova

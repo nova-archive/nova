@@ -6,8 +6,22 @@ DC        := docker compose -f docker/docker-compose.yml --env-file docker/.env
 
 # Unique per-build version stamp (see docs/VERSIONING.md). Tagged build => tag;
 # untagged => nearest tag + commits + short SHA; dirty tree => -dirty suffix.
-VERSION    := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-GO_LDFLAGS := -X main.buildVersion=$(VERSION)
+#
+# P2-M7.3 P0-c: all three values land in internal/buildinfo, which every binary
+# reads. Previously GO_LDFLAGS named main.buildVersion and no build target used
+# it, so every containerized coordinator reported "dev" and the donor binary
+# carried no version symbol at all. Anything that produces a shipped binary
+# MUST pass $(GO_LDFLAGS).
+VERSION       := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+REVISION      := $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
+BUILD_DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILDINFO_PKG := github.com/nova-archive/nova/internal/buildinfo
+GO_LDFLAGS    := -X $(BUILDINFO_PKG).version=$(VERSION) \
+                 -X $(BUILDINFO_PKG).revision=$(REVISION) \
+                 -X $(BUILDINFO_PKG).buildDate=$(BUILD_DATE)
+DOCKER_BUILD_ARGS := --build-arg NOVA_VERSION=$(VERSION) \
+                     --build-arg NOVA_REVISION=$(REVISION) \
+                     --build-arg NOVA_BUILD_DATE=$(BUILD_DATE)
 
 help:
 	@echo "Phase 1 M1 targets:"
@@ -42,7 +56,7 @@ tidy:
 
 build:
 	mkdir -p bin
-	go build -trimpath -ldflags="-s -w" -o bin/migrate ./cmd/migrate
+	go build -trimpath -ldflags="-s -w $(GO_LDFLAGS)" -o bin/migrate ./cmd/migrate
 
 lint:
 	golangci-lint run
@@ -77,7 +91,7 @@ build-context-check:
 # M13 Docker image build. Builds the multi-stage image locally (no push).
 # Requires Docker 29+ with BuildKit enabled (the default).
 docker-build: build-context-check
-	docker build -f docker/coordinator.Dockerfile -t nova-coordinator:dev .
+	docker build $(DOCKER_BUILD_ARGS) -f docker/coordinator.Dockerfile -t nova-coordinator:dev .
 
 # P2-M7.1: base images are digest-pinned (FROM image:tag@sha256:...).
 # Re-resolves each tag's current manifest-list digest and rewrites the pins in place.
@@ -252,14 +266,14 @@ node-deps-check:
 
 node-build:
 	mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/nova-node ./cmd/node
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w $(GO_LDFLAGS)" -o bin/nova-node ./cmd/node
 
 # Runs the binary's validate behavior over good + malformed fixtures (table-driven).
 node-validate:
 	go test -v ./cmd/node/... ./internal/node/config/... -count=1
 
 node-image:
-	docker build -f docker/node.Dockerfile -t nova-node:dev .
+	docker build $(DOCKER_BUILD_ARGS) -f docker/node.Dockerfile -t nova-node:dev .
 
 # P2-M7.3 P0-b: a generated donor bundle must actually reach Docker's `healthy`
 # state. Nothing had ever started one, which is how a probe naming a path that
