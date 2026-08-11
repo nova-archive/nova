@@ -1056,6 +1056,16 @@ type Node struct {
 	TrustReviewReason          pgtype.Text
 	DrainingAt                 pgtype.Timestamptz
 	BelowFloorSince            pgtype.Timestamptz
+	ReportedClientVersion      pgtype.Text
+	ReportedImageDigest        pgtype.Text
+	ReportedBundleLockDigest   pgtype.Text
+	EffectiveCapabilities      []string
+	ReportedProtocols          []string
+	RuntimeContractObservedAt  pgtype.Timestamptz
+	ExpectedImageDigest        pgtype.Text
+	ExpectedBundleLockDigest   pgtype.Text
+	ExpectedAt                 pgtype.Timestamptz
+	ExpectedBy                 pgtype.Text
 }
 
 type PinAssignment struct {
@@ -1134,6 +1144,33 @@ type TakedownRepeatInfringer struct {
 	UserID       pgtype.UUID
 	Strikes      int32
 	LastStrikeAt time.Time
+}
+
+type UpgradeEvent struct {
+	ID         int64
+	RunID      pgtype.UUID
+	Sequence   int64
+	Phase      string
+	State      string
+	Detail     []byte
+	RecordedAt time.Time
+}
+
+type UpgradeRun struct {
+	ID                      pgtype.UUID
+	FromRelease             string
+	ToRelease               string
+	FromSchema              int64
+	ToSchema                int64
+	ReleaseLockDigest       string
+	ExpectedArtifacts       []byte
+	Obligations             []byte
+	ConfigFingerprintBefore string
+	ConfigFingerprintAfter  string
+	State                   string
+	Actor                   string
+	StartedAt               time.Time
+	CompletedAt             pgtype.Timestamptz
 }
 
 type UploadSession struct {

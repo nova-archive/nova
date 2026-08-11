@@ -348,3 +348,55 @@ SET failure_domain_id  = COALESCE(NULLIF(sqlc.arg(failure_domain)::text, ''), fa
     region             = COALESCE(NULLIF(sqlc.arg(region)::text, ''), region),
     operator_verified_at = now()
 WHERE id = $1;
+
+-- ===========================================================================
+-- P2-M7.3: upgrade runs and events (D-M7.3-10), and the operator's expectation
+-- for a node (D-M7.3-6b).
+-- ===========================================================================
+
+-- name: CreateUpgradeRun :one
+-- The run is opened BEFORE anything is applied, so an interruption leaves a
+-- 'started' row a later run can find rather than no row at all.
+INSERT INTO upgrade_runs (
+    id, from_release, to_release, from_schema, to_schema, release_lock_digest,
+    expected_artifacts, obligations, config_fingerprint_before, state, actor
+) VALUES (
+    sqlc.arg(id), sqlc.arg(from_release), sqlc.arg(to_release),
+    sqlc.arg(from_schema), sqlc.arg(to_schema), sqlc.arg(release_lock_digest),
+    sqlc.arg(expected_artifacts), sqlc.arg(obligations),
+    sqlc.arg(config_fingerprint_before), 'started', sqlc.arg(actor)
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING *;
+
+-- name: RecordUpgradeEvent :exec
+-- Idempotent on (run_id, sequence): the local journal is replayed into this
+-- table after 0019 applies, and a crash midway through that backfill must
+-- converge rather than duplicate on restart.
+INSERT INTO upgrade_events (run_id, sequence, phase, state, detail)
+VALUES (sqlc.arg(run_id), sqlc.arg(sequence), sqlc.arg(phase), sqlc.arg(state), sqlc.arg(detail))
+ON CONFLICT (run_id, sequence) DO NOTHING;
+
+-- name: CompleteUpgradeRun :exec
+UPDATE upgrade_runs
+SET state = sqlc.arg(state),
+    config_fingerprint_after = sqlc.arg(config_fingerprint_after),
+    completed_at = now()
+WHERE id = sqlc.arg(id);
+
+-- name: LatestUpgradeRun :one
+SELECT * FROM upgrade_runs ORDER BY started_at DESC LIMIT 1;
+
+-- name: ListUpgradeEvents :many
+SELECT * FROM upgrade_events WHERE run_id = $1 ORDER BY sequence;
+
+-- name: SetNodeExpectedArtifact :exec
+-- What the OPERATOR authorized for this node, from a verified release lock.
+-- Both digests are set together: a rollout authorizes one topology, and
+-- half-setting it would leave the census comparing against a mixture.
+UPDATE nodes
+SET expected_image_digest       = sqlc.arg(expected_image_digest),
+    expected_bundle_lock_digest = sqlc.arg(expected_bundle_lock_digest),
+    expected_at                 = now(),
+    expected_by                 = sqlc.arg(expected_by)
+WHERE id = $1;

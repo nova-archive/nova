@@ -51,6 +51,92 @@ func (q *Queries) AcquireChangeLogLock(ctx context.Context) error {
 	return err
 }
 
+const completeUpgradeRun = `-- name: CompleteUpgradeRun :exec
+UPDATE upgrade_runs
+SET state = $1,
+    config_fingerprint_after = $2,
+    completed_at = now()
+WHERE id = $3
+`
+
+type CompleteUpgradeRunParams struct {
+	State                  string
+	ConfigFingerprintAfter string
+	ID                     pgtype.UUID
+}
+
+func (q *Queries) CompleteUpgradeRun(ctx context.Context, arg CompleteUpgradeRunParams) error {
+	_, err := q.db.Exec(ctx, completeUpgradeRun, arg.State, arg.ConfigFingerprintAfter, arg.ID)
+	return err
+}
+
+const createUpgradeRun = `-- name: CreateUpgradeRun :one
+
+INSERT INTO upgrade_runs (
+    id, from_release, to_release, from_schema, to_schema, release_lock_digest,
+    expected_artifacts, obligations, config_fingerprint_before, state, actor
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8,
+    $9, 'started', $10
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING id, from_release, to_release, from_schema, to_schema, release_lock_digest, expected_artifacts, obligations, config_fingerprint_before, config_fingerprint_after, state, actor, started_at, completed_at
+`
+
+type CreateUpgradeRunParams struct {
+	ID                      pgtype.UUID
+	FromRelease             string
+	ToRelease               string
+	FromSchema              int64
+	ToSchema                int64
+	ReleaseLockDigest       string
+	ExpectedArtifacts       []byte
+	Obligations             []byte
+	ConfigFingerprintBefore string
+	Actor                   string
+}
+
+// ===========================================================================
+// P2-M7.3: upgrade runs and events (D-M7.3-10), and the operator's expectation
+// for a node (D-M7.3-6b).
+// ===========================================================================
+// The run is opened BEFORE anything is applied, so an interruption leaves a
+// 'started' row a later run can find rather than no row at all.
+func (q *Queries) CreateUpgradeRun(ctx context.Context, arg CreateUpgradeRunParams) (UpgradeRun, error) {
+	row := q.db.QueryRow(ctx, createUpgradeRun,
+		arg.ID,
+		arg.FromRelease,
+		arg.ToRelease,
+		arg.FromSchema,
+		arg.ToSchema,
+		arg.ReleaseLockDigest,
+		arg.ExpectedArtifacts,
+		arg.Obligations,
+		arg.ConfigFingerprintBefore,
+		arg.Actor,
+	)
+	var i UpgradeRun
+	err := row.Scan(
+		&i.ID,
+		&i.FromRelease,
+		&i.ToRelease,
+		&i.FromSchema,
+		&i.ToSchema,
+		&i.ReleaseLockDigest,
+		&i.ExpectedArtifacts,
+		&i.Obligations,
+		&i.ConfigFingerprintBefore,
+		&i.ConfigFingerprintAfter,
+		&i.State,
+		&i.Actor,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const deleteNodeAssignments = `-- name: DeleteNodeAssignments :execrows
 DELETE FROM pin_assignments WHERE node_id = $1
 `
@@ -192,7 +278,7 @@ func (q *Queries) GetEnvelopeSize(ctx context.Context, cid string) (int64, error
 }
 
 const getNodeByID = `-- name: GetNodeByID :one
-SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason, draining_at, below_floor_since FROM nodes WHERE id = $1
+SELECT id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason, draining_at, below_floor_since, reported_client_version, reported_image_digest, reported_bundle_lock_digest, effective_capabilities, reported_protocols, runtime_contract_observed_at, expected_image_digest, expected_bundle_lock_digest, expected_at, expected_by FROM nodes WHERE id = $1
 `
 
 func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error) {
@@ -240,6 +326,16 @@ func (q *Queries) GetNodeByID(ctx context.Context, id pgtype.UUID) (Node, error)
 		&i.TrustReviewReason,
 		&i.DrainingAt,
 		&i.BelowFloorSince,
+		&i.ReportedClientVersion,
+		&i.ReportedImageDigest,
+		&i.ReportedBundleLockDigest,
+		&i.EffectiveCapabilities,
+		&i.ReportedProtocols,
+		&i.RuntimeContractObservedAt,
+		&i.ExpectedImageDigest,
+		&i.ExpectedBundleLockDigest,
+		&i.ExpectedAt,
+		&i.ExpectedBy,
 	)
 	return i, err
 }
@@ -545,6 +641,32 @@ func (q *Queries) IsRepairSourceableForCID(ctx context.Context, arg IsRepairSour
 	return ok, err
 }
 
+const latestUpgradeRun = `-- name: LatestUpgradeRun :one
+SELECT id, from_release, to_release, from_schema, to_schema, release_lock_digest, expected_artifacts, obligations, config_fingerprint_before, config_fingerprint_after, state, actor, started_at, completed_at FROM upgrade_runs ORDER BY started_at DESC LIMIT 1
+`
+
+func (q *Queries) LatestUpgradeRun(ctx context.Context) (UpgradeRun, error) {
+	row := q.db.QueryRow(ctx, latestUpgradeRun)
+	var i UpgradeRun
+	err := row.Scan(
+		&i.ID,
+		&i.FromRelease,
+		&i.ToRelease,
+		&i.FromSchema,
+		&i.ToSchema,
+		&i.ReleaseLockDigest,
+		&i.ExpectedArtifacts,
+		&i.Obligations,
+		&i.ConfigFingerprintBefore,
+		&i.ConfigFingerprintAfter,
+		&i.State,
+		&i.Actor,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const listAdmissionCandidates = `-- name: ListAdmissionCandidates :many
 SELECT n.id AS node_id, n.reputation_score, n.last_free_bytes
 FROM nodes n
@@ -694,6 +816,38 @@ func (q *Queries) ListNodes(ctx context.Context) ([]ListNodesRow, error) {
 	return items, nil
 }
 
+const listUpgradeEvents = `-- name: ListUpgradeEvents :many
+SELECT id, run_id, sequence, phase, state, detail, recorded_at FROM upgrade_events WHERE run_id = $1 ORDER BY sequence
+`
+
+func (q *Queries) ListUpgradeEvents(ctx context.Context, runID pgtype.UUID) ([]UpgradeEvent, error) {
+	rows, err := q.db.Query(ctx, listUpgradeEvents, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UpgradeEvent
+	for rows.Next() {
+		var i UpgradeEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.Sequence,
+			&i.Phase,
+			&i.State,
+			&i.Detail,
+			&i.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVerifiedHoldersByCID = `-- name: ListVerifiedHoldersByCID :many
 SELECT node_id, generation FROM pin_assignments WHERE cid = $1 AND state = 'acked' ORDER BY node_id
 `
@@ -783,6 +937,34 @@ func (q *Queries) PruneChangeLog(ctx context.Context, createdAt time.Time) (int6
 	return pruned_through_seq, err
 }
 
+const recordUpgradeEvent = `-- name: RecordUpgradeEvent :exec
+INSERT INTO upgrade_events (run_id, sequence, phase, state, detail)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (run_id, sequence) DO NOTHING
+`
+
+type RecordUpgradeEventParams struct {
+	RunID    pgtype.UUID
+	Sequence int64
+	Phase    string
+	State    string
+	Detail   []byte
+}
+
+// Idempotent on (run_id, sequence): the local journal is replayed into this
+// table after 0019 applies, and a crash midway through that backfill must
+// converge rather than duplicate on restart.
+func (q *Queries) RecordUpgradeEvent(ctx context.Context, arg RecordUpgradeEventParams) error {
+	_, err := q.db.Exec(ctx, recordUpgradeEvent,
+		arg.RunID,
+		arg.Sequence,
+		arg.Phase,
+		arg.State,
+		arg.Detail,
+	)
+	return err
+}
+
 const registerNode = `-- name: RegisterNode :one
 INSERT INTO nodes (
     id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name,
@@ -809,7 +991,7 @@ ON CONFLICT (id) DO UPDATE SET
     assignment_sync_state          = 'snapshot_required',
     last_seen_at                   = now(),
     last_status_change_at          = now()
-RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason, draining_at, below_floor_since
+RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason, draining_at, below_floor_since, reported_client_version, reported_image_digest, reported_bundle_lock_digest, effective_capabilities, reported_protocols, runtime_contract_observed_at, expected_image_digest, expected_bundle_lock_digest, expected_at, expected_by
 `
 
 type RegisterNodeParams struct {
@@ -894,6 +1076,16 @@ func (q *Queries) RegisterNode(ctx context.Context, arg RegisterNodeParams) (Nod
 		&i.TrustReviewReason,
 		&i.DrainingAt,
 		&i.BelowFloorSince,
+		&i.ReportedClientVersion,
+		&i.ReportedImageDigest,
+		&i.ReportedBundleLockDigest,
+		&i.EffectiveCapabilities,
+		&i.ReportedProtocols,
+		&i.RuntimeContractObservedAt,
+		&i.ExpectedImageDigest,
+		&i.ExpectedBundleLockDigest,
+		&i.ExpectedAt,
+		&i.ExpectedBy,
 	)
 	return i, err
 }
@@ -1071,6 +1263,35 @@ func (q *Queries) SetNodeDomain(ctx context.Context, arg SetNodeDomainParams) (i
 	return result.RowsAffected(), nil
 }
 
+const setNodeExpectedArtifact = `-- name: SetNodeExpectedArtifact :exec
+UPDATE nodes
+SET expected_image_digest       = $2,
+    expected_bundle_lock_digest = $3,
+    expected_at                 = now(),
+    expected_by                 = $4
+WHERE id = $1
+`
+
+type SetNodeExpectedArtifactParams struct {
+	ID                       pgtype.UUID
+	ExpectedImageDigest      pgtype.Text
+	ExpectedBundleLockDigest pgtype.Text
+	ExpectedBy               pgtype.Text
+}
+
+// What the OPERATOR authorized for this node, from a verified release lock.
+// Both digests are set together: a rollout authorizes one topology, and
+// half-setting it would leave the census comparing against a mixture.
+func (q *Queries) SetNodeExpectedArtifact(ctx context.Context, arg SetNodeExpectedArtifactParams) error {
+	_, err := q.db.Exec(ctx, setNodeExpectedArtifact,
+		arg.ID,
+		arg.ExpectedImageDigest,
+		arg.ExpectedBundleLockDigest,
+		arg.ExpectedBy,
+	)
+	return err
+}
+
 const setNodeStatus = `-- name: SetNodeStatus :exec
 UPDATE nodes SET status = $2, last_status_change_at = now() WHERE id = $1
 `
@@ -1116,7 +1337,7 @@ SET last_seen_at      = now(),
     assignment_sync_state = CASE WHEN status = 'unreachable' THEN 'reconciling' ELSE assignment_sync_state END,
     last_status_change_at = CASE WHEN status IN ('suspect','unreachable') THEN now() ELSE last_status_change_at END
 WHERE id = $1
-RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason, draining_at, below_floor_since
+RETURNING id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name, geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters, status, reputation_score, joined_at, last_seen_at, last_status_change_at, trust_state, selected_protocol, advertised_capabilities, required_capabilities, client_version, cert_revoked_at, cert_rotation_started_at, cert_rotated_at, last_free_bytes, last_stored_bytes, source_nebula_addr, failure_domain_id, donor_principal_id, provider, asn, region, operator_verified_at, placement_weight, assignment_sync_state, revoked_signaled_at, last_egress_remaining_bytes, last_egress_capacity_bytes, last_egress_refill_bps, trust_epoch_started_at, trust_review_required_at, trust_review_reason, draining_at, below_floor_since, reported_client_version, reported_image_digest, reported_bundle_lock_digest, effective_capabilities, reported_protocols, runtime_contract_observed_at, expected_image_digest, expected_bundle_lock_digest, expected_at, expected_by
 `
 
 type UpdateNodeHeartbeatParams struct {
@@ -1189,6 +1410,16 @@ func (q *Queries) UpdateNodeHeartbeat(ctx context.Context, arg UpdateNodeHeartbe
 		&i.TrustReviewReason,
 		&i.DrainingAt,
 		&i.BelowFloorSince,
+		&i.ReportedClientVersion,
+		&i.ReportedImageDigest,
+		&i.ReportedBundleLockDigest,
+		&i.EffectiveCapabilities,
+		&i.ReportedProtocols,
+		&i.RuntimeContractObservedAt,
+		&i.ExpectedImageDigest,
+		&i.ExpectedBundleLockDigest,
+		&i.ExpectedAt,
+		&i.ExpectedBy,
 	)
 	return i, err
 }

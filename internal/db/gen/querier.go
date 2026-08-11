@@ -44,6 +44,7 @@ type Querier interface {
 	ClearScheduledTombstone(ctx context.Context, cid string) error
 	// Operator clear-review: restart the epoch, drop the marker (D-M6-8).
 	ClearTrustReview(ctx context.Context, id pgtype.UUID) error
+	CompleteUpgradeRun(ctx context.Context, arg CompleteUpgradeRunParams) error
 	CountAckedTransfersSince(ctx context.Context, arg CountAckedTransfersSinceParams) (int64, error)
 	CountActiveSessionsByToken(ctx context.Context, uploadTokenID pgtype.UUID) (int64, error)
 	CountActiveSigningKeys(ctx context.Context) (int64, error)
@@ -106,6 +107,13 @@ type Querier interface {
 	// public_archival CHECK requires visibility='public'). Backs
 	// `novactl collection create` so operators don't seed collections via raw SQL.
 	CreateCollection(ctx context.Context, arg CreateCollectionParams) (Collection, error)
+	// ===========================================================================
+	// P2-M7.3: upgrade runs and events (D-M7.3-10), and the operator's expectation
+	// for a node (D-M7.3-6b).
+	// ===========================================================================
+	// The run is opened BEFORE anything is applied, so an interruption leaves a
+	// 'started' row a later run can find rather than no row at all.
+	CreateUpgradeRun(ctx context.Context, arg CreateUpgradeRunParams) (UpgradeRun, error)
 	CreateUploadSession(ctx context.Context, arg CreateUploadSessionParams) (pgtype.UUID, error)
 	CreateUploadToken(ctx context.Context, arg CreateUploadTokenParams) (UploadToken, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
@@ -292,6 +300,7 @@ type Querier interface {
 	// copy of this CID (D-M5-8a/8c). A non-advertiser is read-sourceable but never
 	// repair-sourceable (mixed-version safety).
 	IsRepairSourceableForCID(ctx context.Context, arg IsRepairSourceableForCIDParams) (bool, error)
+	LatestUpgradeRun(ctx context.Context) (UpgradeRun, error)
 	// Per-node acked pin count + operator-VERIFIED placement dimensions (NULL when the
 	// node is unverified or the field is blank). The Go side collapses NULL → "unknown"
 	// before grouping, so a node cannot manufacture diversity (D-M5-3a/10).
@@ -370,6 +379,7 @@ type Querier interface {
 	// Healing input: CIDs at a given safety tier, smallest target first is irrelevant;
 	// ordered by updated_at so the oldest under-replication is addressed first.
 	ListUnderReplicatedByTier(ctx context.Context, arg ListUnderReplicatedByTierParams) ([]ListUnderReplicatedByTierRow, error)
+	ListUpgradeEvents(ctx context.Context, runID pgtype.UUID) ([]UpgradeEvent, error)
 	ListUploadTokens(ctx context.Context) ([]ListUploadTokensRow, error)
 	// Owner resolution for `novactl collection create`: the sole operator user is
 	// the default collection owner when --owner is omitted.
@@ -441,6 +451,10 @@ type Querier interface {
 	// Resolve only the unresolved row, so a replayed challenge_id cannot overwrite a
 	// decided audit (the caller asserts 1 row; 0 = replay/already-decided).
 	RecordAuditOutcome(ctx context.Context, arg RecordAuditOutcomeParams) (int64, error)
+	// Idempotent on (run_id, sequence): the local journal is replayed into this
+	// table after 0019 applies, and a crash midway through that backfill must
+	// converge rather than duplicate on restart.
+	RecordUpgradeEvent(ctx context.Context, arg RecordUpgradeEventParams) error
 	// Registration (insert or re-register) always lands the node in
 	// assignment_sync_state='snapshot_required' (D-M5-4a): a fresh node has no synced
 	// desired set, and a re-registering one (e.g. a returning evicted node) must
@@ -520,6 +534,10 @@ type Querier interface {
 	// blob_replication_state.sourceable_acked_count (that is a safety count).
 	// One-shot; a second drain is a no-op here (idempotency: timestamp preserved).
 	SetNodeDraining(ctx context.Context, id pgtype.UUID) (int64, error)
+	// What the OPERATOR authorized for this node, from a verified release lock.
+	// Both digests are set together: a rollout authorizes one topology, and
+	// half-setting it would leave the census comparing against a mixture.
+	SetNodeExpectedArtifact(ctx context.Context, arg SetNodeExpectedArtifactParams) error
 	SetNodeStatus(ctx context.Context, arg SetNodeStatusParams) error
 	SetNodeSyncState(ctx context.Context, arg SetNodeSyncStateParams) error
 	// Hash-mismatch path: reset epoch + mark for operator review (D-M6-2b).

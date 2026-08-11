@@ -889,3 +889,90 @@ ALTER TABLE nodes
 -- sustained predicate and the sweep's victim selection.
 CREATE INDEX nodes_below_floor_idx ON nodes (below_floor_since)
     WHERE below_floor_since IS NOT NULL;
+
+-- ============================================================================
+-- P2-M7.3 (migration 0019_upgrade_runs.sql): the day-2 contract's state.
+-- ============================================================================
+
+-- Upgrade history as a RUN with PHASES. One flat "upgraded at T" row cannot
+-- describe an interrupted upgrade, which is exactly when the record matters
+-- most; the phase/state pair is what lets a later run find and reconcile one.
+CREATE TABLE upgrade_runs (
+    id uuid PRIMARY KEY,
+    from_release text NOT NULL DEFAULT '',
+    to_release   text NOT NULL,
+    from_schema bigint NOT NULL,
+    to_schema   bigint NOT NULL,
+    release_lock_digest text NOT NULL DEFAULT '',
+    expected_artifacts jsonb NOT NULL DEFAULT '{}'::jsonb,
+    obligations        jsonb NOT NULL DEFAULT '{}'::jsonb,
+    config_fingerprint_before text NOT NULL DEFAULT '',
+    config_fingerprint_after  text NOT NULL DEFAULT '',
+    state text NOT NULL CHECK (state IN ('started','passed','failed','aborted','skipped','interrupted')),
+    actor text NOT NULL DEFAULT '',
+    started_at   timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz
+);
+
+-- Upgrade history is evidence (T1.24), so the FK RESTRICTs rather than
+-- CASCADEs: deleting a run must not be a way to erase its own events. Removing
+-- history is a privileged action and belongs in audit_log.
+--
+-- (run_id, sequence) is the REPLAY KEY. 0019 creates these tables, so the first
+-- upgrade from schema 18 journals locally and backfills afterwards; a crash
+-- midway through that backfill must converge on restart rather than duplicate
+-- every event already written. A bigserial id alone cannot express "this
+-- journal event is already here".
+CREATE TABLE upgrade_events (
+    id bigserial PRIMARY KEY,
+    run_id uuid NOT NULL REFERENCES upgrade_runs(id) ON DELETE RESTRICT,
+    sequence bigint NOT NULL,
+    phase text NOT NULL CHECK (phase IN ('preflight','apply','verify','rollback')),
+    state text NOT NULL CHECK (state IN ('started','passed','failed','aborted','skipped','interrupted')),
+    detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+    recorded_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (run_id, sequence)
+);
+
+CREATE INDEX upgrade_runs_started_at_idx ON upgrade_runs (started_at DESC);
+CREATE INDEX upgrade_events_run_idx      ON upgrade_events (run_id, recorded_at);
+
+-- Donor claims split into two classes with different authority (D-M7.3-6a).
+--
+-- IDENTITY CLAIMS are census-only. A process cannot discover its own OCI
+-- manifest digest without a Docker socket, which Nova gives neither coordinator
+-- nor doctor, so these are configured declarations and a donor may report
+-- anything. They never gate protocol access, placement, durability counting,
+-- trust graduation, drain or eviction; a mismatch against expected_* is a
+-- supply-chain warning. Image digest and bundle-lock digest are separate
+-- relations because a donor can match one and not the other.
+ALTER TABLE nodes ADD COLUMN reported_client_version     text;
+ALTER TABLE nodes ADD COLUMN reported_image_digest       text;
+ALTER TABLE nodes ADD COLUMN reported_bundle_lock_digest text;
+
+-- CAPABILITY ADVERTISEMENTS do gate routing — a donor that cannot serve reads
+-- must not be sent read work — which is a routing decision, not a security
+-- authorization. effective_capabilities is the SINGLE operational source read
+-- by federation.sql, replication.sql, storage_state.sql and possession.sql;
+-- keeping a second source is how a role predicate silently goes on consulting a
+-- stale set. Donor-advertised protocols stay separate from selected_protocol,
+-- which is the coordinator's negotiated outcome, never a donor claim.
+ALTER TABLE nodes ADD COLUMN effective_capabilities text[];
+ALTER TABLE nodes ADD COLUMN reported_protocols     text[];
+
+-- Legacy omission and rollback produce the IDENTICAL wire message: a heartbeat
+-- with no runtime_contract. NULL means this node has never sent one, so
+-- omission is a pre-M7.3 donor and its registration snapshot stands; non-NULL
+-- means omission is a downgrade, and stale optional-role eligibility is dropped
+-- while replicas are retained. Re-registration resets it to NULL, without which
+-- a legacy donor returning after eviction inherits a stamped marker and reads
+-- as rolled back.
+ALTER TABLE nodes ADD COLUMN runtime_contract_observed_at timestamptz;
+
+-- What the OPERATOR authorized for this node, from a verified release lock via
+-- `novactl node rollout authorize`. Storing an expectation with nothing to
+-- compare against would leave the operator unable to confirm the rollout.
+ALTER TABLE nodes ADD COLUMN expected_image_digest       text;
+ALTER TABLE nodes ADD COLUMN expected_bundle_lock_digest text;
+ALTER TABLE nodes ADD COLUMN expected_at                 timestamptz;
+ALTER TABLE nodes ADD COLUMN expected_by                 text;

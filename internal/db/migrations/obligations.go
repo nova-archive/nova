@@ -265,6 +265,16 @@ var table = []Obligations{
 		OldBinaryCompatible: true, RelativeTo: "0017", OnlineApplicable: true,
 		Note: "One nullable column and one index on nodes.",
 	},
+	{
+		File: "0019_upgrade_runs.sql", Schema: 19,
+		OldBinaryCompatible: true, RelativeTo: "0018", OnlineApplicable: true,
+		Note: "P2-M7.3. Two new tables (upgrade_runs, upgrade_events) and ten nullable columns " +
+			"on nodes, plus a backfill of effective_capabilities from advertised_capabilities " +
+			"that touches only donor-scale rows. The baseline coordinator neither reads nor " +
+			"writes any of it, which is what makes a coordinator rollback across this " +
+			"boundary survivable — and this range must stay auto-appliable, or every " +
+			"existing deployment stops at a runbook to cross it.",
+	},
 }
 
 // Lookup returns the obligations declared for a migration filename.
