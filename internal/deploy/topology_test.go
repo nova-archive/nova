@@ -1,6 +1,8 @@
 package deploy_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -149,5 +151,77 @@ func TestBundleTopology_NamedVolumesAreDeclared(t *testing.T) {
 func TestBundleTopology_NoPublishedPorts(t *testing.T) {
 	if strings.Contains(string(render(t, testParams())["compose.yaml"]), "\n    ports:") {
 		t.Fatal("a donor must publish no ports; all traffic is mTLS over the overlay")
+	}
+}
+
+// TestBundleTopology_NovaNodeInheritsTheImageHealthcheck (P2-M7.3, P0-b).
+//
+// The generated bundle used to override the probe with `/nova-node`, while the
+// binary is installed at /usr/local/bin/nova-node. Every donor created by the
+// documented path therefore reported unhealthy while working perfectly, and
+// nothing noticed because no gate had ever started a generated bundle.
+//
+// The fix is to declare no override at all. Restating the image's own probe in
+// the template would leave two places to keep in sync, and this test would then
+// be asserting that two strings match rather than that the probe works.
+func TestBundleTopology_NovaNodeInheritsTheImageHealthcheck(t *testing.T) {
+	out := render(t, testParams())
+	var c struct {
+		Services map[string]struct {
+			Healthcheck map[string]any `yaml:"healthcheck"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(out["compose.yaml"], &c); err != nil {
+		t.Fatalf("generated compose.yaml is not valid YAML: %v", err)
+	}
+	if hc := c.Services["nova-node"].Healthcheck; len(hc) > 0 {
+		t.Errorf("nova-node declares a healthcheck override (%v); the image's own probe is "+
+			"the single source, and an override is how the /nova-node defect shipped", hc)
+	}
+}
+
+// TestNodeImageHealthcheckNamesTheInstalledBinary is the other half: inheriting
+// the image's probe is only safe while the image's probe is right. This reads
+// the Dockerfile rather than the image so it runs in the hermetic tier.
+func TestNodeImageHealthcheckNamesTheInstalledBinary(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "docker", "node.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+
+	const installed = "/usr/local/bin/nova-node"
+	if !strings.Contains(text, "COPY --from=build /out/nova-node "+installed) {
+		t.Fatalf("node.Dockerfile no longer installs the binary at %s; this test's premise is stale", installed)
+	}
+
+	var probe string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "CMD [") && strings.Contains(line, "--healthcheck") {
+			probe = line
+		}
+	}
+	if probe == "" {
+		t.Fatal("node.Dockerfile declares no HEALTHCHECK probe; the generated bundle inherits nothing")
+	}
+	if !strings.Contains(probe, `"`+installed+`"`) {
+		t.Errorf("the image HEALTHCHECK does not exec %s:\n  %s", installed, strings.TrimSpace(probe))
+	}
+}
+
+// TestNodeImageSeedsTheStorageMountPoint (P2-M7.3, P0-b).
+//
+// Docker seeds a fresh named volume from the image's content at the mount path.
+// When the path does not exist in the image it creates it root-owned, and
+// nova-node's write-probe of storage_dir then fails on every boot — the donor
+// never becomes healthy no matter what the probe says.
+func TestNodeImageSeedsTheStorageMountPoint(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "docker", "node.Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "--chown=65532:65532 /seed/storage "+deploy.DirStorage) {
+		t.Errorf("node.Dockerfile must create %s owned by the runtime user, or a fresh "+
+			"named volume arrives root-owned and unwritable", deploy.DirStorage)
 	}
 }

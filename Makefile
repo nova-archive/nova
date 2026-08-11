@@ -261,6 +261,13 @@ node-validate:
 node-image:
 	docker build -f docker/node.Dockerfile -t nova-node:dev .
 
+# P2-M7.3 P0-b: a generated donor bundle must actually reach Docker's `healthy`
+# state. Nothing had ever started one, which is how a probe naming a path that
+# does not exist in the image shipped. TUN-free — see the script's header.
+.PHONY: donor-bundle-health
+donor-bundle-health:
+	./scripts/check-donor-bundle-health.sh
+
 node-image-inventory: node-image
 	./scripts/check_node_image.sh nova-node:dev
 

@@ -56,11 +56,11 @@ services:
       - ./secrets:/run/secrets:ro
       - node-data:/var/lib/nova-node/data
     command: ["--config", "/etc/nova/node.yaml"]
-    healthcheck:
-      test: ["CMD", "/nova-node", "--healthcheck", "--config", "/etc/nova/node.yaml"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+    # NO healthcheck override. The image declares its own (node.Dockerfile),
+    # and it is correct. The override this replaces named /nova-node, while the
+    # binary is at /usr/local/bin/nova-node, so every generated donor reported
+    # unhealthy while working perfectly. Restating the probe here would leave
+    # two places to keep in sync and no test that they agree.
     restart: unless-stopped
 
 volumes:

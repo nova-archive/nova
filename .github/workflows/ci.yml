@@ -193,6 +193,8 @@ jobs:
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Build donor image (no push)
         run: make node-image
+      - name: A generated donor bundle reports healthy
+        run: NOVA_NODE_IMAGE=nova-node:dev make donor-bundle-health
       - name: Forbidden-inventory scan
         run: make node-image-inventory
       - name: Generate SBOM (syft)
