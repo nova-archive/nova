@@ -141,8 +141,15 @@ federation-doctor:
 	@go run ./cmd/novactl federation doctor || true
 	@$(MAKE) --no-print-directory compose-custody-check
 
+# P2-M7.3 D-M7.3-2b: every checked-in release intent parses, validates and is
+# named for the version it declares. novarel is a BUILD-TIME tool — it lives
+# under internal/release/cmd so nothing ships it in a runtime image (T1.22).
+.PHONY: release-validate
+release-validate:
+	go run ./internal/release/cmd/novarel validate
+
 # Everything the deployment-artifacts CI job runs, in one local target.
-artifact-gates: gen-deploy-check deploy-gates docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check
+artifact-gates: gen-deploy-check deploy-gates docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check release-validate
 
 .PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
 

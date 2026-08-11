@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "version": "v0.3.0",
+  "support_epoch": "2026-08-11T00:00:00Z",
+  "support_until": "2027-02-11T00:00:00Z",
+  "supported_predecessors": [
+    {
+      "kind": "commit",
+      "commit": "143c459",
+      "schema": 18,
+      "support_epoch": "2026-08-08T00:00:00Z"
+    }
+  ],
+  "target_schema": 19,
+  "platforms": ["linux/amd64"],
+  "repositories": {
+    "nova-coordinator": "ghcr.io/nova-archive/nova-coordinator",
+    "nova-node": "ghcr.io/nova-archive/nova-node",
+    "nova-admin": "ghcr.io/nova-archive/nova-admin"
+  },
+  "sidecars": {
+    "nebula": "nebulaoss/nebula:1.11.0@sha256:1bee6515faf687e590ab42e14a769d406bf1dc59cb03e21520ae50669adc0581",
+    "kubo": "ipfs/kubo:v0.38.1@sha256:ab04133d2851eb9e761cfee77348195c0b88d58f8a759ee4d8aaf916935fe356"
+  },
+  "fed_protocols": ["fed/v1"],
+  "envelope_formats": [1],
+  "capability_profiles": {
+    "core": ["pin-change-log/v1", "snapshot/v1"],
+    "roles": {
+      "assignment-destination": ["blob-transfer/v1"],
+      "read-source": ["read-source/v1", "blob-transfer/v1"],
+      "repair-source": ["repair-stream/v1"],
+      "possession-audit": ["audit-block-hash/v1"]
+    }
+  },
+  "claims": [
+    {
+      "id": "baseline-coordinator-on-schema-19",
+      "statement": "The baseline coordinator (commit 143c459) runs against schema 19, so a coordinator rollback across this release does not require a database restore.",
+      "proven_by_gate": "upgrade-schema-e2e"
+    },
+    {
+      "id": "baseline-donor-interop",
+      "statement": "A baseline donor registers, heartbeats, syncs, and accepts, fetches and acknowledges assignments against a v0.3.0 coordinator with no donor change.",
+      "requires_capabilities": ["pin-change-log/v1", "snapshot/v1", "blob-transfer/v1"],
+      "proven_by_gate": "upgrade-wire-e2e"
+    },
+    {
+      "id": "baseline-deployment-transition",
+      "statement": "An existing deployment at commit 143c459, schema 18, locally built, crosses to the released v0.3.0 artifacts using only docs/UPGRADING.md.",
+      "proven_by_gate": "upgrade-release-e2e"
+    },
+    {
+      "id": "coordinator-upgrade-needs-no-donor-upgrade",
+      "statement": "Upgrading the coordinator alone evicts nobody and triggers no mass repair across a mixed fleet of current, supported-older, capability-missing, precontract and stale donors.",
+      "proven_by_gate": "mixed-fleet-e2e"
+    }
+  ]
+}
