@@ -235,7 +235,7 @@ jobs:
           file: docker/node.Dockerfile
           push: true
           tags: ghcr.io/nova-archive/nova-node:sha-${{ github.sha }}
-      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign the image digest (keyless)
         run: cosign sign --yes ghcr.io/nova-archive/nova-node@${{ steps.push.outputs.digest }}
       - name: Attest provenance to the digest
@@ -301,7 +301,7 @@ jobs:
           file: docker/coordinator.Dockerfile
           push: true
           tags: ghcr.io/nova-archive/nova-coordinator:sha-${{ github.sha }}
-      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign the image digest (keyless)
         run: cosign sign --yes ghcr.io/nova-archive/nova-coordinator@${{ steps.push.outputs.digest }}
       - name: Attest provenance to the digest
