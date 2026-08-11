@@ -1,0 +1,70 @@
+# Docker build context (P2-M7.3, D-M7.3-4 / P0-a).
+#
+# Once image digests are contractual, an uncontrolled build context is two
+# problems at once: a leak path for operator secrets, and a source of
+# nondeterminism that would be misattributed to the release process. Every
+# Dockerfile here does `COPY . .`, so this file is the only thing standing
+# between a developer's working tree and the bytes we sign.
+#
+# Docker does NOT support brace expansion. Patterns are matched against the
+# path relative to the context root, so a nested match needs its own `**/`
+# form; both are listed where nesting is possible.
+#
+# Verified by scripts/check-build-context.sh, which probes a real build rather
+# than modelling these semantics.
+
+# --- Version control and CI ------------------------------------------------
+# .git is never enumerated by `git ls-files`, which is why the gate is a probe
+# build. Excluding it also keeps the context stable across branches.
+.git
+.gitattributes
+.github
+
+# --- Operator secrets and per-deployment material --------------------------
+docker/.env
+docker/.env.*
+docker/docker-compose.override.yml
+deploy/operator/invites
+deploy/operator/import
+nova-config
+nova-secrets
+nova-postgres-data
+nova-kubo-data
+nova-tmp-uploads
+*.key
+**/*.key
+*.pem
+**/*.pem
+
+# --- Local build outputs ---------------------------------------------------
+# The context must not vary with whatever a developer last built. node_modules
+# is also a correctness fix: coordinator.Dockerfile runs `npm ci` and then
+# `COPY . .`, so a host node_modules would overwrite the installed one.
+bin
+dist
+build
+/coordinator
+/novactl
+/node
+/setup-wizard
+coverage.out
+coverage.html
+node_modules
+**/node_modules
+web/admin/dist
+web/widget/dist
+web/setup/dist
+
+# --- Not part of any image -------------------------------------------------
+reports
+simulations
+docs/nova-upstream-findings.md
+.claude
+.superpowers
+.editorconfig
+.idea
+.vscode
+*.swp
+**/*.swp
+
+# web/ itself stays: the coordinator image builds the three SPA bundles.

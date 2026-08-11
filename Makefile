@@ -23,6 +23,7 @@ help:
 	@echo "  migrate-down      Roll back one migration"
 	@echo "  migrate-status    Show migration status"
 	@echo "  clean             Remove build artifacts"
+	@echo "  build-context-check  Probe that .dockerignore keeps secrets and local state out of the build context"
 	@echo "  docker-build      Build the multi-stage Docker image (no push)"
 	@echo "  docker-refresh-digests  Re-resolve the digest pins in docker/*.Dockerfile"
 	@echo "  migrations-frozen Verify shipped migrations are unmodified (MANIFEST.sha256)"
@@ -66,9 +67,16 @@ migrate-status: build
 clean:
 	rm -rf bin dist build coverage.out coverage.html
 
+# P2-M7.3 D-M7.3-4: every Dockerfile does `COPY . .`, so the working tree is
+# part of the signed artifact. The gate probes a real build rather than
+# modelling Docker's ignore semantics — see the script's header for why.
+.PHONY: build-context-check
+build-context-check:
+	./scripts/check-build-context.sh
+
 # M13 Docker image build. Builds the multi-stage image locally (no push).
 # Requires Docker 29+ with BuildKit enabled (the default).
-docker-build:
+docker-build: build-context-check
 	docker build -f docker/coordinator.Dockerfile -t nova-coordinator:dev .
 
 # P2-M7.1: base images are digest-pinned (FROM image:tag@sha256:...).
