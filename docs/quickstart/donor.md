@@ -52,12 +52,12 @@ DIGEST=sha256:<digest-from-compose.yaml>
 
 cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/nova-archive/nova/\.github/workflows/ci\.yml@refs/heads/main$' \
+  --certificate-identity https://github.com/nova-archive/nova/.github/workflows/release.yml@refs/heads/main \
   ghcr.io/nova-archive/nova-node@$DIGEST
 
 cosign verify-attestation --type spdxjson \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github\.com/nova-archive/nova/\.github/workflows/ci\.yml@refs/heads/main$' \
+  --certificate-identity https://github.com/nova-archive/nova/.github/workflows/release.yml@refs/heads/main \
   ghcr.io/nova-archive/nova-node@$DIGEST
 
 gh attestation verify oci://ghcr.io/nova-archive/nova-node@$DIGEST \
@@ -66,6 +66,22 @@ gh attestation verify oci://ghcr.io/nova-archive/nova-node@$DIGEST \
 
 All three must pass. **If any fails, stop and tell your operator.** Do not run
 the image.
+
+The identity above is an EXACT string, not a pattern. An identity regexp is one
+typo away from admitting a workflow nobody meant to trust, and the point of
+supplying the identity yourself is that cosign will not guess it for you. The
+same string appears in `releases/verification-policy.txt` and in
+`scripts/nova-release`, and a test fails if the three disagree: the signing
+identity moves in ONE commit across every documented copy, because a volunteer
+following a stale policy verifies nothing useful.
+
+The identity above is an EXACT string, not a pattern. An identity regexp is one
+typo away from admitting a workflow nobody meant to trust, and the whole point
+of supplying the identity yourself is that cosign will not guess it for you. It
+is the same string in `releases/verification-policy.txt` and in
+`scripts/nova-release`, and a test fails if the three ever disagree — the
+signing identity moves in ONE commit across every documented copy, because a
+volunteer following a stale policy verifies nothing useful.
 
 Images are published by digest and signed with cosign keyless via GitHub OIDC.
 That is the only trust path; Nova publishes no local-key signing path.

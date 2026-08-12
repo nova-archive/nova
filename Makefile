@@ -160,6 +160,16 @@ federation-doctor:
 # P2-M7.3 D-M7.3-2b: every checked-in release intent parses, validates and is
 # named for the version it declares. novarel is a BUILD-TIME tool — it lives
 # under internal/release/cmd so nothing ships it in a runtime image (T1.22).
+.PHONY: release-docs release-docs-check
+# P2-M7.3 D-M7.3-19: UPGRADING.md's compatibility matrix is generated from the
+# intent and the gate coverage. Prose that restates them is prose that will
+# disagree with them, discovered by an operator mid-upgrade.
+release-docs:
+	go run ./internal/release/cmd/novarel matrix
+
+release-docs-check:
+	./scripts/check-release-docs.sh
+
 .PHONY: release-validate catalog catalog-check
 release-validate:
 	go run ./internal/release/cmd/novarel validate
@@ -174,7 +184,7 @@ catalog-check:
 	go run ./internal/release/cmd/novarel catalog --check
 
 # Everything the deployment-artifacts CI job runs, in one local target.
-artifact-gates: gen-deploy-check deploy-gates docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check compose-topology-check release-validate catalog-check
+artifact-gates: gen-deploy-check deploy-gates docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check compose-topology-check release-validate catalog-check release-docs-check
 
 .PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
 

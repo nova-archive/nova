@@ -29,6 +29,7 @@ import (
 const (
 	defaultIntentDir = "releases/intent"
 	catalogOut       = "internal/release/catalog/catalog_gen.go"
+	upgradingDoc     = "docs/UPGRADING.md"
 )
 
 func main() {
@@ -70,6 +71,9 @@ func run(args []string) error {
 	case "catalog":
 		check := len(args) > 1 && args[1] == "--check"
 		return generateCatalog(defaultIntentDir, catalogOut, check)
+	case "matrix":
+		check := len(args) > 1 && args[1] == "--check"
+		return generateMatrix(defaultIntentDir, upgradingDoc, check)
 	case "predecessor":
 		index := 0
 		if len(args) > 1 {
@@ -95,6 +99,8 @@ func usage() {
   show <intent>    the parsed intent, as the workflow reads it
   catalog          regenerate internal/release/catalog_gen.go from the current intent
   catalog --check  fail if the generated catalog has drifted from the intent
+  matrix           regenerate the compatibility matrix in `+upgradingDoc+`
+  matrix --check   fail if that block has drifted from the intent or the coverage
   predecessor [i]  the GIT REF of the i-th supported predecessor (default 0, the
                    immediate one). Cross-version gates check this out, so the ref
                    comes from the reviewed intent rather than a shell variable
@@ -134,6 +140,52 @@ func printPredecessor(intentDir string, index int) error {
 	default:
 		fmt.Println(p.Version)
 	}
+	return nil
+}
+
+// generateMatrix renders the compatibility matrix into UPGRADING.md between its
+// markers, or verifies that it has not drifted.
+//
+// It compares BYTES, like the catalog gate, for the same reason: comparing
+// meaning would let a hand edit that happens to say the same thing pass, and
+// the point is that this block is generated rather than that it is currently
+// accurate.
+func generateMatrix(intentDir, doc string, checkOnly bool) error {
+	path, err := release.CurrentIntentPath(intentDir)
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	in, err := release.ParseIntent(b)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+
+	current, err := os.ReadFile(doc)
+	if err != nil {
+		return err
+	}
+	want, err := release.Splice(current,
+		release.RenderMatrix(in, release.CatalogFrom(in, b), release.Coverage()))
+	if err != nil {
+		return fmt.Errorf("%s: %w", doc, err)
+	}
+
+	if checkOnly {
+		if !bytes.Equal(current, want) {
+			return fmt.Errorf("%s has drifted from %s or from the gate coverage; run "+
+				"`make release-docs` and commit the result", doc, path)
+		}
+		fmt.Printf("ok  %s matrix matches %s and the gate coverage\n", doc, path)
+		return nil
+	}
+	if err := os.WriteFile(doc, want, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("wrote the compatibility matrix into %s from %s\n", doc, path)
 	return nil
 }
 
