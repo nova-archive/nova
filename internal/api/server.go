@@ -61,6 +61,7 @@ type ServerConfig struct {
 	ConfigAdmin       *handlers.ConfigAdminHandler       // nil ⇒ /api/v1/admin/config 404
 	BlobsAdmin        *handlers.BlobsAdminHandler        // nil ⇒ /api/v1/admin/blobs 404
 	JobsAdmin         *handlers.JobsAdminHandler         // nil ⇒ /api/v1/admin/jobs 404
+	VersionCensus     *handlers.VersionCensusHandler     // nil ⇒ /api/v1/admin/federation/version-census 404
 	AdminSPA          *handlers.AdminSPAHandler          // nil ⇒ /admin/* static unmounted
 	WidgetStatic      *handlers.WidgetStaticHandler      // nil ⇒ /widget/* static unmounted
 	Setup             *handlers.SetupHandler             // nil ⇒ /setup/* unmounted (normal mode)
@@ -188,6 +189,15 @@ func NewServer(cfg ServerConfig) *chi.Mux {
 					r.With(bearer.RequireRole("operator")).Post("/keys/rotate-signing", cfg.SigningAdmin.RotateSigning)
 					r.Post("/signed-urls/revoke", cfg.SigningAdmin.RevokeSignedURL)
 					r.Post("/signed-urls/sign", cfg.SigningAdmin.SignSignedURL)
+				}
+				// Fleet version census (P2-M7.3, D-M7.3-20); OPERATOR-ONLY.
+				// The group guard admits moderators because they run takedowns;
+				// this is not moderation. It exposes the operator's supply-chain
+				// expectations and where each donor's self-reported identity
+				// disagrees with them, so it follows the key-rotation precedent.
+				if cfg.VersionCensus != nil {
+					r.With(bearer.RequireRole("operator")).
+						Get("/federation/version-census", cfg.VersionCensus.Get)
 				}
 				// Master-key rotation (M10); operator-only.
 				if cfg.MasterKeyAdmin != nil {

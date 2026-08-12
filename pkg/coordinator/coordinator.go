@@ -473,6 +473,10 @@ func New(pool *pgxpool.Pool, backend ipfs.Backend, ks *envelope.Keystore, cfg Co
 		sc.BlobsAdmin = handlers.NewBlobsAdminHandler(q)
 		sc.UploadTokensAdmin = handlers.NewUploadTokensAdminHandler(q)
 		sc.JobsAdmin = handlers.NewJobsAdminHandler(jobs.NewAdminStore(pool))
+		// P2-M7.3 D-M7.3-20: the fleet version census. Wired here rather than
+		// left to a later screen — an endpoint that exists only in ServerConfig
+		// 404s in production, and the CLI and P2-M7.6 both read this one.
+		sc.VersionCensus = handlers.NewVersionCensusHandler(pool, 0)
 	}
 
 	// Config read/update admin API (P2-M0.4); operator-only. Built only when a

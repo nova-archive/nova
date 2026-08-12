@@ -1845,6 +1845,114 @@ paths:
                   kid: { type: string }
                   grace_expires_at: { type: string, format: date-time }
 
+  /api/v1/admin/federation/version-census:
+    get:
+      tags: [admin]
+      operationId: getVersionCensus
+      summary: Fleet version census (operator-only).
+      description: |
+        What every donor reports it is running, classified on **orthogonal
+        axes** against this coordinator's compiled-in release catalog.
+
+        **Operator-only.** The `/admin` group admits moderators because they run
+        takedowns; this endpoint exposes the operator's supply-chain
+        expectations and every donor's self-reported build identity, which is
+        not moderation.
+
+        **Axes are independent.** A donor can be current, stale and
+        digest-mismatched at the same time; one enum would force a precedence
+        order onto facts that have none, and whichever fact lost would be the
+        one the operator needed.
+
+        **Reported values are untrusted claims.** A process cannot discover its
+        own OCI manifest digest without a Docker socket, which Nova gives
+        neither coordinator nor doctor, so `image_digest` and
+        `bundle_lock_digest` are configured declarations. They never gate
+        protocol access, placement, durability counting, trust graduation,
+        drain or eviction. A mismatch against what the operator authorized via
+        `novactl node rollout authorize` is a supply-chain warning.
+
+        **`unknown` is not `unsupported`.** A donor that reports nothing is
+        judged by negotiated protocol and capabilities, which is the actual
+        interop contract. **`unavailable`** is different again: the applied
+        schema cannot answer that axis (`schema_aware: false`, which is what a
+        preflight run against schema 18 sees).
+
+        Rendered by the admin console in P2-M7.6.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The census.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: ["no-store"] }
+              description: >-
+                A point-in-time operational view; a cached copy is worse than none.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [release, applied_schema, schema_aware, nodes]
+                properties:
+                  release:
+                    type: object
+                    description: This coordinator's own identity, from its compiled-in catalog.
+                    properties:
+                      version: { type: string, example: "v0.3.0" }
+                      intent_digest: { type: string, example: "sha256:6fa1df..." }
+                      target_schema: { type: integer, example: 19 }
+                  applied_schema:
+                    type: integer
+                    description: The goose schema version applied to this database.
+                  schema_aware:
+                    type: boolean
+                    description: >-
+                      False when the applied schema predates the census columns; every
+                      axis derived from them then reads `unavailable`.
+                  oldest_version:
+                    type: string
+                    description: >-
+                      Lowest reported version by SemVer precedence. Not `min(last_seen_at)`,
+                      which answers who has been quiet longest.
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        node_id: { type: string, format: uuid }
+                        display_name: { type: string }
+                        version_compatibility:
+                          type: string
+                          enum: [current, supported, unsupported, unknown, invalid, unavailable]
+                        version_reported: { type: string }
+                        freshness: { type: string, enum: [fresh, stale] }
+                        image_digest_relation:
+                          type: string
+                          enum: [match, mismatch, unavailable]
+                        bundle_lock_digest_relation:
+                          type: string
+                          enum: [match, mismatch, unavailable]
+                        runtime_contract_freshness:
+                          type: string
+                          enum: [runtime, registration-only, unknown, unavailable]
+                          description: >-
+                            `registration-only` is a pre-contract donor; `unknown` is one that
+                            sent a contract before and stopped. The wire message is identical,
+                            so a persisted observation marker is what separates them.
+                        protocol_compatibility:
+                          type: string
+                          enum: [compatible, incompatible, unknown]
+                        profile_compliance:
+                          type: string
+                          enum: [compliant, nonconforming, unavailable]
+                        roles:
+                          type: object
+                          additionalProperties: { type: boolean }
+                          description: Per-role eligibility from the effective capability set.
+                        support_note: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/admin/keys/rotate-master:
     post:
       tags: [admin]
