@@ -157,6 +157,14 @@ jobs:
   # finding — six independently maintained sources of truth that had already
   # diverged on ports, topology, paths, secrets and CLI flags, with nothing
   # failing. Cheap and hermetic, so it runs on every PR.
+  # ── TIER 1: pr-static ──────────────────────────────────────────────────
+  #
+  # Hermetic. No registry, no TUN, no privileged networking. Runs on every push
+  # and every pull request, including from forks.
+  #
+  # A gate in this tier may NEVER satisfy a claim that needs an executed one:
+  # release.EvidenceRef records the runner class precisely so a static check
+  # cannot stand in for a drill (P2-M7.3, D-M7.3-17).
   deployment-artifacts:
     runs-on: ubuntu-latest
     steps:
@@ -189,8 +197,66 @@ jobs:
       - name: The compiled-in release catalog matches the intent
         run: make catalog-check
 
+      - name: Every documented compose combination renders the artifacts it should
+        run: make compose-topology-check
+
+      - name: UPGRADING.md's matrix matches the intent, the coverage and the policy
+        run: make release-docs-check
+
       - name: An existing federation can cross this release using only UPGRADING.md
         run: make live-upgrade-e2e
+
+  # ── TIER 2: rc-docker ──────────────────────────────────────────────────
+  #
+  # Docker-capable, no TUN. These are DRILLS: they stand real binaries up
+  # against real Postgres and assert what happened, so they can support an
+  # executed claim.
+  #
+  # Not on every push — they take tens of minutes. Promotion to a release
+  # candidate requires this tier to have passed, and release.yml runs it against
+  # the candidate digests rather than trusting a green run from a week ago.
+  upgrade-evidence:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # the predecessor is checked out as a worktree
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - name: libvips headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev
+
+      # The only evidence that can support a rollback-safe claim: the
+      # PREDECESSOR coordinator run against the FORWARD schema.
+      - name: schema — the predecessor against the forward schema
+        run: make upgrade-schema-e2e
+
+      # Mixed-version protocol on a fresh database.
+      - name: wire — a baseline donor against the candidate coordinator
+        run: make upgrade-wire-e2e
+
+      # UPGRADING.md promises a tested restore, and composed obligations can
+      # make restore the literal rollback boundary.
+      - name: backup — taken AND restored
+        run: make backup-restore-e2e
+
+      # SKIPS until published artifacts exist, and says so. A skip is not a
+      # pass: a claim proven by a skipped gate is rejected.
+      - name: released artifacts — the real transition
+        run: make upgrade-release-e2e
+
+  # ── TIER 3: release-tun ────────────────────────────────────────────────
+  #
+  # Needs /dev/net/tun and privileged networking, which hosted runners cannot
+  # reliably provide — hence the self-hosted label and the manual trigger.
+  # `federation-deploy-e2e` already lives on this tier; `mixed-fleet-e2e` will
+  # join it when it is written, and until then its coverage placeholder blocks
+  # a release candidate.
+  #
+  # Deliberately NOT wired to a schedule. A tier nobody watches that fails
+  # silently is worse than one an operator runs before cutting a release.
 
   donor-build:
     runs-on: ubuntu-latest
