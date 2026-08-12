@@ -67,8 +67,19 @@ func rolloutFixture(t *testing.T) (intentPath, lockPath, lockDigest string) {
 		TargetSchema: in.TargetSchema,
 		Artifacts:    arts, Sidecars: in.Sidecars,
 		ProvenClaims: proven, Payload: payload,
-		DonorLockDigest: "sha256:" + strings.Repeat("7", 64),
 	}
+	// The donor-lock digest is DERIVED, in the order the release workflow
+	// derives it: project from the lock, render, hash, then record. A literal
+	// here would be a fixture asserting against itself.
+	dl, err := release.ProjectDonorLock(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dlBytes, err := dl.Render()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock.DonorLockDigest = release.DonorLockDigestOf(dlBytes)
 	b, err := json.Marshal(lock)
 	if err != nil {
 		t.Fatal(err)

@@ -630,6 +630,31 @@ func TestPolicyMovesInOneCommit(t *testing.T) {
 	if !strings.Contains(string(script), "--certificate-oidc-issuer "+novaIssuer) {
 		t.Error("the documented cosign verify-blob command does not carry the issuer")
 	}
+
+	// STILL DIVERGENT, deliberately and temporarily: docs/quickstart/donor.md
+	// verifies the nova-node IMAGE against ci.yml@refs/heads/main, because
+	// ci.yml is what signs that image today. It converges on release.yml when
+	// the release workflow exists (Task 28), in the one commit that creates it.
+	// This assertion is what makes that convergence visible rather than
+	// forgotten: it fails the moment release.yml lands, which is exactly when
+	// the quickstart has to move.
+	quickstart, err := os.ReadFile(filepath.Join("..", "..", "docs", "quickstart", "donor.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, workflowErr := os.Stat(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	releaseWorkflowExists := workflowErr == nil
+	quickstartUsesCI := strings.Contains(string(quickstart), "workflows/ci\\.yml@refs/heads/main")
+
+	switch {
+	case releaseWorkflowExists && quickstartUsesCI:
+		t.Error("release.yml exists but docs/quickstart/donor.md still tells volunteers to " +
+			"verify against ci.yml. The signing identity moves in ONE commit across every " +
+			"documented copy, and a volunteer following a stale policy verifies nothing useful")
+	case !releaseWorkflowExists && !quickstartUsesCI:
+		t.Error("docs/quickstart/donor.md no longer names ci.yml, but no release.yml exists " +
+			"to sign against — a volunteer following it would fail verification")
+	}
 }
 
 // TestBootstrapIsCoveredByEveryLock. The script can only be authenticated if

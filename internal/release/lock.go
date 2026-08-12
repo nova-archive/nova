@@ -119,6 +119,17 @@ type Lock struct {
 	Artifacts map[string]LockedArtifact `json:"artifacts"`
 	Sidecars  map[string]string         `json:"sidecars"`
 
+	// DonorRollback is the release's per-component verdict on reverting a
+	// donor, keyed by ComponentNames. Absent means NO for that component: the
+	// donor topology holds replicas and a registration, and an unevidenced
+	// rollback of software that has already written to them is a guess made
+	// with somebody else's data.
+	//
+	// It lives here rather than being chosen at bundle-conversion time so the
+	// donor-lock projection stays a deterministic function of this document —
+	// which is what lets this document carry the projection's digest.
+	DonorRollback map[string]RollbackEvidence `json:"donor_rollback,omitempty"`
+
 	ProvenClaims []ProvenClaim `json:"proven_claims"`
 
 	// Payload maps each bundle member's path to its sha256. This is the ONLY

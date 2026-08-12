@@ -160,6 +160,7 @@ func RenderDonorBundle(p DonorParams) (map[string][]byte, error) {
 		"node.yaml":         "templates/node.yaml.tmpl",
 		"nebula-config.yml": "templates/nebula-config.yml.tmpl",
 		"kubo-init.sh":      "templates/kubo-init.sh.tmpl",
+		"donor-update.sh":   "templates/donor-update.sh.tmpl",
 		"README.md":         "templates/operator-README.txt.tmpl",
 	} {
 		t, err := template.New(path.Base(tmpl)).Funcs(funcs).ParseFS(templateFS, tmpl)

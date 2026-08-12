@@ -45,6 +45,21 @@ type InviteResult struct {
 	Files       []string `json:"files"`
 }
 
+// Bundle schema versions (P2-M7.3, D-M7.3-15).
+//
+// v1 baked the image digests into compose.yaml, so changing which bytes a donor
+// ran meant a new bundle — and a new bundle from `node invite` means a new node
+// id and new certificates, which is a re-enrollment rather than an update.
+//
+// v2 moves the refs into .env, adds donor-lock.json naming the authorized refs
+// with per-component rollback evidence, and adds donor-update.sh to apply them.
+// A v1 bundle keeps working untouched; `novactl node convert-bundle` raises one
+// in place without touching identity or state.
+const (
+	BundleSchemaV1 = 1
+	BundleSchemaV2 = 2
+)
+
 // InviteManifest travels with the bundle. Non-secret by construction: it is the
 // thing a donor can safely send back to their operator for support.
 type InviteManifest struct {
@@ -61,6 +76,11 @@ type InviteManifest struct {
 	CAFingerprint  string    `json:"ca_fingerprint"`
 	SwarmKeyFP     string    `json:"swarm_key_fingerprint"`
 	DoctorStatus   []Check   `json:"doctor_status_at_issuance,omitempty"`
+
+	// DonorLockDigest is the digest of this bundle's donor-lock.json, set when
+	// the bundle is converted to v2. It is what the volunteer passes to
+	// donor-update.sh and what the operator compares a donor's report against.
+	DonorLockDigest string `json:"donor_lock_digest,omitempty"`
 }
 
 // operatorSecrets are artifacts that must NEVER appear in a donor bundle.
@@ -173,7 +193,11 @@ func Invite(p InviteParams) (InviteResult, error) {
 	}
 
 	manifest := InviteManifest{
-		Version:        1,
+		// Freshly issued bundles are v2: the Compose file they carry already
+		// takes its refs from .env, and donor-update.sh already ships with
+		// them. What they do not carry is donor-lock.json, which needs a
+		// verified release lock the operator supplies at conversion time.
+		Version:        BundleSchemaV2,
 		IssuedAt:       time.Now().UTC(),
 		NodeID:         nodeID.String(),
 		DisplayName:    p.Name,

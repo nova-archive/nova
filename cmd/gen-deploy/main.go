@@ -80,6 +80,7 @@ func run() error {
 		"node.yaml":         "node.yaml.example",
 		"nebula-config.yml": "nebula-config.yml.example",
 		"kubo-init.sh":      "kubo-init.sh",
+		"donor-update.sh":   "donor-update.sh",
 	}
 	for src, dst := range targets {
 		body, ok := files[src]

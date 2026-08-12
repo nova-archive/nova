@@ -18,7 +18,7 @@ import (
 // (revoke/rotate-cert/list) are added in a later task.
 func cmdNode(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: novactl node <invite|ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|set-domain|nebula-template|trust|drain|undrain|rollout>")
+		return fmt.Errorf("usage: novactl node <invite|ca-init|issue|issue-coordinator-client|revoke|rotate-cert|list|set-domain|nebula-template|trust|drain|undrain|rollout|convert-bundle>")
 	}
 	switch args[0] {
 	case "ca-init":
@@ -47,6 +47,8 @@ func cmdNode(args []string) error {
 		return cmdNodeUndrain(args[1:])
 	case "rollout":
 		return cmdNodeRollout(args[1:])
+	case "convert-bundle":
+		return cmdNodeConvertBundle(args[1:])
 	default:
 		return fmt.Errorf("novactl node: unknown subcommand %q", args[0])
 	}

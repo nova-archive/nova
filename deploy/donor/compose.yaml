@@ -16,11 +16,21 @@
 # Splitting them into separate namespaces silently breaks pinning.
 #
 # No published ports: all federation traffic is mTLS over the overlay.
+#
+# IMAGE REFS COME FROM .env (P2-M7.3, D-M7.3-15). An update has to be able to
+# change which bytes run, and rewriting a compose file in place is how a
+# half-applied edit leaves a donor pointing at nothing. The volunteer's
+# update script writes .env FIRST and then recreates, because Compose reads
+# .env at `up` time — persisting after the recreate would restart the OLD
+# digest and report success.
+#
+# The defaults are the digests this bundle was issued with, so a bundle with no
+# .env still runs exactly what the operator sent.
 name: nova-donor-example
 
 services:
   nebula:
-    image: nebulaoss/nebula:1.11.0@sha256:1bee6515faf687e590ab42e14a769d406bf1dc59cb03e21520ae50669adc0581
+    image: ${NOVA_NEBULA_REF:-nebulaoss/nebula:1.11.0@sha256:1bee6515faf687e590ab42e14a769d406bf1dc59cb03e21520ae50669adc0581}
     cap_add: ["NET_ADMIN"]
     devices: ["/dev/net/tun:/dev/net/tun"]
     volumes:
@@ -34,7 +44,7 @@ services:
     # Hardening is applied by kubo-init.sh BEFORE the daemon starts, so a donor
     # created by the official path is private-by-construction rather than
     # private-if-the-volunteer-followed-instructions.
-    image: ipfs/kubo:v0.38.1@sha256:ab04133d2851eb9e761cfee77348195c0b88d58f8a759ee4d8aaf916935fe356
+    image: ${NOVA_KUBO_REF:-ipfs/kubo:v0.38.1@sha256:ab04133d2851eb9e761cfee77348195c0b88d58f8a759ee4d8aaf916935fe356}
     network_mode: "service:nebula"
     depends_on: [nebula]
     environment:
@@ -48,7 +58,7 @@ services:
     restart: unless-stopped
 
   nova-node:
-    image: ghcr.io/nova-archive/nova-node:REPLACE-WITH-DIGEST
+    image: ${NOVA_NODE_REF:-ghcr.io/nova-archive/nova-node:REPLACE-WITH-DIGEST}
     network_mode: "service:nebula"
     depends_on: [nebula, kubo]
     read_only: true
