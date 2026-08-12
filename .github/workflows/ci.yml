@@ -242,6 +242,14 @@ jobs:
       - name: backup — taken AND restored
         run: make backup-restore-e2e
 
+      # Six donors registering SIMULTANEOUSLY against the predecessor
+      # coordinator, then a real schema advance and coordinator swap. On this
+      # tier rather than release-tun because the overlay is transport and the
+      # claim is about coordinator policy — a gate that runs in CI beats one
+      # waiting on a self-hosted runner.
+      - name: mixed fleet — a coordinator upgrade needs no donor upgrade
+        run: make mixed-fleet-e2e
+
       # SKIPS until published artifacts exist, and says so. A skip is not a
       # pass: a claim proven by a skipped gate is rejected.
       - name: released artifacts — the real transition
@@ -251,9 +259,11 @@ jobs:
   #
   # Needs /dev/net/tun and privileged networking, which hosted runners cannot
   # reliably provide — hence the self-hosted label and the manual trigger.
-  # `federation-deploy-e2e` already lives on this tier; `mixed-fleet-e2e` will
-  # join it when it is written, and until then its coverage placeholder blocks
-  # a release candidate.
+  # `federation-deploy-e2e` lives on this tier. `mixed-fleet-e2e` was planned
+  # for it and moved DOWN to rc-docker once it was written: the overlay is
+  # transport, the claim is about coordinator policy, and a gate that runs on
+  # every main push is worth more than one gated on a self-hosted runner. What
+  # loopback costs is recorded in its coverage entry rather than glossed.
   #
   # Deliberately NOT wired to a schedule. A tier nobody watches that fails
   # silently is worse than one an operator runs before cutting a release.

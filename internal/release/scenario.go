@@ -130,20 +130,37 @@ var coverage = []GateCoverage{
 		Note:        "Not yet written (Task 25).",
 	},
 	{
-		Gate: "mixed-fleet-e2e", Runner: RunnerTUN,
+		// DERIVED FROM AN EXECUTED RUN, 2026-08-12.
+		//
+		// RunnerDocker, not RunnerTUN. The plan filed this on the TUN tier and
+		// it does not belong there: the overlay is transport and this gate is
+		// about coordinator policy, so it runs over loopback exactly as the
+		// cross-version harness does. That is a promotion in usefulness — a
+		// gate that runs in CI beats one waiting on a self-hosted runner — and
+		// the limits it buys are recorded below rather than glossed.
+		Gate: "mixed-fleet-e2e", Runner: RunnerDocker,
 		Proves: []string{"coordinator-upgrade-needs-no-donor-upgrade"},
 		DoesNotProve: []string{
 			"anything about donors outside the declared support window: an unsupported " +
 				"donor is untested by definition, which is what unsupported means",
+			"real Nebula routing, MTU behaviour, NAT traversal or lighthouse failure. The " +
+				"fleet speaks federation mTLS over loopback with placeholder overlay " +
+				"material; federation-deploy-e2e owns the overlay and needs TUN",
+			"that a donor FETCHES bytes after an assignment. The gate asserts the " +
+				"coordinator's decisions — who is assignable, who is evicted, who holds a " +
+				"role — not the transfer, which upgrade-wire-e2e covers",
 		},
-		Placeholder: true,
-		Note: "NOT WRITTEN. scripts/mixed_fleet_e2e.sh carries the fleet taxonomy and the ten " +
-			"assertions in its header and exits non-zero; the harness that stands six donors " +
-			"up simultaneously over a TUN overlay does not exist. This placeholder blocks a " +
-			"release candidate, which is correct — a script that exercised two donors and " +
-			"printed the six-donor claim would retire it and put an unearned claim in a " +
-			"signed lock. Assertion 10 (eviction recovery) DID land, because it is a product " +
-			"defect rather than a test gap: see internal/federation/coordinator/reactivation.go.",
+		Note: "Executed 2026-08-12 by scripts/mixed_fleet_e2e.sh, sixteen assertions, all " +
+			"passing. Six donors register SIMULTANEOUSLY against the PREDECESSOR coordinator " +
+			"at schema 18 — current, supported-older, capability-missing, pre-contract, " +
+			"unsupported-but-compatible and stale — the schema advances to 19, and the " +
+			"candidate coordinator takes over. Nobody is evicted, nobody is drained, no " +
+			"assignment fails, every version label gates nothing, the capability-missing " +
+			"donor loses exactly its role, legacy omission stays distinguishable from " +
+			"rollback, and an evicted donor recovers with no re-enrollment. " +
+			"The run FOUND A PRODUCTION BUG no single-donor test could: donors sent no " +
+			"nebula_cert_fingerprint, the column is UNIQUE NOT NULL, and the second donor " +
+			"ever to register got a 500 — a federation with two volunteers could not form.",
 	},
 	{
 		// DERIVED FROM AN EXECUTED RUN, 2026-08-11, all three pairings against

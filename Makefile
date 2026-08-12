@@ -1,7 +1,17 @@
 .PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-apply migrate-status clean docker-build docker-refresh-digests migrations-frozen
 
-GOTEST    := go test ./...
-GOTESTV   := go test -v ./...
+# -timeout is set explicitly because Go's default is 10 MINUTES PER PACKAGE and
+# several of Nova's packages spin a Postgres testcontainer per test.
+# internal/federation/coordinator alone runs ~8 minutes in isolation, and under
+# the contention of a full parallel sweep it crossed 600s and was killed — a
+# failure that looks like a broken test and is a broken default.
+#
+# The number is a ceiling for a wedged test, not a target. Raise it only when a
+# package legitimately grows; if one starts approaching it, the fix is fewer
+# containers, not a bigger number.
+GOTEST_TIMEOUT ?= 30m
+GOTEST    := go test -timeout $(GOTEST_TIMEOUT) ./...
+GOTESTV   := go test -v -timeout $(GOTEST_TIMEOUT) ./...
 # The dev overlay is not optional here: the base names RELEASED artifacts by
 # digest (P2-M7.3, D-M7.3-14), so a developer's compose invocation has to say
 # it wants to build. An operator's does not, and that is the point.
@@ -232,13 +242,13 @@ upgrade-schema-e2e:
 upgrade-release-e2e:
 	./scripts/upgrade_release_e2e.sh $(VARIANT)
 
-upgrade-evidence: upgrade-wire-e2e upgrade-schema-e2e upgrade-release-e2e
+upgrade-evidence: upgrade-wire-e2e upgrade-schema-e2e mixed-fleet-e2e upgrade-release-e2e
 
 # P2-M7.3 Task 27: UPGRADING.md promises a tested restore, and composed
 # migration obligations can make restore the literal rollback boundary. A
 # recovery path nobody has walked is a hope.
-# P2-M7.3 Task 26: NOT IMPLEMENTED and exits non-zero. Its coverage entry stays
-# a placeholder, which blocks a release candidate.
+# P2-M7.3 Task 26: six donors, simultaneously, across a real coordinator
+# upgrade. rc-docker rather than release-tun — see the script's header.
 .PHONY: mixed-fleet-e2e
 mixed-fleet-e2e:
 	./scripts/mixed_fleet_e2e.sh

@@ -154,12 +154,30 @@ func (a *Agent) capabilities() []string {
 }
 
 func (a *Agent) registerReq() wire.RegisterRequest {
+	// nodes.nebula_cert_fingerprint is UNIQUE NOT NULL, and this was never
+	// populated — so every donor sent "", the first one to register took it,
+	// and every donor after that collided on the index and got a 500. A
+	// federation with one donor never notices; a federation with two cannot
+	// form (P2-M7.3, found by the mixed-fleet gate).
+	//
+	// A read failure is NOT fatal here. Registration is how a donor becomes
+	// useful, and refusing to attempt it over a certificate the coordinator
+	// never inspects would trade a working donor for a tidy field. It sends
+	// what it has and the coordinator decides.
+	fp, err := nebulaFingerprint(a.cfg.NebulaCertPath)
+	if err != nil {
+		slog.Warn("node.register.no_nebula_fingerprint",
+			"detail", "registering without a nebula certificate fingerprint; this collides "+
+				"with any other donor that has also registered without one",
+			"path", a.cfg.NebulaCertPath, "err", err)
+	}
 	return wire.RegisterRequest{
 		SupportedProtocols:         []string{wire.ProtocolV1},
 		Capabilities:               a.capabilities(),
 		ClientVersion:              buildinfo.Version(),
 		BandwidthBudgetBytesPerDay: a.cfg.BandwidthBudgetBytesPerDay,
 		SourceNebulaAddr:           a.cfg.SourceNebulaAddr,
+		NebulaCertFingerprint:      fp,
 	}
 }
 

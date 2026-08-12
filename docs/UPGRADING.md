@@ -43,7 +43,7 @@ The sections below are in that order.
 | `baseline-coordinator-on-schema-19` | `upgrade-schema-e2e` | `rc-docker` | derived from an executed run |
 | `baseline-donor-interop` | `upgrade-wire-e2e` | `rc-docker` | derived from an executed run |
 | `baseline-deployment-transition` | `upgrade-release-e2e` | `release-tun` | **placeholder — blocks a release candidate** |
-| `coordinator-upgrade-needs-no-donor-upgrade` | `mixed-fleet-e2e` | `release-tun` | **placeholder — blocks a release candidate** |
+| `coordinator-upgrade-needs-no-donor-upgrade` | `mixed-fleet-e2e` | `rc-docker` | derived from an executed run |
 
 **What the gates do NOT prove.** Recorded because the absence of an entry is not a statement, and a reader who sees only what a gate proves will assume the rest.
 
@@ -54,6 +54,8 @@ The sections below are in that order.
   - donor-backed reads or drain WITH THE BASELINE COORDINATOR: the gate exercises those only when the coordinator is HEAD. Untested here, not known broken — the earlier claim that they were provably broken described the P2-M6 binary, and 143c459 contains the later TLS fix
 - `mixed-fleet-e2e`
   - anything about donors outside the declared support window: an unsupported donor is untested by definition, which is what unsupported means
+  - real Nebula routing, MTU behaviour, NAT traversal or lighthouse failure. The fleet speaks federation mTLS over loopback with placeholder overlay material; federation-deploy-e2e owns the overlay and needs TUN
+  - that a donor FETCHES bytes after an assignment. The gate asserts the coordinator's decisions — who is assignable, who is evicted, who holds a role — not the transfer, which upgrade-wire-e2e covers
 - `upgrade-release-e2e`
   - multi-coordinator ordering or fencing, which is a Phase 6 concern
 - `upgrade-schema-e2e`

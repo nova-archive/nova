@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/federation/transport"
@@ -105,9 +106,31 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if caps == nil {
 		caps = []string{}
 	}
+
+	// A donor that reports no Nebula certificate fingerprint gets a synthesized
+	// one, unique to it (P2-M7.3, found by the mixed-fleet gate).
+	//
+	// `nodes.nebula_cert_fingerprint` is UNIQUE NOT NULL, and donors before this
+	// release sent "". The first such donor took the empty string; every one
+	// after it collided on the index. Two pre-release donors cannot both
+	// register, and the binaries that do this are already deployed on other
+	// people's machines — so the fix has to be here.
+	//
+	// NOT a nullable column. Postgres would give us the uniqueness semantics for
+	// free, but the predecessor coordinator scans this column into a plain
+	// string, so a NULL row would break the binary an operator rolls back to —
+	// trading a registration bug for a rollback bug.
+	//
+	// The value says what it is. `unknown:<node-id>` is unique by construction,
+	// legible to a human reading the table, and an opaque string to every
+	// binary that only ever compares it.
+	nebulaFP := req.NebulaCertFingerprint
+	if nebulaFP == "" {
+		nebulaFP = "unknown:" + id.NodeID
+	}
 	if _, err := s.q.RegisterNode(ctx, gen.RegisterNodeParams{
 		ID:                         pgID,
-		NebulaCertFingerprint:      req.NebulaCertFingerprint,
+		NebulaCertFingerprint:      nebulaFP,
 		FederationCertFingerprint:  id.Fingerprint,
 		DisplayName:                pgText(req.DisplayName),
 		GeoDeclared:                pgText(req.GeoDeclared),
@@ -120,6 +143,23 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		ClientVersion:              pgText(req.ClientVersion),
 		SourceNebulaAddr:           pgText(req.SourceNebulaAddr),
 	}); err != nil {
+		// A duplicate nebula_cert_fingerprint is not an internal error, and
+		// reporting it as one is how this stayed hidden: the column is UNIQUE
+		// NOT NULL, donors used to send "" for it, and the SECOND donor ever to
+		// register got an opaque 500 while the coordinator logged
+		// "register failed" (P2-M7.3, found by the mixed-fleet gate).
+		//
+		// The donor now sends its certificate's fingerprint, so this is
+		// reachable only when two donors genuinely present the same overlay
+		// identity — which is worth saying out loud rather than swallowing.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeError(w, http.StatusConflict, "identity_conflict",
+				"another node is already registered with this "+
+					constraintSubject(pgErr.ConstraintName)+
+					". Two donors cannot share one identity; reissue this donor's bundle.")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal", "register failed")
 		return
 	}
@@ -133,6 +173,19 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		RequiredCapabilities: required,
 		NodeID:               id.NodeID,
 	})
+}
+
+// constraintSubject turns a Postgres constraint name into something a
+// volunteer's operator can act on.
+func constraintSubject(name string) string {
+	switch {
+	case strings.Contains(name, "nebula_cert_fingerprint"):
+		return "Nebula certificate"
+	case strings.Contains(name, "federation_cert_fingerprint"):
+		return "federation certificate"
+	default:
+		return "identity (" + name + ")"
+	}
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {

@@ -77,12 +77,14 @@ func TestPlaceholderCoverageBlocksReleaseCandidate(t *testing.T) {
 	// from the refusal, and that absence is asserted rather than assumed: a
 	// derived entry listed as a placeholder would mean the run's result is not
 	// being believed.
-	for _, gate := range []string{"upgrade-release-e2e", "mixed-fleet-e2e"} {
+	for _, gate := range []string{"upgrade-release-e2e"} {
 		if !strings.Contains(err.Error(), gate) {
 			t.Errorf("the refusal does not name %s; an operator needs to know which", gate)
 		}
 	}
-	for _, gate := range []string{"crossversion-e2e", "upgrade-schema-e2e"} {
+	for _, gate := range []string{
+		"crossversion-e2e", "upgrade-schema-e2e", "upgrade-wire-e2e", "mixed-fleet-e2e",
+	} {
 		if strings.Contains(err.Error(), gate) {
 			t.Errorf("%s coverage was derived from an executed run, so it must not read as a "+
 				"placeholder", gate)

@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -111,5 +112,66 @@ func TestRegisterMissingCapabilityFailsClosed(t *testing.T) {
 	s.handleRegister(w, reqWithCert(http.MethodPost, "/fed/v1/register", body, leaf))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d", w.Code)
+	}
+}
+
+// TestTwoDonorsWithoutANebulaFingerprintBothRegister (P2-M7.3, found by
+// scripts/mixed_fleet_e2e.sh).
+//
+// `nodes.nebula_cert_fingerprint` is UNIQUE NOT NULL, and donors before this
+// release sent "" for it. The FIRST donor to register took the empty string;
+// every donor after it collided on the unique index and got an opaque 500,
+// with the coordinator logging "register failed".
+//
+// A federation with one donor never notices. A federation with two cannot
+// form — and the binaries that do this are already deployed on other people's
+// machines, so the coordinator has to absorb it.
+//
+// This is the regression test a single-donor suite could not have written.
+func TestTwoDonorsWithoutANebulaFingerprintBothRegister(t *testing.T) {
+	s, caPEM, caKeyPEM := newTestServer(t)
+
+	for i, id := range []uuid.UUID{uuid.New(), uuid.New()} {
+		leaf := issuedClient(t, caPEM, caKeyPEM, id)
+		body, _ := json.Marshal(wire.RegisterRequest{
+			SupportedProtocols: []string{wire.ProtocolV1},
+			Capabilities:       []string{wire.CapPinChangeLog, wire.CapSnapshot},
+			// No NebulaCertFingerprint, exactly as a pre-release donor sends.
+		})
+		w := httptest.NewRecorder()
+		s.handleRegister(w, reqWithCert(http.MethodPost, "/fed/v1/register", body, leaf))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("donor %d: register = %d (%s); two donors that report no overlay "+
+				"identity must both be able to join", i+1, w.Code, w.Body)
+		}
+	}
+}
+
+// TestDuplicateNebulaFingerprintIsAConflictNotAnInternalError. Once donors send
+// a real fingerprint this is reachable only when two genuinely present the same
+// overlay identity — which is worth saying out loud rather than swallowing into
+// a 500 the operator cannot act on.
+func TestDuplicateNebulaFingerprintIsAConflictNotAnInternalError(t *testing.T) {
+	s, caPEM, caKeyPEM := newTestServer(t)
+	const shared = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+
+	var last int
+	var lastBody string
+	for range 2 {
+		leaf := issuedClient(t, caPEM, caKeyPEM, uuid.New())
+		body, _ := json.Marshal(wire.RegisterRequest{
+			SupportedProtocols:    []string{wire.ProtocolV1},
+			Capabilities:          []string{wire.CapPinChangeLog, wire.CapSnapshot},
+			NebulaCertFingerprint: shared,
+		})
+		w := httptest.NewRecorder()
+		s.handleRegister(w, reqWithCert(http.MethodPost, "/fed/v1/register", body, leaf))
+		last, lastBody = w.Code, w.Body.String()
+	}
+	if last != http.StatusConflict {
+		t.Fatalf("second registration = %d (%s), want 409", last, lastBody)
+	}
+	if !strings.Contains(lastBody, "Nebula certificate") {
+		t.Errorf("the conflict does not name what collided: %s", lastBody)
 	}
 }
