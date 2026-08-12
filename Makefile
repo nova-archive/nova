@@ -231,6 +231,13 @@ upgrade-evidence: upgrade-wire-e2e upgrade-schema-e2e upgrade-release-e2e
 backup-restore-e2e:
 	./scripts/backup_restore_e2e.sh
 
+# P2-M7.3 Task 28: the release workflow is validated by a DIGEST-PINNED linter.
+# A workflow that mints signatures is the last place to run an unpinned tool.
+ACTIONLINT_IMAGE ?= rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9
+.PHONY: actionlint
+actionlint:
+	docker run --rm -v "$(CURDIR):/repo" -w /repo $(ACTIONLINT_IMAGE) -color
+
 .PHONY: crossversion-e2e
 # P2-M7 D-M7-3: local gate; requires docker + libvips headers. PAIRING=all|head-head|head-coord-old-donor|old-coord-head-donor
 crossversion-e2e:

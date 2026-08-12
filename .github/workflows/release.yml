@@ -1,0 +1,446 @@
+# Nova release (P2-M7.3, D-M7.3-2e, D-M7.3-16).
+#
+# ============================================================================
+# ONE STABLE SIGNING PRINCIPAL
+# ============================================================================
+#
+# This workflow runs from protected `main`, with the candidate commit passed as
+# an immutable INPUT. Not from a tag ref — the tag does not exist when the
+# candidate is signed, and it is this workflow's own state machine that creates
+# it, only after the promoted digests have been read back.
+#
+# GitHub's `workflow_ref` carries both the workflow path AND the Git ref, so the
+# identity a Cosign policy must admit is written out exactly:
+#
+#   https://github.com/nova-archive/nova/.github/workflows/release.yml@refs/heads/main
+#
+# It is the same identity for the first release and every later one. It appears
+# verbatim in releases/verification-policy.txt, in scripts/nova-release, and in
+# the documented bootstrap command; a test fails if they disagree.
+#
+# ============================================================================
+# THE STATE MACHINE, AND WHY THE ORDER
+# ============================================================================
+#
+#   1. build + push candidate descriptors ONCE
+#   2. SBOM, provenance, sign, attest those exact digests
+#   3. VERIFY those materials — signing and then not checking is a ritual
+#   4. run the gates; emit signed evidence statements
+#   5. finalize and sign the lock
+#   6. approval (GitHub environment)
+#   7. promote OCI refs and READ BACK, asserting digest AND mediaType
+#   8. create the Git product tag — only after a successful read-back
+#   9. publish the immutable release
+#
+# Build once, then promote. Rebuilding to produce a "release" image would change
+# the digest the lock already committed to, which is the circularity this whole
+# design exists to break: stamping version and labels alters the image config,
+# which alters the manifest digest.
+#
+# Step 7 reads back because `docker buildx imagetools create` wraps a
+# single-platform manifest in a NEW index unless told otherwise, which changes
+# the digest under you. The lock records OCI DESCRIPTORS — digest, mediaType,
+# size — precisely so the read-back can assert the right thing; a bare digest
+# string cannot distinguish an index from a manifest.
+#
+# Step 8 is after step 7 because a Git tag is the one thing here that is
+# expensive to retract. Every external write before it is idempotent: pushing
+# the same content to the same digest is a no-op, and a rerun between any two
+# steps converges rather than duplicating.
+#
+# ============================================================================
+# GIT TAGS AND OCI TAGS ARE DIFFERENT THINGS
+# ============================================================================
+#
+# `v0.3.0` as a Git tag names a commit. `v0.3.0` as an OCI tag names a manifest,
+# and is MUTABLE — anyone with push access can repoint it. Nothing in Nova ever
+# resolves an OCI tag at deploy time; the lock carries digests. The OCI tag
+# exists only so a human browsing the registry can find the release.
+#
+# ============================================================================
+# NOT YET EXECUTED
+# ============================================================================
+#
+# This workflow has never run. Completion states 2 (RC verified), 3 (release
+# published) and 4 (transition evidence) are NOT reached, and the ROADMAP says
+# so. Validated with a digest-pinned actionlint only.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: >-
+          The full 40-character commit SHA to release. Immutable by
+          construction: a branch name would let the content change between
+          approval and promotion.
+        required: true
+        type: string
+      version:
+        description: The product version, e.g. v0.3.0. Must match the checked-in intent.
+        required: true
+        type: string
+      dry_run:
+        description: Build, sign and verify, but do not promote, tag or publish.
+        required: false
+        default: true
+        type: boolean
+
+# Least privilege at the top; each job widens only what it needs.
+permissions:
+  contents: read
+
+# One release at a time, and never cancelled midway: a cancelled run between
+# two external writes is exactly the state the idempotent recovery is for, but
+# not having to exercise it is better.
+concurrency:
+  group: nova-release
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  OWNER: nova-archive
+
+jobs:
+  # ==========================================================================
+  # Preconditions. Everything that can refuse before anything is built.
+  # ==========================================================================
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      target_schema: ${{ steps.intent.outputs.target_schema }}
+      intent_digest: ${{ steps.intent.outputs.intent_digest }}
+      intent_path: ${{ steps.intent.outputs.intent_path }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+
+      # Workflow inputs reach shell through the ENVIRONMENT, never through
+      # ${{ }} interpolation into a run block. Only someone with write access
+      # can dispatch this, but "the attacker would need write access" is a
+      # reason to keep the habit rather than to drop it: a future trigger change
+      # would silently turn these into injection points.
+      - name: The candidate must be a full SHA on protected main
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          case "$CANDIDATE_SHA" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+            *) echo "::error::candidate_sha must be a full 40-character lowercase SHA."; exit 1 ;;
+          esac
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main \
+            || { echo "::error::that commit is not on main. Releases are cut from protected" \
+                      "main so one signing principal covers every release."; exit 1; }
+
+      - name: The version must be canonical and must not already exist
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$VERSION" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::the version is not a canonical vMAJOR.MINOR.PATCH tag"; exit 1 ;;
+          esac
+          case "$VERSION" in
+            *[!v0-9.-]*|*/*) echo "::error::the version carries characters a tag must not"; exit 1 ;;
+          esac
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::that Git tag already exists. A release is immutable; cut a new" \
+                 "version rather than moving a tag."
+            exit 1
+          fi
+
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+
+      - name: The intent is checked in, valid, and names this version
+        id: intent
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          go run ./internal/release/cmd/novarel validate
+          go run ./internal/release/cmd/novarel catalog --check
+          path="releases/intent/${VERSION}.json"
+          test -f "$path" || { echo "::error::no $path. The intent is reviewed BEFORE the" \
+            "build; a release with no reviewed decision behind it is not a release."; exit 1; }
+          {
+            echo "intent_path=$path"
+            echo "intent_digest=$(go run ./internal/release/cmd/novarel digest "$path")"
+            echo "target_schema=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["target_schema"])' "$path")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Gate coverage carries no placeholder
+        run: |
+          # A release candidate is impossible while any gate's coverage is the
+          # INTENDED shape rather than an executed result. Without this, a claim
+          # reaches a signed lock with nothing behind it.
+          go test ./internal/release/ -run TestPlaceholderCoverageBlocksReleaseCandidate -count=1 -v 2>&1 | tee /tmp/cov.log
+          if grep -q "the checked-in table still has placeholders" /tmp/cov.log; then
+            echo "::error::gate coverage still has placeholders; see the test output above."
+            exit 1
+          fi
+
+      - name: Every artifact gate
+        run: make artifact-gates
+
+  # ==========================================================================
+  # 1-2. Build + push candidate descriptors ONCE, then sign and attest them.
+  # ==========================================================================
+  candidate:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: write
+    strategy:
+      # Fail the whole matrix on the first failure. A partial candidate — two
+      # of three images signed — is a state the lock cannot describe.
+      fail-fast: true
+      matrix:
+        include:
+          - name: nova-coordinator
+            dockerfile: docker/coordinator.Dockerfile
+          - name: nova-node
+            dockerfile: docker/node.Dockerfile
+          - name: nova-admin
+            dockerfile: docker/admin.Dockerfile
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate_sha }}
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Binaries are stamped with the INTENDED FINAL VERSION, not a candidate
+      # placeholder. Stamping changes the image config and therefore the
+      # manifest digest, so a "candidate" stamp would mean the released image is
+      # not the image that was signed.
+      #
+      # Pushed to a candidate OCI tag. Promotion later adds the version tag to
+      # the SAME digest; it does not rebuild.
+      - name: Build + push by digest
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.name }}:candidate-${{ inputs.candidate_sha }}
+          build-args: |
+            NOVA_VERSION=${{ inputs.version }}
+            NOVA_REVISION=${{ inputs.candidate_sha }}
+            NOVA_BUILD_DATE=${{ github.event.repository.updated_at }}
+
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Sign the digest
+        env:
+          REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.name }}@${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "$REF"
+
+      - uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1.4.4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - name: SBOM for the pushed digest, attested to it
+        env:
+          REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.name }}@${{ steps.push.outputs.digest }}
+          NAME: ${{ matrix.name }}
+        run: |
+          syft "$REF" -o "spdx-json=${NAME}.sbom.spdx.json"
+          cosign attest --yes --type spdxjson --predicate "${NAME}.sbom.spdx.json" "$REF"
+
+      # 3. VERIFY WHAT WAS JUST PRODUCED. Signing and then not checking is a
+      #    ritual: it proves the signing step ran, not that the result is
+      #    verifiable by the policy an operator will use.
+      - name: Verify the signature and provenance against the RELEASE policy
+        env:
+          REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.name }}@${{ steps.push.outputs.digest }}
+        run: |
+          IDENTITY="https://github.com/nova-archive/nova/.github/workflows/release.yml@refs/heads/main"
+          ISSUER="https://token.actions.githubusercontent.com"
+          cosign verify --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$REF"
+          cosign verify-attestation --type slsaprovenance \
+            --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" "$REF"
+
+      - name: Record the descriptor
+        env:
+          REF: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.name }}@${{ steps.push.outputs.digest }}
+          NAME: ${{ matrix.name }}
+        run: |
+          mkdir -p descriptors
+          # mediaType and size, not just the digest: promotion behaves
+          # differently for an index than for a manifest, and the read-back
+          # after promotion has to be able to tell them apart.
+          docker buildx imagetools inspect --raw "$REF" > "descriptors/${NAME}.raw.json"
+          python3 - "descriptors/${NAME}.raw.json" > "descriptors/${NAME}.json" <<'PY'
+          import hashlib, json, os, sys
+          raw = open(sys.argv[1], "rb").read()
+          doc = json.loads(raw)
+          print(json.dumps({
+              "repository": "%s/%s/%s" % (os.environ["REGISTRY"], os.environ["OWNER"], os.environ["NAME"]),
+              "descriptor": {
+                  "mediaType": doc.get("mediaType", ""),
+                  "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                  "size": len(raw),
+              },
+          }, indent=2))
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: descriptor-${{ matrix.name }}
+          path: descriptors/${{ matrix.name }}.json
+          if-no-files-found: error
+
+  # ==========================================================================
+  # 4-5. Gates against the candidate digests, then the lock.
+  # ==========================================================================
+  evidence:
+    needs: [validate, candidate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+      - uses: actions/setup-go@41dfa10bad2bb2ae585af6ee5bb4d7d973ad74ed # v5.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: descriptor-*
+          path: descriptors
+          merge-multiple: true
+
+      - name: Install libvips headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvips-dev
+
+      # The evidence tiers. A gate that runs in a lower tier than a claim needs
+      # cannot satisfy it: release.EvidenceRef records the runner class, and a
+      # static gate may never satisfy an executed claim.
+      - name: rc-docker tier
+        run: |
+          make upgrade-wire-e2e
+          make upgrade-schema-e2e
+          make backup-restore-e2e
+
+      - name: Emit signed evidence statements
+        run: |
+          # A statement carries artifact digests, source commit, scenario and
+          # capability ids, test revision, outcome, timestamps and runner class.
+          # NOT a CI run id: logs expire, runs are deleted, and a run id proves
+          # nothing about what the run concluded.
+          echo "::error::evidence statement emission is not implemented yet."
+          echo "The gates above pass; what is missing is the SIGNED STATEMENT that records"
+          echo "their outcome against the candidate digests, which is what the lock"
+          echo "references. Until this exists, no lock can be finalized, and that is why"
+          echo "this workflow has never produced a release."
+          exit 1
+
+  # ==========================================================================
+  # 6-9. Approval, promotion with read-back, the Git tag, publication.
+  # ==========================================================================
+  promote:
+    needs: [validate, candidate, evidence]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    # The approval gate. Configured on the repository, not here, so it cannot be
+    # removed by editing this file in the same PR that would abuse it.
+    environment: release
+    permissions:
+      contents: write # the Git tag and the GitHub Release
+      packages: write # the OCI version tag
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: descriptor-*
+          path: descriptors
+          merge-multiple: true
+
+      # 7. Promote, then READ BACK and assert. `imagetools create` builds a NEW
+      #    index around a single-platform manifest unless told otherwise, which
+      #    silently changes the digest the lock committed to. The assertion is
+      #    what turns that from a discovery an operator makes into a failed
+      #    release.
+      - name: Promote the OCI version tag, then read it back
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          for name in nova-coordinator nova-node nova-admin; do
+            want_digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["descriptor"]["digest"])' "descriptors/$name.json")"
+            want_media="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["descriptor"]["mediaType"])' "descriptors/$name.json")"
+            src="${REGISTRY}/${OWNER}/${name}@${want_digest}"
+            dst="${REGISTRY}/${OWNER}/${name}:${VERSION}"
+
+            # Idempotent: re-tagging the same digest is a no-op, so a rerun
+            # between any two external writes converges.
+            docker buildx imagetools create --tag "$dst" "$src"
+
+            got_raw="$(docker buildx imagetools inspect --raw "$dst")"
+            got_digest="sha256:$(printf '%s' "$got_raw" | sha256sum | cut -d' ' -f1)"
+            got_media="$(printf '%s' "$got_raw" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("mediaType",""))')"
+
+            if [ "$got_digest" != "$want_digest" ]; then
+              echo "::error::$dst resolves to $got_digest, not the signed $want_digest."
+              echo "Promotion rewrapped the manifest. Nothing is tagged in Git; the release stops here."
+              exit 1
+            fi
+            if [ "$got_media" != "$want_media" ]; then
+              echo "::error::$dst is a $got_media, the lock describes a $want_media."
+              exit 1
+            fi
+            echo "promoted and verified $dst -> $want_digest ($want_media)"
+          done
+
+      # 8. ONLY NOW. Every write before this point is idempotent or retractable;
+      #    a Git tag on a public repository is neither in practice.
+      - name: Create the Git product tag
+        env:
+          VERSION: ${{ inputs.version }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          git config user.name  "nova-release"
+          git config user.email "release@nova-archive.invalid"
+          git tag -a "$VERSION" "$CANDIDATE_SHA" -m "Nova $VERSION"
+          git push origin "refs/tags/$VERSION"
+
+      - name: Publish the immutable release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Draft first, attach the lock and the evidence, then publish. A
+          # release that exists before its lock does is one an operator can
+          # download without the document that authenticates it.
+          echo "::error::release publication is not implemented yet: it depends on the lock"
+          echo "and evidence statements the evidence job does not produce."
+          exit 1
