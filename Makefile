@@ -224,6 +224,13 @@ upgrade-release-e2e:
 
 upgrade-evidence: upgrade-wire-e2e upgrade-schema-e2e upgrade-release-e2e
 
+# P2-M7.3 Task 27: UPGRADING.md promises a tested restore, and composed
+# migration obligations can make restore the literal rollback boundary. A
+# recovery path nobody has walked is a hope.
+.PHONY: backup-restore-e2e
+backup-restore-e2e:
+	./scripts/backup_restore_e2e.sh
+
 .PHONY: crossversion-e2e
 # P2-M7 D-M7-3: local gate; requires docker + libvips headers. PAIRING=all|head-head|head-coord-old-donor|old-coord-head-donor
 crossversion-e2e:
