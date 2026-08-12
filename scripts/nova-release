@@ -421,6 +421,32 @@ os.rename(tmp, path)
 PY
     note "host plane: $host_outcome"
 
+    # The DOCTOR plane runs in its own service, sharing the coordinator's
+    # network namespace, because a live overlay probe needs to see nebula1 and
+    # nova-admin cannot: that is the whole reason the doctor was split into
+    # planes in P2-M7.2. Running it here rather than inside nova-admin is not a
+    # convenience, it is the only place it works.
+    doctor_report="$report_dir/$run_id-doctor.json"
+    if "$DOCKER" compose -f docker/docker-compose.yml \
+         -f deploy/operator/compose.federation.yaml \
+         --profile federation run --rm -T nova-doctor \
+         federation doctor --json > "$doctor_report.partial" 2>"$doctor_report.err"; then
+      mv -f "$doctor_report.partial" "$doctor_report"
+      note "doctor plane: passed"
+    else
+      # A federation that is not initialised has no overlay to probe, and that
+      # is not an upgrade failure. A doctor that could not RUN is reported as
+      # skipped; a doctor that ran and objected is a failure.
+      if grep -q "federation" "$doctor_report.err" 2>/dev/null; then
+        mv -f "$doctor_report.partial" "$doctor_report" 2>/dev/null || true
+        note "doctor plane: FAILED — see $doctor_report.err"
+        failed=1
+      else
+        rm -f "$doctor_report.partial"
+        note "doctor plane: skipped (no federation overlay to probe)"
+      fi
+    fi
+
     for plane in admin coordinator database donor; do
       if run_admin upgrade verify --plane "$plane" --run-id "$run_id" --report-dir /reports; then
         note "$plane plane: passed"

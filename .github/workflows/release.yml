@@ -434,13 +434,29 @@ jobs:
           git tag -a "$VERSION" "$CANDIDATE_SHA" -m "Nova $VERSION"
           git push origin "refs/tags/$VERSION"
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: bundle
+
+      # Draft FIRST, attach, then publish. A release that exists before its
+      # lock is attached is one an operator can download without the document
+      # that authenticates it.
       - name: Publish the immutable release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
-          # Draft first, attach the lock and the evidence, then publish. A
-          # release that exists before its lock does is one an operator can
-          # download without the document that authenticates it.
-          echo "::error::release publication is not implemented yet: it depends on the lock"
-          echo "and evidence statements the evidence job does not produce."
-          exit 1
+          set -euo pipefail
+          tar -czf "nova-$VERSION-bundle.tar.gz" -C bundle .
+          gh release create "$VERSION" \
+            --draft \
+            --target "$CANDIDATE_SHA" \
+            --title "Nova $VERSION" \
+            --notes-file bundle/UPGRADING.md
+          gh release upload "$VERSION" \
+            "nova-$VERSION-bundle.tar.gz" \
+            bundle/lock.json bundle/lock.sigstore.json bundle/intent.json \
+            bundle/hashes.txt bundle/verification-policy.txt
+          gh release edit "$VERSION" --draft=false

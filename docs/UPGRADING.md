@@ -380,6 +380,49 @@ corrupt the replicas the rollback was meant to protect.
 
 ---
 
+## P2-M7.3 — Upgrade & release lifecycle
+
+**What changed.** The three behaviour changes are at the top of this page, and
+the whole procedure above replaces the old ad-hoc sequence. In short: you run a
+published image, migrations announce themselves and can refuse, and
+`NOVA_VERSION` no longer overrides the build stamp.
+
+**Database migration: 0019.** Additive — two new tables (`upgrade_runs`,
+`upgrade_events`) and ten nullable columns on `nodes`, plus a backfill of
+`effective_capabilities` from `advertised_capabilities` that touches only
+donor-scale rows. `(18, 19]` is **old-binary compatible**, evidenced rather than
+inspected: `scripts/upgrade_schema_e2e.sh` starts the coordinator built at
+commit `143c459` against schema 19 and confirms it serves a database-backed
+query path. Going back across this boundary is a **redeploy**, not a restore.
+
+The range is auto-appliable, so `migrate auto` will apply it on start unless you
+have set `NOVA_MIGRATE_ON_START=false`.
+
+**If you do not use federation.** Install the release env, apply 0019, recreate.
+Nothing else applies to you.
+
+**If you have donors.** Coordinator first, then donors in bounded batches, using
+Step 8's two-party sequence. A donor on the previous build keeps working: the
+interop contract is negotiated protocol plus capabilities, and this release
+changes neither. Convert each bundle once with `novactl node convert-bundle` —
+it preserves the node id, both certificates, the Kubo repo and every volume.
+
+**One recovery you may need.** If a donor has been offline long enough to be
+evicted, it now returns by itself: this release accepts an evicted node's
+heartbeat when it presents its registered certificate, restores it to active
+with a forced snapshot, and credits none of its old replicas until they are
+re-assigned and acknowledged. Previously such a donor was stranded permanently
+and the only remedy was re-enrollment. Nothing to do; it recovers on its next
+heartbeat, and the reactivation is written to `audit_log`.
+
+**Not yet available.** There is no published release to install: the release
+workflow has never run. Two compatibility gates — `upgrade-release-e2e` and
+`mixed-fleet-e2e` — carry placeholder coverage, and a release candidate is
+impossible while either does. Until then this page describes the procedure and
+the tooling, both of which work today against a locally built deployment.
+
+---
+
 ## P2-M7.2 — Federation productization
 
 **What changed.** Federation went from a set of manual steps to one supported

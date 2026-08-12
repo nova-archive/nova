@@ -27,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -159,6 +160,8 @@ func cmdApply(ctx context.Context, db *sql.DB, args []string) error {
 		"comma-separated obligation ids you have carried out")
 	journalDir := fs.String("journal-dir", os.Getenv(upgrade.JournalDirEnv),
 		"where the bootstrap journal is written")
+	configPath := fs.String("config", defaultConfigPath(),
+		"operator.yaml to fingerprint, so the run records what the configuration was going in")
 	actor := fs.String("actor", os.Getenv("USER"), "who is running this")
 	runID := fs.String("run-id", "", "continue an interrupted run under its existing id")
 	asJSON := fs.Bool("json", false, "machine-readable result")
@@ -167,12 +170,13 @@ func cmdApply(ctx context.Context, db *sql.DB, args []string) error {
 	}
 
 	opts := upgrade.Options{
-		Target:            *to,
-		ExpectReleaseLock: *lockDigest,
-		ToRelease:         *toRelease,
-		Acknowledge:       splitComma(*ack),
-		Actor:             *actor,
-		JournalDir:        *journalDir,
+		Target:                  *to,
+		ConfigFingerprintBefore: configFingerprint(*configPath),
+		ExpectReleaseLock:       *lockDigest,
+		ToRelease:               *toRelease,
+		Acknowledge:             splitComma(*ack),
+		Actor:                   *actor,
+		JournalDir:              *journalDir,
 	}
 	if *expectFrom >= 0 {
 		opts.ExpectFromSchema = expectFrom
@@ -205,8 +209,19 @@ func cmdApply(ctx context.Context, db *sql.DB, args []string) error {
 	if applyErr != nil {
 		// The journal path goes on the failure, not the success. A successful
 		// apply does not send anyone looking for a file.
+		//
+		// And the summary is printed HERE rather than leaving the operator to
+		// read JSONL: the moment they need the record is the moment the
+		// migration just failed, and telling them a path is one step short of
+		// telling them what happened.
 		if res.JournalPath != "" {
 			fmt.Fprintf(os.Stderr, "migrate: the run is recorded at %s\n", res.JournalPath)
+			if j, jerr := upgrade.OpenJournal(filepath.Dir(res.JournalPath), res.RunID); jerr == nil {
+				if events, eerr := j.Events(); eerr == nil {
+					fmt.Fprintln(os.Stderr, "migrate: what the run recorded:")
+					upgrade.WriteSummary(os.Stderr, events)
+				}
+			}
 		}
 		return applyErr
 	}
@@ -270,6 +285,41 @@ func cmdAuto(ctx context.Context, db *sql.DB, enabled bool, args []string) error
 		"--journal-dir", *journalDir,
 		"--actor", "entrypoint",
 	})
+}
+
+func defaultConfigPath() string {
+	if p := os.Getenv("NOVA_CONFIG_FILE"); p != "" {
+		return p
+	}
+	return "/etc/nova/operator.yaml"
+}
+
+// configFingerprint records what the configuration was going into the upgrade
+// (P2-M7.3, D-M7.3-10).
+//
+// A missing or unreadable file is NOT fatal. The fingerprint is a record, and
+// refusing to migrate because a record could not be taken would trade the
+// operator's upgrade for a note in a table. It reports the reason in the
+// fingerprint's place instead, so the column distinguishes "unchanged" from
+// "never measured" — which an empty string could not.
+func configFingerprint(path string) string {
+	if path == "" {
+		return "unavailable: no operator.yaml path"
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "migrate: note: not fingerprinting the configuration (%v)\n", err)
+		return "unavailable: " + err.Error()
+	}
+	fp, findings, err := release.Fingerprint(b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "migrate: note: %v\n", err)
+		return "unavailable: " + err.Error()
+	}
+	for _, f := range findings {
+		fmt.Fprintf(os.Stderr, "migrate: %s: %s\n", f.Path, f.Reason)
+	}
+	return fp
 }
 
 func appliedSchema(ctx context.Context, db *sql.DB) (int64, error) {

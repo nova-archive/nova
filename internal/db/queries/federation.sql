@@ -393,6 +393,13 @@ SELECT COALESCE(
 -- name: CreateUpgradeRun :one
 -- The run is opened BEFORE anything is applied, so an interruption leaves a
 -- 'started' row a later run can find rather than no row at all.
+--
+-- NO GO CALLER, deliberately: internal/upgrade opens the run with inline SQL on
+-- the SAME *sql.Conn that holds the migration advisory lock, and a pgx pool
+-- would put the write on a different session from the lock protecting it. This
+-- query is kept as the canonical statement the two must agree on — the sibling
+-- writes (RecordUpgradeEvent, CompleteUpgradeRun) DO run through here from
+-- `novactl upgrade verify`, which holds no lock.
 INSERT INTO upgrade_runs (
     id, from_release, to_release, from_schema, to_schema, release_lock_digest,
     expected_artifacts, obligations, config_fingerprint_before, state, actor

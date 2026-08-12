@@ -15,7 +15,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nova-archive/nova/internal/buildinfo"
+	"github.com/nova-archive/nova/internal/db/gen"
 	"github.com/nova-archive/nova/internal/release"
+	"github.com/nova-archive/nova/internal/upgrade"
 )
 
 // `novactl upgrade verify --plane <p>` — post-upgrade evidence for ONE plane
@@ -72,6 +74,8 @@ func cmdUpgradeVerify(args []string) error {
 	runID := fs.String("run-id", "", "the orchestrator's run id, shared by every plane")
 	reportDir := fs.String("report-dir", "", "directory to write the plane report into (mounted; "+
 		"nova-admin is run --rm and a report on its rootfs evaporates)")
+	configPath := fs.String("config", "/etc/nova/operator.yaml",
+		"operator.yaml to fingerprint, so the run records the configuration coming out")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -95,6 +99,20 @@ func cmdUpgradeVerify(args []string) error {
 	}
 
 	rep := verifyPlane(ctx, pool, *plane, *runID)
+
+	// RECORD THE VERIFY PHASE. upgrade_runs and upgrade_events carry four
+	// phases and only two were ever written: the run stopped at `apply`, so a
+	// record that exists to answer "how do I prove it worked" could not say
+	// whether anyone had checked (P2-M7.3, D-M7.3-10).
+	if pool != nil {
+		if rerr := recordVerify(ctx, pool, rep, *configPath); rerr != nil {
+			// A recording failure must not fail a verification that passed —
+			// but it must be visible, because a silent one leaves the operator
+			// believing the run is journalled when it is not.
+			fmt.Fprintf(os.Stderr, "warning: the %s plane result was not recorded: %v\n",
+				rep.Plane, rerr)
+		}
+	}
 
 	body, err := json.MarshalIndent(rep, "", "  ")
 	if err != nil {
@@ -209,6 +227,80 @@ func verifyPlane(ctx context.Context, pool *pgxpool.Pool, plane, runID string) p
 	sum := sha256.Sum256(mustJSONBytes(rep.Checks))
 	rep.ResultSHA = "sha256:" + hex.EncodeToString(sum[:])
 	return rep
+}
+
+// recordVerify writes the plane's result into upgrade_events and, once every
+// plane the orchestrator runs has reported, completes the run.
+//
+// It uses the GENERATED queries rather than inline SQL. internal/upgrade's
+// apply path cannot: it holds the advisory lock on one *sql.Conn and every
+// write it makes has to be on that same session. Here there is no lock to
+// share, so the duplicate-SQL problem has no excuse.
+func recordVerify(ctx context.Context, pool *pgxpool.Pool, rep planeReport, configPath string) error {
+	q := gen.New(pool)
+
+	run, err := q.LatestUpgradeRun(ctx)
+	if err != nil {
+		// No run to attach to. Verification is still legitimate — an operator
+		// may verify a deployment nobody migrated — so this is a fact, not a
+		// failure.
+		return nil
+	}
+
+	detail, err := json.Marshal(map[string]any{
+		"plane": rep.Plane, "run_id": rep.RunID,
+		"binary": rep.Binary, "release": rep.Release,
+		"result_sha256": rep.ResultSHA, "checks": rep.Checks,
+	})
+	if err != nil {
+		return err
+	}
+
+	// The sequence is derived from what is already recorded, so two planes
+	// reporting concurrently cannot collide on (run_id, sequence): the insert
+	// is ON CONFLICT DO NOTHING, and a lost event is better than a failed
+	// verification.
+	existing, err := q.ListUpgradeEvents(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	next := int64(len(existing))
+
+	if err := q.RecordUpgradeEvent(ctx, gen.RecordUpgradeEventParams{
+		RunID:    run.ID,
+		Sequence: next,
+		Phase:    "verify",
+		State:    rep.Outcome,
+		Detail:   detail,
+	}); err != nil {
+		return err
+	}
+
+	// The run completes on the last plane the in-image orchestration runs. The
+	// AFTER fingerprint is taken here because this is the latest point in the
+	// upgrade that still belongs to it — after the deployment swap, before the
+	// operator moves on.
+	if rep.Plane == adminPlanes[len(adminPlanes)-1] {
+		state := upgrade.StatePassed
+		if rep.Outcome == failed {
+			state = upgrade.StateFailed
+		}
+		after := ""
+		if b, rerr := os.ReadFile(configPath); rerr == nil {
+			if fp, _, ferr := release.Fingerprint(b); ferr == nil {
+				after = fp
+			}
+		}
+		if after == "" {
+			after = "unavailable: " + configPath + " could not be fingerprinted"
+		}
+		return q.CompleteUpgradeRun(ctx, gen.CompleteUpgradeRunParams{
+			ID:                     run.ID,
+			State:                  state,
+			ConfigFingerprintAfter: after,
+		})
+	}
+	return nil
 }
 
 func boolOutcome(ok bool) string {

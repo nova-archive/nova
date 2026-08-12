@@ -17,11 +17,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nova-archive/nova/internal/release"
 )
@@ -74,6 +76,12 @@ func run(args []string) error {
 	case "matrix":
 		check := len(args) > 1 && args[1] == "--check"
 		return generateMatrix(defaultIntentDir, upgradingDoc, check)
+	case "evidence":
+		return emitEvidence(args[1:])
+	case "lock":
+		return buildLockCmd(args[1:])
+	case "bundle":
+		return assembleCmd(args[1:])
 	case "predecessor":
 		index := 0
 		if len(args) > 1 {
@@ -101,6 +109,9 @@ func usage() {
   catalog --check  fail if the generated catalog has drifted from the intent
   matrix           regenerate the compatibility matrix in `+upgradingDoc+`
   matrix --check   fail if that block has drifted from the intent or the coverage
+  evidence         emit a signed-able evidence statement from a gate result
+  lock             assemble and validate a lock from descriptors + evidence
+  bundle           assemble a release bundle directory and verify it
   predecessor [i]  the GIT REF of the i-th supported predecessor (default 0, the
                    immediate one). Cross-version gates check this out, so the ref
                    comes from the reviewed intent rather than a shell variable
@@ -187,6 +198,300 @@ func generateMatrix(intentDir, doc string, checkOnly bool) error {
 	}
 	fmt.Printf("wrote the compatibility matrix into %s from %s\n", doc, path)
 	return nil
+}
+
+// emitEvidence writes one gate's conclusion as a statement.
+//
+//	novarel evidence --gate G --outcome passed --runner rc-docker \
+//	  --release vX.Y.Z --commit SHA --test-revision SHA \
+//	  --artifacts descriptors/ --claims a,b --out evidence/G.json
+//
+// The digest it prints is what the lock references.
+func emitEvidence(args []string) error {
+	fs := flag.NewFlagSet("evidence", flag.ContinueOnError)
+	gate := fs.String("gate", "", "the gate that produced this conclusion")
+	outcome := fs.String("outcome", "passed", "passed or skipped; a FAILED gate emits nothing")
+	runner := fs.String("runner", "", "the tier it actually ran in")
+	rel := fs.String("release", "", "the release this is about")
+	commit := fs.String("commit", "", "the candidate source commit")
+	testRev := fs.String("test-revision", "", "the commit of the test code that ran")
+	descDir := fs.String("artifacts", "descriptors", "directory of <name>.json OCI descriptors")
+	claims := fs.String("claims", "", "comma-separated claim ids this supports")
+	scenarios := fs.String("scenarios", "", "comma-separated scenario ids exercised")
+	detail := fs.String("detail", "", "context; REQUIRED for a skip")
+	started := fs.String("started", "", "RFC3339 start time (default: now)")
+	out := fs.String("out", "", "where to write the statement")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *gate == "" || *rel == "" || *commit == "" || *out == "" {
+		return fmt.Errorf("usage: novarel evidence --gate G --release V --commit SHA --out PATH [...]")
+	}
+	if *testRev == "" {
+		*testRev = *commit
+	}
+
+	digests, err := readDescriptorDigests(*descDir)
+	if err != nil {
+		return err
+	}
+	start := time.Now().UTC()
+	if *started != "" {
+		if start, err = time.Parse(time.RFC3339, *started); err != nil {
+			return fmt.Errorf("--started: %w", err)
+		}
+	}
+
+	st := release.EvidenceStatement{
+		Schema: release.EvidenceSchema, Gate: *gate,
+		RunnerClass: release.RunnerClass(*runner), Outcome: *outcome,
+		Release: *rel, SourceCommit: *commit, ArtifactDigests: digests,
+		Claims: splitList(*claims), Scenarios: splitList(*scenarios),
+		TestRevision: *testRev,
+		StartedAt:    start.UTC(), FinishedAt: time.Now().UTC(),
+		Detail: *detail,
+	}
+	body, err := st.Render()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(*out, body, 0o644); err != nil {
+		return err
+	}
+	fmt.Println(release.EvidenceDigest(body))
+	return nil
+}
+
+// buildLockCmd assembles the lock from things that already exist. It invents
+// nothing: a builder that could fill in a missing digest could produce a lock
+// for a release nobody built.
+func buildLockCmd(args []string) error {
+	fs := flag.NewFlagSet("lock", flag.ContinueOnError)
+	commit := fs.String("commit", "", "the candidate source commit")
+	descDir := fs.String("artifacts", "descriptors", "directory of <name>.json OCI descriptors")
+	evDir := fs.String("evidence", "evidence", "directory of evidence statements")
+	bundleDir := fs.String("bundle", "", "the assembled bundle whose payload map the lock carries")
+	out := fs.String("out", "lock.json", "where to write the lock")
+	builtAt := fs.String("built-at", "", "RFC3339 build time (default: now)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *commit == "" || *bundleDir == "" {
+		return fmt.Errorf("usage: novarel lock --commit SHA --bundle DIR [--out lock.json]")
+	}
+
+	path, err := release.CurrentIntentPath(defaultIntentDir)
+	if err != nil {
+		return err
+	}
+	intentBytes, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	in, err := release.ParseIntent(intentBytes)
+	if err != nil {
+		return err
+	}
+
+	artifacts, err := readDescriptors(*descDir)
+	if err != nil {
+		return err
+	}
+	evidence, err := readEvidence(*evDir)
+	if err != nil {
+		return err
+	}
+	payload, err := payloadOf(*bundleDir)
+	if err != nil {
+		return err
+	}
+
+	at := time.Now().UTC()
+	if *builtAt != "" {
+		if at, err = time.Parse(time.RFC3339, *builtAt); err != nil {
+			return fmt.Errorf("--built-at: %w", err)
+		}
+	}
+
+	l, err := release.BuildLock(release.LockInputs{
+		Intent: in, IntentBytes: intentBytes,
+		SourceCommit: *commit, BuiltAt: at,
+		Artifacts: artifacts, Sidecars: in.Sidecars,
+		Evidence: evidence, Payload: payload,
+		Coverage: release.Coverage(),
+	})
+	if err != nil {
+		return err
+	}
+	body, err := release.RenderLock(l)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(*out, body, 0o644); err != nil {
+		return err
+	}
+
+	// Verify the assembled bundle against the lock NOW. The useful moment to
+	// discover that they disagree is before the lock is signed and published.
+	if err := release.VerifyAssembled(*bundleDir, l); err != nil {
+		return fmt.Errorf("the bundle does not match the lock just built for it: %w", err)
+	}
+	fmt.Printf("wrote %s  %s\n", *out, release.LockDigest(body))
+	fmt.Printf("donor lock digest %s\n", l.DonorLockDigest)
+	return nil
+}
+
+// assembleCmd writes the bundle directory. The lock is NOT written here: it
+// carries the payload map, so it does not exist until this returns.
+func assembleCmd(args []string) error {
+	fs := flag.NewFlagSet("bundle", flag.ContinueOnError)
+	out := fs.String("out", "", "the bundle directory to write")
+	evDir := fs.String("evidence", "evidence", "directory of evidence statements")
+	composeEnv := fs.String("release-env", "docker/release.env.example", "the release env")
+	upgrading := fs.String("upgrading", upgradingDoc, "the release's UPGRADING.md")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *out == "" {
+		return fmt.Errorf("usage: novarel bundle --out DIR")
+	}
+
+	path, err := release.CurrentIntentPath(defaultIntentDir)
+	if err != nil {
+		return err
+	}
+	read := func(p string) []byte {
+		b, rerr := os.ReadFile(p)
+		if rerr != nil {
+			err = rerr
+		}
+		return b
+	}
+	inputs := release.BundleInputs{
+		IntentBytes: read(path),
+		Policy:      read("releases/verification-policy.txt"),
+		ComposeEnv:  read(*composeEnv),
+		Upgrading:   read(*upgrading),
+		Bootstrap:   read("scripts/nova-release"),
+		Evidence:    map[string][]byte{},
+	}
+	if err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(*evDir)
+	if err != nil {
+		return fmt.Errorf("%s: %w (run the gates and `novarel evidence` first)", *evDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, rerr := os.ReadFile(filepath.Join(*evDir, e.Name()))
+		if rerr != nil {
+			return rerr
+		}
+		if _, rerr := release.ParseEvidence(b); rerr != nil {
+			return fmt.Errorf("%s: %w", e.Name(), rerr)
+		}
+		inputs.Evidence["evidence/"+e.Name()] = b
+	}
+
+	payload, err := release.AssembleBundle(*out, inputs)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("assembled %s with %d covered member(s)\n", *out, len(payload))
+	fmt.Println("next: novarel lock --commit <sha> --bundle " + *out + " --out " + *out + "/lock.json")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+
+func readDescriptorDigests(dir string) (map[string]string, error) {
+	arts, err := readDescriptors(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for name, a := range arts {
+		out[name] = a.Descriptor.Digest.String()
+	}
+	return out, nil
+}
+
+func readDescriptors(dir string) (map[string]release.LockedArtifact, error) {
+	out := map[string]release.LockedArtifact{}
+	for _, name := range release.ArtifactNames {
+		b, err := os.ReadFile(filepath.Join(dir, name+".json"))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w (the candidate job writes these)", name, err)
+		}
+		var a release.LockedArtifact
+		if err := json.Unmarshal(b, &a); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		out[name] = a
+	}
+	return out, nil
+}
+
+func readEvidence(dir string) (map[string]release.EvidencePair, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", dir, err)
+	}
+	out := map[string]release.EvidencePair{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		b, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			return nil, rerr
+		}
+		st, rerr := release.ParseEvidence(b)
+		if rerr != nil {
+			return nil, fmt.Errorf("%s: %w", e.Name(), rerr)
+		}
+		d := release.EvidenceDigest(b)
+		for _, claim := range st.Claims {
+			out[claim] = release.EvidencePair{Statement: st, Digest: d}
+		}
+	}
+	return out, nil
+}
+
+// payloadOf recomputes the payload map from a bundle already on disk, so the
+// lock describes what is actually there rather than what the assembler
+// intended.
+func payloadOf(dir string) (map[string]string, error) {
+	files, err := release.ReadBundle(os.DirFS(dir))
+	if err != nil {
+		return nil, err
+	}
+	keep := files[:0]
+	for _, f := range files {
+		switch f.Path {
+		case "lock.json", release.AuthRoot, "lock.pem", "lock.crt":
+			continue
+		}
+		keep = append(keep, f)
+	}
+	return release.BuildPayload(keep)
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func validate(dir string) error {
