@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/nova-archive/nova/internal/release"
@@ -69,6 +70,16 @@ func run(args []string) error {
 	case "catalog":
 		check := len(args) > 1 && args[1] == "--check"
 		return generateCatalog(defaultIntentDir, catalogOut, check)
+	case "predecessor":
+		index := 0
+		if len(args) > 1 {
+			n, err := strconv.Atoi(args[1])
+			if err != nil {
+				return fmt.Errorf("usage: novarel predecessor [index]")
+			}
+			index = n
+		}
+		return printPredecessor(defaultIntentDir, index)
 	default:
 		usage()
 		return fmt.Errorf("unknown subcommand %q", args[0])
@@ -84,7 +95,46 @@ func usage() {
   show <intent>    the parsed intent, as the workflow reads it
   catalog          regenerate internal/release/catalog_gen.go from the current intent
   catalog --check  fail if the generated catalog has drifted from the intent
+  predecessor [i]  the GIT REF of the i-th supported predecessor (default 0, the
+                   immediate one). Cross-version gates check this out, so the ref
+                   comes from the reviewed intent rather than a shell variable
+                   somebody has to remember to bump.
 `)
+}
+
+// printPredecessor writes one git ref on stdout.
+//
+// The cross-version gate used to carry `PRIOR_TAG="${PRIOR_TAG:-p2-m6-...}"`.
+// That is the wrong shape twice over: a default nobody updates goes stale
+// silently — it was three milestones behind — and the FIRST predecessor is
+// commit-anchored, because the deployment in the field is a local build of a
+// commit with no product tag at all. A variable that can only hold a tag cannot
+// name it.
+func printPredecessor(intentDir string, index int) error {
+	path, err := release.CurrentIntentPath(intentDir)
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	in, err := release.ParseIntent(b)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if index < 0 || index >= len(in.SupportedPredecessors) {
+		return fmt.Errorf("%s declares %d supported predecessor(s); there is no index %d",
+			path, len(in.SupportedPredecessors), index)
+	}
+	p := in.SupportedPredecessors[index]
+	switch p.Kind {
+	case "commit":
+		fmt.Println(p.Commit)
+	default:
+		fmt.Println(p.Version)
+	}
+	return nil
 }
 
 func validate(dir string) error {

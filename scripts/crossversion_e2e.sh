@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# P2-M7 (D-M7-3): mixed-version binary compatibility. Pairings:
+# P2-M7 (D-M7-3), repinned in P2-M7.3 (T22): mixed-version binary
+# compatibility. Pairings:
 #   head-head | head-coord-old-donor | old-coord-head-donor | all
 # EVERY pairing proves join → serve → audit against REAL binaries: register
 # over loopback federation mTLS, replicate one uploaded blob to the donor,
@@ -10,8 +11,18 @@
 # coordinator has no drain).
 #
 # NOT a schema-downgrade test: each pairing gets a FRESH database migrated by
-# the coordinator side's OWN migrate binary (HEAD → 0016; N−1 → 0015).
-# DB-upgrade coverage lives in internal/db/migrations tests, not here.
+# the coordinator side's OWN migrate binary, so each side reaches its own schema
+# ceiling and neither is asked to run against the other's. Schema-upgrade
+# coverage lives in internal/db/migrations and internal/upgrade tests, and the
+# old-binary-on-a-forward-schema case is upgrade-schema-e2e (Task 25) — not
+# here. Naming the two ceilings in a comment was how this file went stale: it
+# said "HEAD → 0016; N−1 → 0015" three milestones after both moved.
+#
+# The predecessor comes from the RELEASE INTENT, not from a shell variable.
+# `PRIOR_TAG="${PRIOR_TAG:-p2-m6-possession-audits}"` was wrong twice: a default
+# nobody updates goes stale silently, and the first supported predecessor is
+# COMMIT-anchored — the deployment in the field is a local build of a commit
+# with no product tag — so a variable that can only hold a tag cannot name it.
 #
 # Requirements: docker (postgres + kubo sidecars), Go toolchain + libvips dev
 # headers (host coordinator build), free loopback ports 15544/15001/19000/
@@ -21,8 +32,24 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PRIOR_TAG="${PRIOR_TAG:-p2-m6-possession-audits}"
+# The predecessor ref, read from the reviewed intent (P2-M7.3, T22). Overridable
+# for a one-off drill against some other artifact, but never defaulted to a
+# hand-maintained constant.
+PREDECESSOR="${PREDECESSOR:-$(go run ./internal/release/cmd/novarel predecessor)}"
+[ -n "$PREDECESSOR" ] || { echo "[xv] could not read the predecessor from the release intent" >&2; exit 1; }
 PAIRING="${1:-all}"
+
+# Sidecars are pinned BY DIGEST. This milestone is about knowing which bytes
+# produced a result, and a gate whose Postgres or Kubo changes underneath it
+# reports a pass about software nobody can name.
+#
+# Kubo is read from internal/deploy/templates.go so the gate and the donor
+# bundles cannot disagree about which Kubo Nova supports.
+KUBO_IMAGE="$(sed -n 's/.*DefaultKuboImage *= *"\(.*\)".*/\1/p' internal/deploy/templates.go)"
+[ -n "$KUBO_IMAGE" ] || { echo "[xv] could not read DefaultKuboImage from internal/deploy/templates.go" >&2; exit 1; }
+# postgres:16-alpine as resolved 2026-08-11. Its twins live in
+# internal/upgrade/apply_test.go and internal/db/migrations/upgrade_runs_test.go.
+PG_IMAGE="postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
 
 PG_PORT=15544
 KUBO_PORT=15001
@@ -79,7 +106,7 @@ wait_sql() { # $1=query $2=want $3=label $4=max-tries(2s each)
 
 start_pg() {
     docker run -d --name xv-pg -e POSTGRES_PASSWORD=nova -e POSTGRES_DB=nova_scratch \
-        -p "127.0.0.1:$PG_PORT:5432" postgres:16-alpine >/dev/null
+        -p "127.0.0.1:$PG_PORT:5432" "$PG_IMAGE" >/dev/null
     local n=0
     until docker exec xv-pg pg_isready -U postgres -d nova_scratch >/dev/null 2>&1; do
         n=$((n + 1)); [ "$n" -gt 30 ] && fail "postgres not ready"
@@ -88,7 +115,7 @@ start_pg() {
 }
 
 start_kubo() {
-    docker run -d --name xv-kubo -p "127.0.0.1:$KUBO_PORT:5001" ipfs/kubo:latest >/dev/null
+    docker run -d --name xv-kubo -p "127.0.0.1:$KUBO_PORT:5001" "$KUBO_IMAGE" >/dev/null
     local n=0
     until curl -sf -X POST "http://127.0.0.1:$KUBO_PORT/api/v0/id" >/dev/null 2>&1; do
         n=$((n + 1)); [ "$n" -gt 45 ] && fail "kubo API not ready"
@@ -291,7 +318,11 @@ run_pairing() { # $1=coord-side (head|old) $2=donor-side (head|old)
     : > "$WORK/coordinator.log"; : > "$WORK/donor.log"
     start_pg
     start_kubo
-    DATABASE_URL="$DSN" "$WORK/bin/$1-migrate" up >/dev/null || fail "$1-migrate up failed"   # coordinator's OWN schema ceiling
+    # The coordinator side's OWN schema ceiling. HEAD's migrate journals every
+    # apply (P2-M7.3, D-M7.3-9b) and its default location is a container volume,
+    # so the gate points it at the scratch directory.
+    DATABASE_URL="$DSN" NOVA_UPGRADE_JOURNAL_DIR="$WORK/upgrade-journal" \
+        "$WORK/bin/$1-migrate" up >/dev/null || fail "$1-migrate up failed"
     write_configs "$1" "$2"
     seed_fixture
     start_coordinator "$1"
@@ -322,22 +353,26 @@ run_pairing() { # $1=coord-side (head|old) $2=donor-side (head|old)
         || fail "donor never acked the pin"
 
     # audit: short cadence → at least one decided pass against the donor's now-
-    # running source server. (N−1 caveat: the p2-m6 coordinator's dispatcher
-    # shipped with the scheme-less-URL + zero-value-outcome defect this drill
-    # exposed — its "pass" rows are fabricated without reaching the donor. The
-    # wait still exercises the schedule loop on that side; the HEAD pairings
-    # prove REAL donor-answered audits.)
+    # running source server.
+    #
+    # The p2-m6-era caveat that lived here — that the N−1 coordinator's audit
+    # "pass" rows were fabricated without reaching the donor — described the
+    # P2-M6 binary. The predecessor is now 143c459, which contains that fix, and
+    # the 2026-08-11 run recorded a decided pass in all three pairings.
     wait_sql "SELECT count(*) > 0 FROM pin_audits WHERE result='pass'" t "audit pass" 90 \
         || fail "no passing possession audit recorded"
 
     # serve (donor-backed): wipe the coordinator's local Kubo repo and re-read
     # THROUGH the coordinator — the bytes must now come from the donor
     # (hash-verified). The retry window covers the donor's first-heartbeat
-    # pubkey capture (~300s). HEAD-coordinator only: the N−1 coordinator ships
-    # standard TLS verification that can never accept a real donor serving
-    # cert (P2-M7 drill finding, fixed in HEAD's CoordinatorClientTLS), so
-    # donor-backed reads are provably broken in that binary — the pairing
-    # still proves join → local serve → audit-loop against it.
+    # pubkey capture (~300s).
+    #
+    # HEAD-coordinator only, and the reason is now a gate limitation rather than
+    # a defect claim. The old comment said the N−1 coordinator could never
+    # accept a real donor serving cert; that was the P2-M6 binary, and 143c459
+    # contains the TLS fix. This gate simply does not exercise donor-backed
+    # reads on the baseline side, and the coverage table says "untested here,
+    # not known broken" rather than guessing.
     if [ "$1" = head ]; then
         stop_coordinator
         rm -rf "$WORK/kubo-repo"; mkdir -p "$WORK/kubo-repo"
@@ -364,8 +399,9 @@ run_pairing() { # $1=coord-side (head|old) $2=donor-side (head|old)
 mkdir -p "$WORK/bin"
 build_side . head
 if [ "$PAIRING" != "head-head" ]; then
-    log "adding worktree for $PRIOR_TAG"
-    git worktree add --force "$WORK/old" "$PRIOR_TAG" >/dev/null
+    log "adding worktree for predecessor $PREDECESSOR"
+    git worktree add --force --detach "$WORK/old" "$PREDECESSOR" >/dev/null \
+        || fail "cannot check out predecessor $PREDECESSOR — it is named by the release intent, so either the intent is wrong or this clone is shallow"
     build_side "$WORK/old" old
 fi
 

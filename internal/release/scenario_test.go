@@ -73,10 +73,19 @@ func TestPlaceholderCoverageBlocksReleaseCandidate(t *testing.T) {
 		t.Fatal("the checked-in table still has placeholders (Tasks 22, 25, 26), so a release " +
 			"candidate must be impossible right now")
 	}
-	for _, gate := range []string{"upgrade-wire-e2e", "upgrade-schema-e2e", "crossversion-e2e"} {
+	// crossversion-e2e is deliberately absent: Task 22 repinned it to the
+	// predecessor the intent names and reran it, so its coverage is now derived
+	// from an executed result rather than intended.
+	for _, gate := range []string{
+		"upgrade-wire-e2e", "upgrade-schema-e2e", "upgrade-release-e2e", "mixed-fleet-e2e",
+	} {
 		if !strings.Contains(err.Error(), gate) {
 			t.Errorf("the refusal does not name %s; an operator needs to know which", gate)
 		}
+	}
+	if strings.Contains(err.Error(), "crossversion-e2e") {
+		t.Error("crossversion-e2e coverage was derived from an executed run; listing it as a " +
+			"placeholder would mean the rerun's result is not being believed")
 	}
 
 	settled := []GateCoverage{{Gate: "g", Proves: []string{"c1"}, Placeholder: false}}
@@ -118,15 +127,31 @@ func TestCoverageRecordsItsLimitsHonestly(t *testing.T) {
 	if !ok {
 		t.Fatal("the cross-version gate must be in the table; it exists and makes claims")
 	}
-	joined := strings.Join(cv.DoesNotProve, " ")
-	for _, want := range []string{"FABRICATED", "provably broken", "stale"} {
+	if cv.Placeholder {
+		t.Error("the cross-version entry is derived from the 2026-08-11 run against 143c459")
+	}
+
+	joined := strings.Join(cv.DoesNotProve, " ") + " " + cv.Note
+	// The old caveats described the P2-M6 binary this gate used to be pinned to.
+	// Carrying them forward would attribute one binary's defects to every
+	// predecessor, which is the wrong lesson and the reason this test exists.
+	for _, gone := range []string{"three milestones", "provably broken"} {
+		if strings.Contains(strings.ToLower(joined), strings.ToLower(gone)) &&
+			!strings.Contains(joined, "described the P2-M6 binary") &&
+			!strings.Contains(joined, "not known broken") {
+			t.Errorf("the entry still asserts %q about the current predecessor", gone)
+		}
+	}
+	// It must still be explicit about the two things it genuinely cannot say.
+	for _, want := range []string{"FRESH database", "built from source"} {
 		if !strings.Contains(joined, want) {
-			t.Errorf("the cross-version entry does not record %q; the gate's own header does", want)
+			t.Errorf("the entry does not record the %q limit", want)
 		}
 	}
 	if slices.Contains(cv.Proves, "baseline-donor-interop") {
-		t.Error("the cross-version gate is pinned three milestones behind the baseline and " +
-			"cannot support a baseline claim until Task 22 repins and reruns it")
+		t.Error("baseline-donor-interop is assigned to upgrade-wire-e2e. This gate overlaps it " +
+			"heavily, and re-pointing a reviewed claim at whichever gate happens to cover it " +
+			"is how coverage stops meaning anything")
 	}
 }
 

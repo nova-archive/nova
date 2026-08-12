@@ -124,19 +124,31 @@ var coverage = []GateCoverage{
 		Note:        "Not yet written (Task 26).",
 	},
 	{
+		// DERIVED FROM AN EXECUTED RUN, 2026-08-11, all three pairings against
+		// predecessor commit 143c459 read from the release intent.
 		Gate: "crossversion-e2e", Runner: RunnerDocker,
 		Proves: nil,
 		DoesNotProve: []string{
-			"anything about the baseline: the gate is pinned to a P2-M6-era predecessor, " +
-				"three milestones stale",
-			"audit correctness for that pinned coordinator, whose audit passes are " +
-				"FABRICATED without reaching the donor — a property of that binary, not " +
-				"of previous coordinators generally",
-			"donor-backed reads for that pinned coordinator, which are provably broken",
+			"any DECLARED claim: baseline-donor-interop is assigned to upgrade-wire-e2e, " +
+				"which runs the protocol against a fresh database. This gate overlaps it " +
+				"heavily but is not the same scope, and re-pointing a reviewed claim at a " +
+				"gate that happens to cover it is how coverage stops meaning anything",
+			"anything about the schema: every pairing gets a FRESH database migrated by the " +
+				"coordinator side's own binary, so no binary is ever run against a schema it " +
+				"did not produce",
+			"anything about released artifacts: both sides are built from source",
+			"donor-backed reads or drain WITH THE BASELINE COORDINATOR: the gate exercises " +
+				"those only when the coordinator is HEAD. Untested here, not known broken — " +
+				"the earlier claim that they were provably broken described the P2-M6 binary, " +
+				"and 143c459 contains the later TLS fix",
 		},
-		Placeholder: true,
-		Note: "Task 22 repins this to the baseline commit and reruns it; the caveats above " +
-			"belong to the P2-M6 binary, and 143c459 contains the later TLS and audit fixes.",
+		Note: "Executed 2026-08-11 against 143c459. head×head, head-coordinator×baseline-donor " +
+			"and baseline-coordinator×head-donor all passed: registration over federation " +
+			"mTLS, assignment, ack, a decided possession audit, and a hash-verified serve. " +
+			"The two HEAD-coordinator pairings additionally proved a hash-verified " +
+			"DONOR-BACKED read with the coordinator's local Kubo repo wiped, and drain/undrain. " +
+			"The P2-M6-era caveats about fabricated audits and broken donor reads are gone " +
+			"with the predecessor they described.",
 	},
 }
 
