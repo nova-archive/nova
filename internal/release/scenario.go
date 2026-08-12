@@ -81,28 +81,44 @@ type Scenario struct {
 // than aspirational.
 var coverage = []GateCoverage{
 	{
+		// DERIVED FROM AN EXECUTED RUN, 2026-08-11.
 		Gate: "upgrade-wire-e2e", Runner: RunnerDocker,
 		Proves: []string{"baseline-donor-interop"},
 		DoesNotProve: []string{
 			"anything about the schema: this gate runs against a FRESH database, so it " +
 				"cannot say whether an old binary survives a forward schema",
 			"anything about released artifacts: it builds from source",
+			"the reverse direction. A baseline COORDINATOR serving a candidate donor is a " +
+				"different question and belongs to mixed-fleet-e2e",
 		},
-		Placeholder: true,
-		Note: "Not yet written (Task 25). Coverage here is the intended shape, not an " +
-			"executed result.",
+		Note: "Executed 2026-08-11 by scripts/upgrade_wire_e2e.sh. A donor built at commit " +
+			"143c459 registered over federation mTLS with the candidate coordinator, reached " +
+			"active/sync-current, accepted and acknowledged a pin assignment, answered a " +
+			"possession audit, and served a hash-verified DONOR-BACKED read with the " +
+			"coordinator's local Kubo repo wiped. The script is a thin, purpose-named wrapper " +
+			"over the cross-version harness rather than a second implementation: what was " +
+			"missing was a named gate a claim could reference, not another way to stand the " +
+			"pairing up.",
 	},
 	{
+		// DERIVED FROM AN EXECUTED RUN, 2026-08-11.
 		Gate: "upgrade-schema-e2e", Runner: RunnerDocker,
 		Proves: []string{"baseline-coordinator-on-schema-19"},
 		DoesNotProve: []string{
 			"donor behaviour: no donor participates",
 			"that a DOWN migration works — the contract is restore-from-backup, and " +
 				"nothing here exercises a downgrade of the schema itself",
+			"anything about released artifacts: both coordinators are built from source",
+			"any range other than the one it ran. The result is about (18, 19], not about " +
+				"old-binary compatibility in general",
 		},
-		Placeholder: true,
-		Note: "Not yet written (Task 25). This is the ONLY gate that can support a " +
-			"rollback-safe claim, and nothing tests it today.",
+		Note: "Executed 2026-08-11 by scripts/upgrade_schema_e2e.sh. The database is taken to " +
+			"schema 18 by the PREDECESSOR's own migrate, advanced to 19 by the candidate's, " +
+			"and the predecessor coordinator (commit 143c459) is then started against it: it " +
+			"comes up and answers a users-table query path with 401, which is the query layer " +
+			"working rather than merely a process starting. A control run proves the same " +
+			"database still serves the candidate, so the result is about the predecessor. " +
+			"This is the only gate that can support a rollback-safe claim, and it now does.",
 	},
 	{
 		Gate: "upgrade-release-e2e", Runner: RunnerTUN,

@@ -38,6 +38,7 @@ help:
 	@echo "  m2-exit           Run the M2 exit-criterion test (env → ipfs → decrypt round-trip)"
 	@echo "  migrate-up        Apply migrations against running compose postgres"
 	@echo "  migrate-apply     Apply exactly (applied, TO] under the advisory lock"
+	@echo "  upgrade-evidence  Run the three compatibility-evidence gates"
 	@echo "  migrate-status    Show migration status"
 	@echo "  clean             Remove build artifacts"
 	@echo "  build-context-check  Probe that .dockerignore keeps secrets and local state out of the build context"
@@ -204,6 +205,24 @@ federation-deploy-e2e:
 # milestone in this track using only docs/UPGRADING.md.
 live-upgrade-e2e:
 	./scripts/live_upgrade_e2e.sh
+
+# P2-M7.3 D-M7.3-12: three DISTINCT kinds of compatibility evidence. They are
+# separate targets because they prove separate things, and a single "upgrade
+# e2e" would let the cheapest of them stand in for the other two.
+.PHONY: upgrade-wire-e2e upgrade-schema-e2e upgrade-release-e2e upgrade-evidence
+upgrade-wire-e2e:
+	./scripts/upgrade_wire_e2e.sh
+
+upgrade-schema-e2e:
+	./scripts/upgrade_schema_e2e.sh
+
+# SKIPS until a release exists to test against, and says so. A skip is not a
+# pass: release.EvidenceRef records the outcome and a claim proven by a skipped
+# gate is rejected.
+upgrade-release-e2e:
+	./scripts/upgrade_release_e2e.sh $(VARIANT)
+
+upgrade-evidence: upgrade-wire-e2e upgrade-schema-e2e upgrade-release-e2e
 
 .PHONY: crossversion-e2e
 # P2-M7 D-M7-3: local gate; requires docker + libvips headers. PAIRING=all|head-head|head-coord-old-donor|old-coord-head-donor

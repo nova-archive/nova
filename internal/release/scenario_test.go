@@ -73,19 +73,20 @@ func TestPlaceholderCoverageBlocksReleaseCandidate(t *testing.T) {
 		t.Fatal("the checked-in table still has placeholders (Tasks 22, 25, 26), so a release " +
 			"candidate must be impossible right now")
 	}
-	// crossversion-e2e is deliberately absent: Task 22 repinned it to the
-	// predecessor the intent names and reran it, so its coverage is now derived
-	// from an executed result rather than intended.
-	for _, gate := range []string{
-		"upgrade-wire-e2e", "upgrade-schema-e2e", "upgrade-release-e2e", "mixed-fleet-e2e",
-	} {
+	// Gates whose coverage has been DERIVED from an executed run are absent
+	// from the refusal, and that absence is asserted rather than assumed: a
+	// derived entry listed as a placeholder would mean the run's result is not
+	// being believed.
+	for _, gate := range []string{"upgrade-release-e2e", "mixed-fleet-e2e"} {
 		if !strings.Contains(err.Error(), gate) {
 			t.Errorf("the refusal does not name %s; an operator needs to know which", gate)
 		}
 	}
-	if strings.Contains(err.Error(), "crossversion-e2e") {
-		t.Error("crossversion-e2e coverage was derived from an executed run; listing it as a " +
-			"placeholder would mean the rerun's result is not being believed")
+	for _, gate := range []string{"crossversion-e2e", "upgrade-schema-e2e"} {
+		if strings.Contains(err.Error(), gate) {
+			t.Errorf("%s coverage was derived from an executed run, so it must not read as a "+
+				"placeholder", gate)
+		}
 	}
 
 	settled := []GateCoverage{{Gate: "g", Proves: []string{"c1"}, Placeholder: false}}

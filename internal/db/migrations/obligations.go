@@ -273,7 +273,11 @@ var table = []Obligations{
 			"that touches only donor-scale rows. The baseline coordinator neither reads nor " +
 			"writes any of it, which is what makes a coordinator rollback across this " +
 			"boundary survivable — and this range must stay auto-appliable, or every " +
-			"existing deployment stops at a runbook to cross it.",
+			"existing deployment stops at a runbook to cross it. " +
+			"EVIDENCED 2026-08-11 by scripts/upgrade_schema_e2e.sh: the coordinator built at " +
+			"commit 143c459 starts against schema 19 and answers a users-table query path " +
+			"(401 from /api/v1/auth/login), so OldBinaryCompatible here is a result rather " +
+			"than an inspection.",
 	},
 }
 
