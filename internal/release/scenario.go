@@ -55,6 +55,20 @@ type GateCoverage struct {
 	// Placeholder marks coverage that has NOT been derived from an executed
 	// run. It blocks a release candidate; see ReleaseCandidateReady.
 	Placeholder bool
+
+	// PostPublication marks a gate that CANNOT run before the release exists.
+	//
+	// Such a gate may never prove an intent claim, and never blocks a lock —
+	// requiring it to would be requiring a release to prove something about
+	// itself before it existed. It gates COMPLETION instead: see
+	// CompletionReady, and the four-state model in docs/ROADMAP.md.
+	//
+	// The transition to a published release is the case this exists for. It
+	// splits in two: the pre-publication half runs against the exact candidate
+	// digests and IS provable at lock time; the published half verifies the
+	// registry refs, the release assets, the lock as downloaded, and the
+	// documented operator path — none of which exist yet when the lock is cut.
+	PostPublication bool
 	// Note explains a placeholder or a surprising limit.
 	Note string
 }
@@ -121,13 +135,42 @@ var coverage = []GateCoverage{
 			"This is the only gate that can support a rollback-safe claim, and it now does.",
 	},
 	{
-		Gate: "upgrade-release-e2e", Runner: RunnerTUN,
-		Proves: []string{"baseline-deployment-transition"},
+		// PRE-publication. Provable at lock time, because the candidate digests
+		// exist by then even though the release does not.
+		Gate: "upgrade-candidate-e2e", Runner: RunnerDocker,
+		Proves: []string{"candidate-baseline-transition"},
 		DoesNotProve: []string{
+			"anything about a PUBLISHED release: no registry ref is resolved, no release " +
+				"asset is downloaded, and no signature is verified against a real bundle. " +
+				"That is upgrade-release-e2e, and it cannot run until the release exists",
 			"multi-coordinator ordering or fencing, which is a Phase 6 concern",
 		},
-		Placeholder: true,
-		Note:        "Not yet written (Task 25).",
+		Note: "Executed 2026-08-12 by scripts/upgrade_candidate_e2e.sh. A baseline deployment " +
+			"at commit 143c459 and schema 18, carrying a registered donor and archive state, " +
+			"crosses to the candidate artifacts by the documented operator path: preflight, " +
+			"target-bounded apply, restart, verify. Schema, donor registration and archive " +
+			"rows all survive, and the candidate refuses to serve until the migration has run.",
+	},
+	{
+		// POST-publication. It is not bound to an intent claim and never will
+		// be: a claim it proved would have to be added to a lock that was
+		// already signed, and the v0.3.0 lock is not re-cut.
+		Gate: "upgrade-release-e2e", Runner: RunnerTUN,
+		Proves: nil,
+		DoesNotProve: []string{
+			"anything at lock time. It runs AFTER publication, so nothing it concludes can " +
+				"appear in the lock it verifies — that document is already signed",
+			"multi-coordinator ordering or fencing, which is a Phase 6 concern",
+		},
+		Placeholder:     true,
+		PostPublication: true,
+		Note: "MANDATORY FOR COMPLETION STATE 4, and deliberately outside the lock. It verifies " +
+			"the published half of the transition: the final registry refs resolve to the " +
+			"digests the lock names, the release assets download and verify, the lock as " +
+			"DOWNLOADED authenticates, and an operator following docs/UPGRADING.md crosses " +
+			"from the baseline to that release. None of it can be true before the release " +
+			"exists, which is why the pre-publication half is a separate gate and claim. " +
+			"P2-M7.3 is not complete until this passes.",
 	},
 	{
 		// DERIVED FROM AN EXECUTED RUN, 2026-08-12.
@@ -207,6 +250,15 @@ func CoverageFor(gate string) (GateCoverage, bool) {
 // ValidateClaimCoverage refuses a claim whose gate does not cover it. Without
 // this, "proven_by_gate" is a label rather than a constraint.
 func ValidateClaimCoverage(in Intent, table []GateCoverage) error {
+	for _, c := range in.Claims {
+		if cov, ok := CoverageForIn(table, c.ProvenByGate); ok && cov.PostPublication {
+			return fmt.Errorf("intent: claim %q is bound to %q, which runs after publication. "+
+				"A lock cannot carry it: the lock is signed first. Split the claim — the "+
+				"pre-publication half against the candidate digests, the published half as a "+
+				"completion gate", c.ID, c.ProvenByGate)
+		}
+	}
+
 	byGate := map[string]GateCoverage{}
 	for _, c := range table {
 		byGate[c.Gate] = c
@@ -295,13 +347,42 @@ func validateArtifactID(id string) error {
 func ReleaseCandidateReady(table []GateCoverage) error {
 	var pending []string
 	for _, c := range table {
-		if c.Placeholder {
+		// A post-publication gate is skipped HERE and required by
+		// CompletionReady. Demanding it at lock time would demand that a
+		// release prove something about itself before it existed — the
+		// bootstrap the pre/post split exists to break.
+		if c.Placeholder && !c.PostPublication {
 			pending = append(pending, c.Gate)
 		}
 	}
 	if len(pending) > 0 {
 		return fmt.Errorf("release candidate blocked: gate coverage is still a placeholder for "+
 			"%s; a claim bound to intended coverage is a claim with nothing behind it",
+			strings.Join(pending, ", "))
+	}
+	return nil
+}
+
+// CompletionReady reports whether the POST-PUBLICATION evidence exists.
+//
+// This is completion state 4, and it is a different question from whether a
+// release could be cut. A release can ship with this outstanding — that is what
+// states 2 and 3 are — but the milestone is not done, and the ROADMAP row does
+// not become ✅, until every post-publication gate has run.
+//
+// Its result is never folded back into the lock. That document was signed
+// before this could run, and re-cutting it to add evidence would make the
+// signature cover a different set of claims than the one that was reviewed.
+func CompletionReady(table []GateCoverage) error {
+	var pending []string
+	for _, c := range table {
+		if c.PostPublication && c.Placeholder {
+			pending = append(pending, c.Gate)
+		}
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("completion state 4 not reached: %s has not run. The release may "+
+			"exist; the transition to it has not been demonstrated",
 			strings.Join(pending, ", "))
 	}
 	return nil

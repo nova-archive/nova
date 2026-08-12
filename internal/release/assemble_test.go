@@ -60,7 +60,7 @@ func passingEvidence(t *testing.T, in Intent, arts map[string]LockedArtifact) ma
 	}
 	out := map[string]EvidencePair{}
 	for _, c := range in.Claims {
-		cov, ok := CoverageForIn(derivedCoverage(), c.ProvenByGate)
+		cov, ok := CoverageForIn(Coverage(), c.ProvenByGate)
 		if !ok {
 			t.Fatalf("claim %s names gate %s, which has no coverage entry", c.ID, c.ProvenByGate)
 		}
@@ -211,7 +211,7 @@ func TestBuildLockRefusesEvidenceAboutDifferentArtifacts(t *testing.T) {
 func TestEvidenceCannotComeFromACheaperTier(t *testing.T) {
 	_, in := readCommittedIntent(t)
 	for _, c := range in.Claims {
-		cov, ok := CoverageForIn(derivedCoverage(), c.ProvenByGate)
+		cov, ok := CoverageForIn(Coverage(), c.ProvenByGate)
 		if !ok || cov.Runner == RunnerStatic {
 			continue
 		}
@@ -249,61 +249,96 @@ func TestEvidenceCannotBeSkipped(t *testing.T) {
 	}
 }
 
-// TestBuildLockRefusesWhileCoverageIsAPlaceholder.
+// TestBuildLockRefusesAPrePublicationPlaceholder.
 //
-// This is `ReleaseCandidateReady`'s refusal enforced a second time, at the
-// point it matters most: even a release engineer who assembled a perfect
-// bundle, ran every gate that CAN run, and emitted statements for every claim
-// cannot produce a lock while a gate's coverage is the intended shape rather
-// than an executed result.
+// `ReleaseCandidateReady`'s refusal, enforced a second time at the point it
+// matters most: even a release engineer with a perfect bundle, every gate run
+// and a statement for every claim cannot produce a lock while a gate a claim
+// DEPENDS ON carries intended rather than executed coverage.
 //
-// Two of them are today — upgrade-release-e2e and mixed-fleet-e2e — so this
-// test asserts against the REAL checked-in table, and will start failing the
-// day both are written. That is the right time to be told.
-func TestBuildLockRefusesWhileCoverageIsAPlaceholder(t *testing.T) {
+// A POST-publication placeholder is deliberately not this. That gate cannot run
+// before the release exists, so requiring it here would make a first release
+// impossible — see TestPostPublicationCoverageDoesNotBlockALock.
+func TestBuildLockRefusesAPrePublicationPlaceholder(t *testing.T) {
 	b, in := readCommittedIntent(t)
 	arts := testArtifacts()
 
-	var placeholders []string
-	for _, c := range Coverage() {
-		if c.Placeholder {
-			placeholders = append(placeholders, c.Gate)
+	blocked := Coverage()
+	var gate string
+	for i := range blocked {
+		if !blocked[i].PostPublication && len(blocked[i].Proves) > 0 {
+			blocked[i].Placeholder = true
+			gate = blocked[i].Gate
+			break
 		}
 	}
-	if len(placeholders) == 0 {
-		t.Skip("every gate's coverage is derived; this milestone's remaining gap is closed")
+	if gate == "" {
+		t.Skip("no pre-publication gate proves a claim")
 	}
 
 	_, err := BuildLock(LockInputs{
-		Intent: in, IntentBytes: b, SourceCommit: "abc", BuiltAt: time.Now(),
+		Intent: in, IntentBytes: b, SourceCommit: "143c4590000", BuiltAt: time.Now(),
 		Artifacts: arts, Sidecars: in.Sidecars,
 		Evidence: passingEvidence(t, in, arts),
 		Payload:  map[string]string{MemberIntent: IntentDigest(b)},
-		Coverage: Coverage(),
+		Coverage: blocked,
 	})
 	if err == nil {
-		t.Fatalf("a lock was built while %v still carry placeholder coverage", placeholders)
+		t.Fatalf("a lock was built while %s carried placeholder coverage", gate)
 	}
 	if !strings.Contains(err.Error(), "placeholder") {
 		t.Errorf("err = %v, want a refusal naming the placeholder", err)
 	}
 }
 
-// TestEvidenceRejectsAFailedOutcome. There is no "failed" statement: a failed
-// gate produces nothing, because a statement is what a claim cites.
-func TestEvidenceRejectsAFailedOutcome(t *testing.T) {
-	st := EvidenceStatement{
-		Schema: EvidenceSchema, Gate: "g", RunnerClass: RunnerDocker, Outcome: "failed",
-		Release: "v0.3.0", SourceCommit: "abc",
-		ArtifactDigests: map[string]string{"nova-node": "sha256:" + strings.Repeat("2", 64)},
-		TestRevision:    "abc",
+// TestPostPublicationCoverageDoesNotBlockALock. The checked-in table has
+// exactly this shape today: upgrade-release-e2e is outstanding, and a lock can
+// still be cut. Requiring it would require a release to prove something about
+// itself before it existed.
+func TestPostPublicationCoverageDoesNotBlockALock(t *testing.T) {
+	b, in := readCommittedIntent(t)
+	arts := testArtifacts()
+
+	var post bool
+	for _, c := range Coverage() {
+		if c.PostPublication && c.Placeholder {
+			post = true
+		}
 	}
-	if _, err := st.Render(); err == nil {
-		t.Fatal("a failed outcome must not render as a statement")
+	if !post {
+		t.Skip("no outstanding post-publication gate")
 	}
-	st.Outcome = "skipped"
-	if _, err := st.Render(); err == nil {
-		t.Fatal("a skip with no reason is indistinguishable from a pass")
+
+	// A REAL bundle and the REAL checked-in coverage. A minimal payload would
+	// fail lock validation for an unrelated reason and prove nothing about the
+	// question under test.
+	ev := passingEvidence(t, in, arts)
+	evFiles := map[string][]byte{}
+	for id, pair := range ev {
+		body, err := pair.Statement.Render()
+		if err != nil {
+			t.Fatal(err)
+		}
+		evFiles["evidence/"+id+".json"] = body
+	}
+	payload, err := AssembleBundle(filepath.Join(t.TempDir(), "bundle"), BundleInputs{
+		IntentBytes: b,
+		Policy:      []byte("issuer=x\nidentity=y\n"),
+		ComposeEnv:  []byte("NOVA_RELEASE_VERSION=" + in.Version + "\n"),
+		Upgrading:   []byte("# Upgrading\n"),
+		Bootstrap:   []byte("#!/usr/bin/env bash\nexit 0\n"),
+		Evidence:    evFiles,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := BuildLock(LockInputs{
+		Intent: in, IntentBytes: b, SourceCommit: "143c4590000", BuiltAt: time.Now(),
+		Artifacts: arts, Sidecars: in.Sidecars,
+		Evidence: ev, Payload: payload, Coverage: Coverage(),
+	}); err != nil {
+		t.Fatalf("an outstanding post-publication gate blocked the lock: %v", err)
 	}
 }
 

@@ -190,6 +190,12 @@ func AssertEvidenceSupportsClaim(c DeclaredClaim, e EvidenceStatement, table []G
 		return fmt.Errorf("evidence: gate %q has no coverage entry, so there is nothing that "+
 			"says what it can prove", c.ProvenByGate)
 	}
+	if cov.PostPublication {
+		return fmt.Errorf("evidence: gate %q runs AFTER publication, so it cannot prove claim "+
+			"%q — the lock that would carry the claim is signed before this gate can run. "+
+			"A post-publication result belongs to completion state 4, not to a lock",
+			c.ProvenByGate, c.ID)
+	}
 	if cov.Placeholder {
 		return fmt.Errorf("evidence: gate %q's coverage is still a placeholder — the intended "+
 			"shape rather than an executed result — so claim %q has nothing behind it",

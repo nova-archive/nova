@@ -63,17 +63,28 @@ func TestMatrixMarksPlaceholderCoverageInTheDocument(t *testing.T) {
 	b, in := readCommittedIntent(t)
 	out := string(RenderMatrix(in, CatalogFrom(in, b), Coverage()))
 
-	var anyPlaceholder bool
+	var blocking, completion bool
 	for _, c := range Coverage() {
-		if c.Placeholder {
-			anyPlaceholder = true
+		switch {
+		case c.Placeholder && c.PostPublication:
+			completion = true
+		case c.Placeholder:
+			blocking = true
 		}
 	}
-	if !anyPlaceholder {
-		t.Skip("no placeholders remain; this assertion has nothing to check")
+	if blocking && !strings.Contains(out, "placeholder — blocks a release candidate") {
+		t.Error("a gate blocks a release candidate and the matrix does not say so")
 	}
-	if !strings.Contains(out, "placeholder — blocks a release candidate") {
-		t.Error("coverage is still a placeholder for some gate and the matrix does not say so")
+	// A post-publication placeholder must read DIFFERENTLY. Calling it
+	// "blocks a release candidate" would be false — it blocks COMPLETION — and
+	// an operator reading the matrix would conclude no release can be cut when
+	// one can.
+	if completion && !strings.Contains(out, "POST-PUBLICATION") {
+		t.Error("a post-publication gate is outstanding and the matrix does not distinguish it " +
+			"from one that blocks a release candidate")
+	}
+	if !blocking && strings.Contains(out, "placeholder — blocks a release candidate") {
+		t.Error("the matrix says a release candidate is blocked when nothing blocks it")
 	}
 }
 

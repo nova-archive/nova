@@ -242,6 +242,10 @@ jobs:
       - name: backup — taken AND restored
         run: make backup-restore-e2e
 
+      # The pre-publication half of the transition, against the exact candidate.
+      - name: candidate transition — baseline to the candidate artifacts
+        run: make upgrade-candidate-e2e
+
       # Six donors registering SIMULTANEOUSLY against the predecessor
       # coordinator, then a real schema advance and coordinator swap. On this
       # tier rather than release-tun because the overlay is transport and the
@@ -250,9 +254,10 @@ jobs:
       - name: mixed fleet — a coordinator upgrade needs no donor upgrade
         run: make mixed-fleet-e2e
 
-      # SKIPS until published artifacts exist, and says so. A skip is not a
-      # pass: a claim proven by a skipped gate is rejected.
-      - name: released artifacts — the real transition
+      # SKIPS until a release exists. Its coverage entry is POST-PUBLICATION, so
+      # the placeholder blocks COMPLETION rather than a release candidate — a
+      # release cannot prove something about itself before it exists.
+      - name: published transition — post-publication, gates completion state 4
         run: make upgrade-release-e2e
 
   # ── TIER 3: release-tun ────────────────────────────────────────────────

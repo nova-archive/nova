@@ -229,12 +229,18 @@ live-upgrade-e2e:
 # P2-M7.3 D-M7.3-12: three DISTINCT kinds of compatibility evidence. They are
 # separate targets because they prove separate things, and a single "upgrade
 # e2e" would let the cheapest of them stand in for the other two.
-.PHONY: upgrade-wire-e2e upgrade-schema-e2e upgrade-release-e2e upgrade-evidence
+.PHONY: upgrade-wire-e2e upgrade-schema-e2e upgrade-candidate-e2e upgrade-release-e2e upgrade-evidence
 upgrade-wire-e2e:
 	./scripts/upgrade_wire_e2e.sh
 
 upgrade-schema-e2e:
 	./scripts/upgrade_schema_e2e.sh
+
+# The PRE-publication half of the transition: a baseline deployment crosses to
+# the exact candidate artifacts by the documented operator path. Provable at
+# lock time, which the published half is not.
+upgrade-candidate-e2e:
+	./scripts/upgrade_candidate_e2e.sh
 
 # SKIPS until a release exists to test against, and says so. A skip is not a
 # pass: release.EvidenceRef records the outcome and a claim proven by a skipped
@@ -242,7 +248,7 @@ upgrade-schema-e2e:
 upgrade-release-e2e:
 	./scripts/upgrade_release_e2e.sh $(VARIANT)
 
-upgrade-evidence: upgrade-wire-e2e upgrade-schema-e2e mixed-fleet-e2e upgrade-release-e2e
+upgrade-evidence: upgrade-wire-e2e upgrade-schema-e2e upgrade-candidate-e2e mixed-fleet-e2e upgrade-release-e2e
 
 # P2-M7.3 Task 27: UPGRADING.md promises a tested restore, and composed
 # migration obligations can make restore the literal rollback boundary. A

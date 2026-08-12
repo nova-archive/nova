@@ -42,7 +42,7 @@ The sections below are in that order.
 |---|---|---|---|
 | `baseline-coordinator-on-schema-19` | `upgrade-schema-e2e` | `rc-docker` | derived from an executed run |
 | `baseline-donor-interop` | `upgrade-wire-e2e` | `rc-docker` | derived from an executed run |
-| `baseline-deployment-transition` | `upgrade-release-e2e` | `release-tun` | **placeholder — blocks a release candidate** |
+| `candidate-baseline-transition` | `upgrade-candidate-e2e` | `rc-docker` | derived from an executed run |
 | `coordinator-upgrade-needs-no-donor-upgrade` | `mixed-fleet-e2e` | `rc-docker` | derived from an executed run |
 
 **What the gates do NOT prove.** Recorded because the absence of an entry is not a statement, and a reader who sees only what a gate proves will assume the rest.
@@ -56,7 +56,11 @@ The sections below are in that order.
   - anything about donors outside the declared support window: an unsupported donor is untested by definition, which is what unsupported means
   - real Nebula routing, MTU behaviour, NAT traversal or lighthouse failure. The fleet speaks federation mTLS over loopback with placeholder overlay material; federation-deploy-e2e owns the overlay and needs TUN
   - that a donor FETCHES bytes after an assignment. The gate asserts the coordinator's decisions — who is assignable, who is evicted, who holds a role — not the transfer, which upgrade-wire-e2e covers
-- `upgrade-release-e2e`
+- `upgrade-candidate-e2e`
+  - anything about a PUBLISHED release: no registry ref is resolved, no release asset is downloaded, and no signature is verified against a real bundle. That is upgrade-release-e2e, and it cannot run until the release exists
+  - multi-coordinator ordering or fencing, which is a Phase 6 concern
+- `upgrade-release-e2e` — POST-PUBLICATION; runs after the release exists, gates completion state 4 rather than the lock
+  - anything at lock time. It runs AFTER publication, so nothing it concludes can appear in the lock it verifies — that document is already signed
   - multi-coordinator ordering or fencing, which is a Phase 6 concern
 - `upgrade-schema-e2e`
   - donor behaviour: no donor participates

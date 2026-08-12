@@ -64,36 +64,76 @@ func TestClaimBeyondGateCoverageIsRejected(t *testing.T) {
 	}
 }
 
-// TestPlaceholderCoverageBlocksReleaseCandidate. Placeholder coverage is the
-// INTENDED shape, not an executed result; promoting on it would put a claim in
-// a signed lock with nothing behind it.
-func TestPlaceholderCoverageBlocksReleaseCandidate(t *testing.T) {
-	err := ReleaseCandidateReady(Coverage())
-	if err == nil {
-		t.Fatal("the checked-in table still has placeholders (Tasks 22, 25, 26), so a release " +
-			"candidate must be impossible right now")
-	}
-	// Gates whose coverage has been DERIVED from an executed run are absent
-	// from the refusal, and that absence is asserted rather than assumed: a
-	// derived entry listed as a placeholder would mean the run's result is not
-	// being believed.
-	for _, gate := range []string{"upgrade-release-e2e"} {
-		if !strings.Contains(err.Error(), gate) {
-			t.Errorf("the refusal does not name %s; an operator needs to know which", gate)
-		}
-	}
-	for _, gate := range []string{
-		"crossversion-e2e", "upgrade-schema-e2e", "upgrade-wire-e2e", "mixed-fleet-e2e",
-	} {
-		if strings.Contains(err.Error(), gate) {
-			t.Errorf("%s coverage was derived from an executed run, so it must not read as a "+
-				"placeholder", gate)
-		}
+// TestReleaseCandidateIsReadyAndCompletionIsNot.
+//
+// These are DIFFERENT questions, and conflating them is what made a first
+// release impossible. A lock can be cut today: every gate a claim depends on
+// has derived coverage. The milestone is NOT done, because the transition to a
+// published release has not been demonstrated — and it cannot be until one is
+// published.
+//
+// Requiring the second at lock time would have required a release to prove
+// something about itself before it existed.
+func TestReleaseCandidateIsReadyAndCompletionIsNot(t *testing.T) {
+	if err := ReleaseCandidateReady(Coverage()); err != nil {
+		t.Fatalf("a release candidate is blocked: %v", err)
 	}
 
-	settled := []GateCoverage{{Gate: "g", Proves: []string{"c1"}, Placeholder: false}}
+	err := CompletionReady(Coverage())
+	if err == nil {
+		t.Fatal("completion state 4 reports reached, but upgrade-release-e2e has not run. " +
+			"If it genuinely has, retire its placeholder and mark the ROADMAP row complete")
+	}
+	if !strings.Contains(err.Error(), "upgrade-release-e2e") {
+		t.Errorf("the refusal does not name the outstanding gate: %v", err)
+	}
+
+	// A placeholder on a PRE-publication gate must still block a candidate.
+	// This is the half that has to keep working.
+	blocked := Coverage()
+	for i := range blocked {
+		if !blocked[i].PostPublication {
+			blocked[i].Placeholder = true
+			break
+		}
+	}
+	if err := ReleaseCandidateReady(blocked); err == nil {
+		t.Error("a pre-publication placeholder no longer blocks a release candidate")
+	}
+
+	settled := []GateCoverage{{Gate: "g", Proves: []string{"c1"}}}
 	if err := ReleaseCandidateReady(settled); err != nil {
 		t.Errorf("a fully-derived table must permit a candidate: %v", err)
+	}
+	if err := CompletionReady(settled); err != nil {
+		t.Errorf("a table with no post-publication gate is complete: %v", err)
+	}
+}
+
+// TestNoClaimIsBoundToAPostPublicationGate. The lock is signed before such a
+// gate can run, so a claim bound to one could never be proven — which is
+// exactly the bootstrap that made a first release impossible.
+func TestNoClaimIsBoundToAPostPublicationGate(t *testing.T) {
+	_, in := readCommittedIntent(t)
+	if err := ValidateClaimCoverage(in, Coverage()); err != nil {
+		t.Fatal(err)
+	}
+
+	post := ""
+	for _, c := range Coverage() {
+		if c.PostPublication {
+			post = c.Gate
+			break
+		}
+	}
+	if post == "" {
+		t.Skip("no post-publication gate in the table")
+	}
+	bad := in
+	bad.Claims = append([]DeclaredClaim(nil), in.Claims...)
+	bad.Claims[0].ProvenByGate = post
+	if err := ValidateClaimCoverage(bad, Coverage()); err == nil {
+		t.Fatal("an intent binding a claim to a post-publication gate was accepted")
 	}
 }
 

@@ -15,7 +15,7 @@ import "time"
 
 var compiled = Catalog{
 	Version:      "v0.3.0",
-	IntentDigest: "sha256:6fa1df3eece8b37f582c761b09ea30a9386df56153bdf8739cf0000f350d15e4",
+	IntentDigest: "sha256:95374c66dd207264928ff797518afbd8c3ced50d8ac65d826f92e552cf2458a3",
 	TargetSchema: 19,
 	Platforms:    []string{"linux/amd64"},
 	SupportEpoch: time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC),

@@ -92,6 +92,9 @@ func RenderMatrix(in Intent, cat Catalog, table []GateCoverage) []byte {
 			if cov.Placeholder {
 				state = "**placeholder — blocks a release candidate**"
 			}
+			if cov.PostPublication {
+				state = "post-publication — cannot prove a lock claim"
+			}
 		}
 		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %s |\n", c.ID, c.ProvenByGate, runner, state)
 	}
@@ -102,7 +105,14 @@ func RenderMatrix(in Intent, cat Catalog, table []GateCoverage) []byte {
 	copy(gates, table)
 	sort.Slice(gates, func(i, j int) bool { return gates[i].Gate < gates[j].Gate })
 	for _, g := range gates {
-		fmt.Fprintf(&b, "- `%s`\n", g.Gate)
+		suffix := ""
+		if g.PostPublication {
+			suffix = " — POST-PUBLICATION; runs after the release exists, gates " +
+				"completion state 4 rather than the lock"
+		} else if g.Placeholder {
+			suffix = " — **placeholder; blocks a release candidate**"
+		}
+		fmt.Fprintf(&b, "- `%s`%s\n", g.Gate, suffix)
 		for _, l := range g.DoesNotProve {
 			fmt.Fprintf(&b, "  - %s\n", l)
 		}

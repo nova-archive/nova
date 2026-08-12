@@ -2,17 +2,28 @@
 # scripts/upgrade_release_e2e.sh — an EXISTING deployment crosses to the
 # released artifacts (P2-M7.3, D-M7.3-12, gate `upgrade-release-e2e`).
 #
-# Acceptance scenarios satisfied: 15, 16.
+# Acceptance scenarios satisfied: 15, 16 (published half).
+#
+# MANDATORY FOR COMPLETION STATE 4. P2-M7.3 is not complete until this passes,
+# and it is bound to NO lock claim — a result it produced could only be added to
+# a lock that was already signed, and the v0.3.0 lock is not re-cut.
 #
 # ============================================================================
-# What makes this different from the other two evidence gates
+# The published half of a transition that is deliberately split in two
 # ============================================================================
 #
-# upgrade-wire-e2e and upgrade-schema-e2e both build from source. This one does
-# not, and that is the entire point: it is the only gate that exercises the
-# ARTIFACTS an operator will actually run, assembled the way an operator will
-# actually assemble them — verified bundle, installed release env, pinned
-# digests, `docker compose up`.
+# `upgrade-candidate-e2e` proves the pre-publication half: a baseline deployment
+# crosses to the exact CANDIDATE artifacts by the documented path. It is
+# provable at lock time, and its claim is in the lock.
+#
+# This gate proves what that one cannot, because none of it exists yet when the
+# lock is cut: the final REGISTRY REFS resolve to the digests the lock names,
+# the RELEASE ASSETS download, the lock AS DOWNLOADED authenticates against the
+# out-of-band policy, and an operator following docs/UPGRADING.md crosses to it.
+#
+# Splitting them is what makes a first release possible at all. A single claim
+# about crossing to a published release could never be proven before one
+# existed, so no release could ever be cut.
 #
 # It follows docs/UPGRADING.md and nothing else. Any step this script needs that
 # UPGRADING.md does not document is a documentation defect, and the right fix is
