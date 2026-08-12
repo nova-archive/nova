@@ -19,7 +19,7 @@ func repoRoot(t *testing.T) string {
 	_, here, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	dir := filepath.Dir(here)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if _, err := exec.Command("test", "-f", filepath.Join(dir, "go.mod")).Output(); err == nil {
 			return dir
 		}
@@ -55,7 +55,11 @@ func TestIntegrationMigrateUpProducesExpectedTables(t *testing.T) {
 	require.NoError(t, build.Run())
 
 	run := exec.Command(filepath.Join(root, "bin/migrate-test"), "up")
-	run.Env = append(run.Env, "DATABASE_URL="+dsn)
+	// Every apply is journalled now (P2-M7.3, D-M7.3-9b), and the default
+	// location is the container's operator-owned volume. A test writes to its
+	// own directory instead.
+	run.Env = append(run.Env, "DATABASE_URL="+dsn,
+		"NOVA_UPGRADE_JOURNAL_DIR="+t.TempDir())
 	out, err := run.CombinedOutput()
 	require.NoError(t, err, "migrate output: %s", out)
 

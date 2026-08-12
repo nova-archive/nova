@@ -29,6 +29,8 @@ nova-secrets/
 nova-postgres-data/
 nova-kubo-data/
 nova-tmp-uploads/
+# P2-M7.3: the local upgrade journal `make migrate-up` writes.
+.nova-upgrade-journal/
 docs/nova-upstream-findings.md
 
 # Editor/OS

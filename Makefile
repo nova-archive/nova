@@ -1,4 +1,4 @@
-.PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-down migrate-status clean docker-build docker-refresh-digests migrations-frozen
+.PHONY: help test test-unit test-integration tidy build lint smoke migrate-up migrate-apply migrate-status clean docker-build docker-refresh-digests migrations-frozen
 
 GOTEST    := go test ./...
 GOTESTV   := go test -v ./...
@@ -34,7 +34,7 @@ help:
 	@echo "  smoke             End-to-end smoke: image build + compose prod + upload/read/transform/delete"
 	@echo "  m2-exit           Run the M2 exit-criterion test (env → ipfs → decrypt round-trip)"
 	@echo "  migrate-up        Apply migrations against running compose postgres"
-	@echo "  migrate-down      Roll back one migration"
+	@echo "  migrate-apply     Apply exactly (applied, TO] under the advisory lock"
 	@echo "  migrate-status    Show migration status"
 	@echo "  clean             Remove build artifacts"
 	@echo "  build-context-check  Probe that .dockerignore keeps secrets and local state out of the build context"
@@ -67,19 +67,28 @@ smoke:
 m2-exit:
 	$(GOTESTV) ./internal/integration/... -run TestIntegrationM2 -count=1
 
+# P2-M7.3: every apply is target-bounded, advisory-locked and journalled.
+# NOVA_UPGRADE_JOURNAL_DIR points at a local directory here; in the container it
+# is an operator-owned volume, because a `run --rm` service's rootfs evaporates
+# on exactly the failed upgrade you need the record for.
+NOVA_UPGRADE_JOURNAL_DIR ?= $(CURDIR)/.nova-upgrade-journal
+
 migrate-up: build
 	$(DC) up -d postgres
 	$(DC) exec -T postgres pg_isready -U nova || (sleep 5 && $(DC) exec -T postgres pg_isready -U nova)
-	./bin/migrate up
+	NOVA_UPGRADE_JOURNAL_DIR=$(NOVA_UPGRADE_JOURNAL_DIR) ./bin/migrate up
 
-migrate-down: build
-	./bin/migrate down
+# `migrate apply --to <n>` is the reviewed form. TO is required; there is no
+# default, because a default target is an unbounded apply wearing a flag.
+migrate-apply: build
+	@test -n "$(TO)" || (echo "usage: make migrate-apply TO=<schema> [ACK='--acknowledge <id>']" >&2; exit 2)
+	NOVA_UPGRADE_JOURNAL_DIR=$(NOVA_UPGRADE_JOURNAL_DIR) ./bin/migrate apply --to $(TO) $(ACK)
 
 migrate-status: build
 	./bin/migrate status
 
 clean:
-	rm -rf bin dist build coverage.out coverage.html
+	rm -rf bin dist build coverage.out coverage.html .nova-upgrade-journal
 
 # P2-M7.3 D-M7.3-4: every Dockerfile does `COPY . .`, so the working tree is
 # part of the signed artifact. The gate probes a real build rather than

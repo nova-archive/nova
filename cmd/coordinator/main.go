@@ -56,6 +56,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/nova-archive/nova/internal/api"
 	"github.com/nova-archive/nova/internal/api/httputil"
 	"github.com/nova-archive/nova/internal/audit/integrity"
@@ -72,6 +74,7 @@ import (
 	"github.com/nova-archive/nova/internal/config/reload"
 	"github.com/nova-archive/nova/internal/db"
 	"github.com/nova-archive/nova/internal/db/gen"
+	"github.com/nova-archive/nova/internal/db/migrations"
 	"github.com/nova-archive/nova/internal/envelope"
 	fedcoord "github.com/nova-archive/nova/internal/federation/coordinator"
 	"github.com/nova-archive/nova/internal/federation/tokens"
@@ -232,6 +235,17 @@ func run() error {
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer pool.Close()
+
+	// STARTUP FLOOR: refuse a stale schema (P2-M7.3, D-M7.3-9a).
+	//
+	// NOVA_MIGRATE_ON_START=false hands migration control to the operator. The
+	// container then has to say so rather than starting against a schema that
+	// is missing the tables this binary's queries name — which surfaces as
+	// per-request 500s from a process that reported itself healthy, hours after
+	// the upgrade, with nothing pointing back at the cause.
+	if err := assertSchemaIsCurrent(ctx, pool); err != nil {
+		return err
+	}
 
 	ks, err := envelope.NewKeystoreFromEnv(pool)
 	if err != nil {
@@ -706,6 +720,51 @@ func (o metricsAuditObserver) TrustTransition(from, to, reason string) {
 }
 func (o metricsAuditObserver) ReputationMoved(direction string) { o.m.ObserveReputationMove(direction) }
 func (o metricsAuditObserver) AuditLatency(sec float64)         { o.m.ObserveAuditLatency(sec) }
+
+// assertSchemaIsCurrent refuses to start against a schema older than this
+// binary's migration set (P2-M7.3, D-M7.3-9a).
+//
+// It compares against what the BINARY carries, not against the release
+// catalog. An unstamped developer build has no catalog, and "you have no
+// catalog" is not a reason to refuse to boot; "the queries in this binary name
+// columns your database does not have" is.
+//
+// It refuses only when the schema is BEHIND. A schema ahead of this binary
+// means someone deployed the old image after upgrading — a real problem, but a
+// different one, and one an older binary is often able to keep serving through.
+// `novactl upgrade status` reports it either way.
+func assertSchemaIsCurrent(ctx context.Context, pool *pgxpool.Pool) error {
+	want := int64(0)
+	for _, o := range migrations.All() {
+		if o.Schema > want {
+			want = o.Schema
+		}
+	}
+
+	var applied int64
+	err := pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version WHERE is_applied`).Scan(&applied)
+	if err != nil {
+		// No goose table at all. The entrypoint runs migrations before this
+		// process, so reaching here means something is wrong — but a database
+		// this binary cannot introspect is not evidence of a stale schema, and
+		// refusing on it would turn a permissions problem into an outage.
+		fmt.Fprintf(os.Stderr, "coordinator: WARNING: could not read the applied schema "+
+			"version (%v); starting anyway, but `novactl upgrade status` will tell you more\n", err)
+		return nil
+	}
+
+	if applied < want {
+		return fmt.Errorf("coordinator: refusing to start: the database is at schema %d and this "+
+			"binary expects %d.\n"+
+			"    Migrations did not run — NOVA_MIGRATE_ON_START is probably off.\n"+
+			"    Apply them explicitly:  migrate apply --to %d\n"+
+			"    Starting anyway would serve requests whose queries name columns that do not "+
+			"exist yet, which surfaces as 500s hours later with nothing pointing here",
+			applied, want, want)
+	}
+	return nil
+}
 
 type metricsReadObserver struct{ m *metrics.Metrics }
 

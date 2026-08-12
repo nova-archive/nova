@@ -87,6 +87,7 @@ services:
       NOVA_CONFIG_DIR: /etc/nova
       NOVA_SECRETS_DIR: /run/secrets
       NOVA_KUBO_REPO: /var/lib/nova/kubo
+      NOVA_UPGRADE_JOURNAL_DIR: /var/lib/nova/upgrade
       NOVA_CONFIG_FILE: /etc/nova/operator.yaml
       NOVA_MASTER_KEY_ACTIVE: v1
       IPFS_SWARM_KEY_FILE: /run/secrets/swarm.key
@@ -99,11 +100,18 @@ services:
       # empty ⇒ no override (the wizard's operator.yaml answer stands).
       NOVA_PUBLIC_UPLOADS: "${NOVA_PUBLIC_UPLOADS:-}"
       NOVA_TOS_URL: "${NOVA_TOS_URL:-}"
+      # P2-M7.3 D-M7.3-9a: the entrypoint runs `migrate auto`, which applies a
+      # range unattended only when the whole range is safe unattended. Set this
+      # to false to take migration control yourself; the coordinator then
+      # REFUSES to start against a stale schema rather than serving 500s.
+      # A typo is an error, not a silent false.
+      NOVA_MIGRATE_ON_START: "${NOVA_MIGRATE_ON_START:-true}"
     volumes:
       - nova-config:/etc/nova
       - nova-secrets:/run/secrets
       - nova-kubo:/var/lib/nova/kubo
       - nova-tmp:/var/tmp/nova-uploads
+      - nova-upgrade:/var/lib/nova/upgrade
     depends_on:
       postgres:
         condition: service_healthy
@@ -136,6 +144,41 @@ services:
       #   boot already made nova-owned 0700 (/etc/nova/tls, the Kubo keystore);
       #   with cap_drop ALL, root cannot traverse those without this read-only
       #   DAC bypass — without it every restart after first boot crash-loops.
+
+  # ── Upgrade profile: the operator's explicit migration runner ──────
+  #
+  # `docker compose --profile upgrade run --rm migrate apply --to <n>`.
+  #
+  # A PROFILE, so it never starts with the stack. This container's whole job is
+  # to run once and exit, and a service that restarts would re-take the advisory
+  # lock on every boot.
+  #
+  # It is the same image as the coordinator, which is what makes it correct: the
+  # migrations it carries are the ones that binary was built against, so there
+  # is no version at which the runner and the code disagree about the schema.
+  migrate:
+    profiles: ["upgrade"]
+    build:
+      context: ..
+      dockerfile: docker/coordinator.Dockerfile
+    entrypoint: ["/usr/local/bin/migrate"]
+    environment:
+      DATABASE_URL: "postgres://nova:${POSTGRES_PASSWORD}@postgres:5432/nova?sslmode=disable"
+      NOVA_UPGRADE_JOURNAL_DIR: /var/lib/nova/upgrade
+    volumes:
+      - nova-upgrade:/var/lib/nova/upgrade
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    # No CHOWN/SETUID/SETGID: this bypasses the root-phase entrypoint entirely
+    # and runs the migrate binary directly as the image's non-root user. The
+    # journal volume is chowned by the coordinator's first boot.
 
   # ── Setup profile: first-run wizard front ──────────────────────────
   nginx-setup:
@@ -297,6 +340,14 @@ volumes:
   nova-kubo:
     driver: local
   nova-tmp:
+    driver: local
+  # P2-M7.3 D-M7.3-9b: the bootstrap journal. Migration 0019 CREATES
+  # upgrade_runs, so the first upgrade from schema 18 has nowhere in the
+  # database to record that it started. The journal is that record, and it has
+  # to outlive the container: the migrate service below is `run --rm`, and a
+  # journal on its root filesystem evaporates on exactly the failed upgrade the
+  # operator needs it for.
+  nova-upgrade:
     driver: local
   acme-webroot:
     driver: local
