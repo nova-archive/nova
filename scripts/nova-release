@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+# scripts/nova-release — the host-side release orchestrator (P2-M7.3, D-M7.3-2a).
+#
+# ============================================================================
+# READ THIS BEFORE RUNNING IT
+# ============================================================================
+#
+# This script travels INSIDE the release bundle it verifies. That makes it
+# material, not authority. Running it is step THREE of a four-step bootstrap,
+# and steps one and two happen in your shell, with commands you can read:
+#
+#   1. Authenticate the lock with a fixed cosign command whose issuer and
+#      identity are HARD-CODED in the documentation, not read from the bundle:
+#
+#        cosign verify-blob \
+#          --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#          --certificate-identity https://github.com/nova-archive/nova/.github/workflows/release.yml@refs/heads/main \
+#          --bundle lock.sigstore.json \
+#          lock.json
+#
+#      Nothing from the bundle has executed at this point.
+#
+#   2. The authenticated lock names this script's exact hash. Check it BEFORE
+#      running it:
+#
+#        python3 -c 'import json,hashlib,sys; \
+#          p=json.load(open("lock.json"))["payload"]["scripts/nova-release"]; \
+#          h="sha256:"+hashlib.sha256(open("scripts/nova-release","rb").read()).hexdigest(); \
+#          sys.exit(0 if p==h else "MISMATCH: "+h+" != "+p)'
+#
+#   3. Only now may this script run.
+#
+#   4. It verifies the nova-admin image digest THE LOCK NAMES, pulls exactly
+#      that digest, and invokes it. The target admin cross-checks its embedded
+#      catalog against the authenticated lock as a CONSISTENCY check — never as
+#      the authentication.
+#
+# This script re-performs step 2 on itself. That check cannot save you from a
+# substituted script, because a substituted script would simply delete it. It
+# exists so the documented pre-check has an executable twin, and so an
+# accidentally corrupted bundle is caught rather than acted on.
+#
+# ============================================================================
+# The policy is hard-coded here, and the bundle's copy is only audited
+# ============================================================================
+#
+# A bundle carrying both the verification script and the signer policy can
+# authorize its own attacker. Cosign requires the VERIFIER to supply the
+# expected certificate identity and issuer; the executable alone is not a
+# policy. So the values below are the authority, verification-policy.txt is a
+# copy, and any difference between them is refused rather than reconciled.
+
+set -euo pipefail
+
+readonly NOVA_ISSUER="https://token.actions.githubusercontent.com"
+readonly NOVA_IDENTITY="https://github.com/nova-archive/nova/.github/workflows/release.yml@refs/heads/main"
+
+# Tool locations. These are overridable because PATH is already an environment
+# variable — anyone who can set these can set PATH, so the override adds no
+# attack surface, and it is what lets the refusal paths be tested with a stub.
+COSIGN="${NOVA_RELEASE_COSIGN:-cosign}"
+DOCKER="${NOVA_RELEASE_DOCKER:-docker}"
+PYTHON="${NOVA_RELEASE_PYTHON:-python3}"
+
+die() { printf 'nova-release: %s\n' "$*" >&2; exit 1; }
+note() { printf 'nova-release: %s\n' "$*" >&2; }
+
+usage() {
+  cat >&2 <<'EOF'
+usage: nova-release <command> --bundle <dir> --lock-digest <sha256:...> [options]
+
+  verify         re-establish the whole trust chain and stop. Executes nothing.
+  exec -- ARGS   verify, then run ARGS in the nova-admin image the lock names.
+  verify-planes  verify, then run each in-image verification plane under one
+                 run id, writing per-plane reports into --report-dir.
+
+  --bundle       the unpacked release bundle
+  --lock-digest  the digest you authenticated with `cosign verify-blob`
+  --report-dir   where plane reports are written (verify-planes)
+  --run-id       join key for one verification run (verify-planes; generated
+                 when omitted)
+  --skip-image-signature
+                 audit the bundle without contacting a registry. REFUSES to
+                 run anything afterwards; `verify` only.
+EOF
+  exit 2
+}
+
+# ---------------------------------------------------------------------------
+# Arguments
+# ---------------------------------------------------------------------------
+
+subcmd="${1:-}"
+[ -n "$subcmd" ] || usage
+shift || true
+
+bundle=""
+lock_digest=""
+report_dir=""
+run_id=""
+skip_image_signature=0
+exec_args=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --bundle)      bundle="${2:-}"; shift 2 ;;
+    --lock-digest) lock_digest="${2:-}"; shift 2 ;;
+    --report-dir)  report_dir="${2:-}"; shift 2 ;;
+    --run-id)      run_id="${2:-}"; shift 2 ;;
+    --skip-image-signature) skip_image_signature=1; shift ;;
+    --) shift; exec_args=("$@"); break ;;
+    -h|--help) usage ;;
+    *) die "unknown option $1" ;;
+  esac
+done
+
+case "$subcmd" in
+  verify|exec|verify-planes) ;;
+  *) die "unknown command \"$subcmd\"" ;;
+esac
+[ -n "$bundle" ] || die "--bundle is required"
+[ -n "$lock_digest" ] || die "--lock-digest is required: a path is not an identity, and this
+    script re-hashes the bytes against the digest you authenticated out of band"
+[ -d "$bundle" ] || die "$bundle is not a directory"
+command -v "$PYTHON" >/dev/null 2>&1 || die "$PYTHON not found; it is needed to read the lock"
+
+lock_json="$bundle/lock.json"
+[ -f "$lock_json" ] || die "$lock_json is missing"
+
+# ---------------------------------------------------------------------------
+# Step A — the lock's bytes must be the ones you authenticated
+# ---------------------------------------------------------------------------
+#
+# Everything below trusts the lock. If this comparison is skipped, the rest of
+# the script is verifying a document nobody checked.
+
+actual_digest="$("$PYTHON" - "$lock_json" <<'PY'
+import hashlib, sys
+print("sha256:" + hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+PY
+)"
+if [ "$actual_digest" != "$lock_digest" ]; then
+  die "the lock in $bundle hashes to $actual_digest, not the $lock_digest you
+    authenticated. This is a different document; refusing to proceed."
+fi
+note "lock authenticated: $lock_digest"
+
+# ---------------------------------------------------------------------------
+# Step B — this script's own hash, the bundle's members, and the policy copy
+# ---------------------------------------------------------------------------
+#
+# One pass in Python, because comparing a JSON map against a directory tree in
+# shell is where a check quietly stops covering half of what it claims.
+
+self_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+summary="$("$PYTHON" - "$lock_json" "$bundle" "$self_path" "$NOVA_ISSUER" "$NOVA_IDENTITY" <<'PY'
+import hashlib, json, os, sys
+
+lock_path, bundle, self_path, want_issuer, want_identity = sys.argv[1:6]
+
+# The lock and its authentication envelope are excluded from the payload map by
+# construction: a lock cannot hash itself, and it cannot hash the file that
+# CONTAINS the signature over it. Both would make the graph cyclic.
+EXCLUDED = {"lock.json", "lock.sigstore.json", "lock.pem", "lock.crt"}
+
+def sha(path):
+    with open(path, "rb") as f:
+        return "sha256:" + hashlib.sha256(f.read()).hexdigest()
+
+def fail(msg):
+    sys.exit("nova-release: " + msg)
+
+try:
+    lock = json.load(open(lock_path))
+except Exception as e:
+    fail("the lock is not readable JSON: %s" % e)
+
+payload = lock.get("payload")
+if not isinstance(payload, dict) or not payload:
+    fail("the lock carries no payload map, so no bundle member is covered. "
+         "Every member must have an authenticated path; an uncovered file is an "
+         "unsigned file riding along.")
+
+# --- this script, first -----------------------------------------------------
+want_self = payload.get("scripts/nova-release")
+if want_self is None:
+    fail("the lock does not cover scripts/nova-release. This script must be "
+         "named by the document that authorizes it.")
+got_self = sha(self_path)
+if got_self != want_self:
+    fail("this script hashes to %s, but the authenticated lock names %s.\n"
+         "    Refusing to run. (A substituted script would have removed this "
+         "check, so treat it as a corruption detector, not a defence — the "
+         "defence is the documented pre-check you run before invoking it.)"
+         % (got_self, want_self))
+
+# --- every member, exactly --------------------------------------------------
+on_disk = {}
+for root, _dirs, names in os.walk(bundle):
+    for n in names:
+        full = os.path.join(root, n)
+        rel = os.path.relpath(full, bundle)
+        if os.sep != "/":
+            rel = rel.replace(os.sep, "/")
+        on_disk[rel] = full
+
+problems = []
+for rel, full in sorted(on_disk.items()):
+    if rel in EXCLUDED:
+        continue
+    want = payload.get(rel)
+    if want is None:
+        problems.append("%s is present but the lock does not cover it" % rel)
+        continue
+    got = sha(full)
+    if got != want:
+        problems.append("%s has been modified (lock says %s, file is %s)" % (rel, want, got))
+for rel in sorted(payload):
+    if rel not in on_disk:
+        problems.append("the lock covers %s but it is missing" % rel)
+if problems:
+    fail("the bundle does not match the authenticated lock:\n    - "
+         + "\n    - ".join(problems))
+
+# --- the policy copy is audited against the hard-coded policy ---------------
+#
+# It is a copy. A difference means someone is trying to change what this script
+# trusts by editing a file inside the thing being verified.
+policy_path = os.path.join(bundle, "verification-policy.txt")
+found = {}
+with open(policy_path, encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        found[k.strip()] = v.strip()
+
+for key, want in (("issuer", want_issuer), ("identity", want_identity)):
+    got = found.get(key)
+    if got is None:
+        fail("verification-policy.txt declares no %s. The bundle's copy must "
+             "state the policy it claims was in force." % key)
+    if got != want:
+        fail("verification-policy.txt says %s=%s, but this script trusts %s.\n"
+             "    The bundle's copy is auditable, never the authority. Refusing: a "
+             "policy that changes through the material being verified is the attack."
+             % (key, got, want))
+
+admin = lock.get("artifacts", {}).get("nova-admin")
+if not admin:
+    fail("the lock names no nova-admin artifact; there is nothing to invoke")
+
+# Two lines on stdout: the reference to invoke, then the release version.
+# Everything else this script prints goes to stderr, so this is unambiguous.
+print(admin["repository"] + "@" + admin["descriptor"]["digest"])
+print(lock.get("version", ""))
+PY
+)"
+admin_ref="$(printf '%s\n' "$summary" | sed -n 1p)"
+release_version="$(printf '%s\n' "$summary" | sed -n 2p)"
+
+note "bundle matches the lock; policy copy agrees with the hard-coded policy"
+note "release $release_version, admin image $admin_ref"
+
+# ---------------------------------------------------------------------------
+# Step C — the admin image the LOCK names, verified against the same policy
+# ---------------------------------------------------------------------------
+
+if [ "$skip_image_signature" -eq 1 ]; then
+  if [ "$subcmd" != "verify" ]; then
+    die "--skip-image-signature audits the bundle without contacting a registry, so
+    it cannot be combined with $subcmd. Nothing may run on an unverified image."
+  fi
+  note "SKIPPING the image signature check by request. The bundle is audited; the
+    image it names is NOT. Do not deploy on the strength of this run."
+  note "verify: bundle OK (image unverified)"
+  exit 0
+fi
+
+command -v "$COSIGN" >/dev/null 2>&1 || die "$COSIGN not found. The image the lock names has
+    to be verified against the same identity and issuer as the lock itself, and
+    there is no way to do that without it."
+
+note "verifying $admin_ref"
+"$COSIGN" verify \
+  --certificate-oidc-issuer "$NOVA_ISSUER" \
+  --certificate-identity "$NOVA_IDENTITY" \
+  "$admin_ref" >/dev/null \
+  || die "cosign could not verify $admin_ref against the Nova signing identity.
+    Nothing from this release will be executed."
+
+# Provenance is a separate assertion from the signature: one says who built it,
+# the other says only that someone we admit signed it.
+if ! "$COSIGN" verify-attestation \
+      --type slsaprovenance \
+      --certificate-oidc-issuer "$NOVA_ISSUER" \
+      --certificate-identity "$NOVA_IDENTITY" \
+      "$admin_ref" >/dev/null 2>&1; then
+  die "$admin_ref carries no SLSA provenance attestation from the Nova signing
+    identity. Refusing to run an image whose build cannot be accounted for."
+fi
+note "image signature and provenance verified"
+
+if [ "$subcmd" = "verify" ]; then
+  note "verify: OK"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Step D — invoke exactly that digest, never a tag
+# ---------------------------------------------------------------------------
+#
+# The lock is mounted READ-ONLY and its digest is passed through, so the target
+# admin re-establishes the same chain in its own process rather than trusting a
+# path handed to it.
+
+command -v "$DOCKER" >/dev/null 2>&1 || die "$DOCKER not found"
+
+docker_opts=(--rm -v "$(cd "$bundle" && pwd):/release:ro")
+if [ -n "$report_dir" ]; then
+  mkdir -p "$report_dir"
+  docker_opts+=(-v "$(cd "$report_dir" && pwd):/reports")
+fi
+if [ -n "${DATABASE_URL:-}" ]; then
+  docker_opts+=(-e "DATABASE_URL=$DATABASE_URL")
+fi
+
+run_admin() {
+  "$DOCKER" run "${docker_opts[@]}" "$admin_ref" "$@"
+}
+
+case "$subcmd" in
+  exec)
+    [ "${#exec_args[@]}" -gt 0 ] || die "exec needs a command after --"
+    run_admin "${exec_args[@]}"
+    ;;
+
+  verify-planes)
+    # One run id across every plane. Without it the aggregate is a pile of
+    # unrelated results, and the planes genuinely cannot be collapsed into one
+    # process: host image inspection needs a Docker socket, the doctor plane
+    # needs another container's network namespace, and nova-admin is `run --rm`.
+    [ -n "$report_dir" ] || die "verify-planes needs --report-dir: nova-admin runs --rm, and a
+    report on its root filesystem evaporates exactly when it failed"
+    mkdir -p "$report_dir"
+    [ -n "$run_id" ] || run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    note "run $run_id"
+
+    failed=0
+
+    # The host plane is here rather than in the image because only the host can
+    # see what is actually running.
+    host_report="$report_dir/$run_id-host.json"
+    observed="$("$DOCKER" inspect --format '{{index .RepoDigests 0}}' "$admin_ref" 2>/dev/null || echo "")"
+    if [ "$observed" = "$admin_ref" ]; then
+      host_outcome="passed"
+    else
+      host_outcome="failed"
+      failed=1
+    fi
+    "$PYTHON" - "$host_report" "$run_id" "$admin_ref" "$observed" "$host_outcome" <<'PY'
+import json, sys, os
+path, run_id, want, got, outcome = sys.argv[1:6]
+tmp = path + ".partial"
+with open(tmp, "w") as f:
+    json.dump({"run_id": run_id, "plane": "host", "outcome": outcome, "checks": [{
+        "id": "image.digest-observed", "outcome": outcome,
+        "detail": "expected %s, observed %s" % (want, got or "nothing"),
+    }]}, f, indent=2)
+    f.write("\n")
+os.rename(tmp, path)
+PY
+    note "host plane: $host_outcome"
+
+    for plane in admin coordinator database donor; do
+      if run_admin upgrade verify --plane "$plane" --run-id "$run_id" --report-dir /reports; then
+        note "$plane plane: passed"
+      else
+        note "$plane plane: FAILED"
+        failed=1
+      fi
+    done
+
+    if [ "$failed" -ne 0 ]; then
+      die "one or more planes failed; the reports are in $report_dir"
+    fi
+    note "every plane passed; reports in $report_dir"
+    ;;
+esac

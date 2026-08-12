@@ -1,0 +1,42 @@
+# Nova release verification policy
+#
+# THIS FILE IS NOT AN AUTHORITY.
+#
+# It travels inside the release bundle so the policy that was in force can be
+# audited later, and so a reader can see it without a network. It is a COPY.
+# The policy that decides anything is the one hard-coded in the documented
+# `cosign verify-blob` command and in `scripts/nova-release` — neither of which
+# reads this file to learn what to trust.
+#
+# Trust must not originate in the material being verified (P2-M7.3, D-M7.3-2a).
+# A bundle that carried both the verification script and the signer policy could
+# authorize its own attacker: substitute the script to skip verification, or
+# substitute the policy to admit a different signer. Cosign is explicit about
+# this — the verifier supplies the expected certificate identity and issuer, and
+# the executable alone is not a policy.
+#
+# `scripts/nova-release` compares this copy against its own hard-coded values
+# and REFUSES on any difference. A divergence means someone is trying to change
+# the policy through the bundle, which is the attack, not a configuration.
+#
+# The first release's policy reaches the operator OUT OF BAND: the project
+# website, the repository README, and this comment block are not a chain of
+# custody, so verify it against a source you already trust before the first
+# upgrade. Later releases may ship the next policy inside the previous
+# authenticated release.
+
+issuer=https://token.actions.githubusercontent.com
+identity=https://github.com/nova-archive/nova/.github/workflows/release.yml@refs/heads/main
+
+# Why this identity and not a tag ref:
+#
+# Signing happens in release.yml executed from protected `main`, with the
+# candidate commit passed as an immutable input. The tag does not exist yet when
+# the candidate is signed, so a tag-ref identity could not be satisfied by the
+# first release and would have to change later. GitHub's `workflow_ref` carries
+# the workflow path AND the Git ref, so writing it out exactly gives one stable
+# signing principal for the first release and every one after it.
+#
+# Changing either value is a policy change. It moves in ONE commit across this
+# file, scripts/nova-release, the donor quickstart, and the generated operator
+# README — a check enforces that they agree.
