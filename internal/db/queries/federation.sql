@@ -426,6 +426,31 @@ SELECT * FROM upgrade_runs ORDER BY started_at DESC LIMIT 1;
 -- name: ListUpgradeEvents :many
 SELECT * FROM upgrade_events WHERE run_id = $1 ORDER BY sequence;
 
+-- name: ReactivateEvictedNode :exec
+-- P2-M7.3: bring an EVICTED donor back to active with no standing.
+--
+-- Eviction is a liveness judgement, not a trust one. A donor that returns with
+-- its durable registration and a matching certificate has disproved the
+-- judgement, and the deployed agent cannot re-register itself — it loads its
+-- registration once and never repeats it — so the recovery has to be here.
+--
+-- assignment_sync_state is forced to 'snapshot_required': the change log this
+-- node would diff against has been pruned since it left, and a diff against a
+-- log with a missing prefix silently produces a wrong desired set.
+--
+-- NOTHING is credited. Its replicas were retired from the desired set at
+-- eviction and come back only by being re-assigned and acknowledged, or by a
+-- possession audit answering for them. Restoring durability counting on a
+-- month-old machine's say-so is how a blob it deleted stays "covered".
+--
+-- The WHERE clause re-checks the status so a concurrent revoke wins: this can
+-- only move a node OUT of 'evicted'.
+UPDATE nodes
+SET status                = 'active',
+    assignment_sync_state = 'snapshot_required',
+    last_seen_at          = now()
+WHERE id = $1 AND status = 'evicted';
+
 -- name: SetNodeExpectedArtifact :exec
 -- What the OPERATOR authorized for this node, from a verified release lock.
 -- Both digests are set together: a rollout authorizes one topology, and

@@ -1109,6 +1109,37 @@ func (q *Queries) PruneChangeLog(ctx context.Context, createdAt time.Time) (int6
 	return pruned_through_seq, err
 }
 
+const reactivateEvictedNode = `-- name: ReactivateEvictedNode :exec
+UPDATE nodes
+SET status                = 'active',
+    assignment_sync_state = 'snapshot_required',
+    last_seen_at          = now()
+WHERE id = $1 AND status = 'evicted'
+`
+
+// P2-M7.3: bring an EVICTED donor back to active with no standing.
+//
+// Eviction is a liveness judgement, not a trust one. A donor that returns with
+// its durable registration and a matching certificate has disproved the
+// judgement, and the deployed agent cannot re-register itself — it loads its
+// registration once and never repeats it — so the recovery has to be here.
+//
+// assignment_sync_state is forced to 'snapshot_required': the change log this
+// node would diff against has been pruned since it left, and a diff against a
+// log with a missing prefix silently produces a wrong desired set.
+//
+// NOTHING is credited. Its replicas were retired from the desired set at
+// eviction and come back only by being re-assigned and acknowledged, or by a
+// possession audit answering for them. Restoring durability counting on a
+// month-old machine's say-so is how a blob it deleted stays "covered".
+//
+// The WHERE clause re-checks the status so a concurrent revoke wins: this can
+// only move a node OUT of 'evicted'.
+func (q *Queries) ReactivateEvictedNode(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, reactivateEvictedNode, id)
+	return err
+}
+
 const recordUpgradeEvent = `-- name: RecordUpgradeEvent :exec
 INSERT INTO upgrade_events (run_id, sequence, phase, state, detail)
 VALUES ($1, $2, $3, $4, $5)

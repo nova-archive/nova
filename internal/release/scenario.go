@@ -137,7 +137,13 @@ var coverage = []GateCoverage{
 				"donor is untested by definition, which is what unsupported means",
 		},
 		Placeholder: true,
-		Note:        "Not yet written (Task 26).",
+		Note: "NOT WRITTEN. scripts/mixed_fleet_e2e.sh carries the fleet taxonomy and the ten " +
+			"assertions in its header and exits non-zero; the harness that stands six donors " +
+			"up simultaneously over a TUN overlay does not exist. This placeholder blocks a " +
+			"release candidate, which is correct — a script that exercised two donors and " +
+			"printed the six-donor claim would retire it and put an unearned claim in a " +
+			"signed lock. Assertion 10 (eviction recovery) DID land, because it is a product " +
+			"defect rather than a test gap: see internal/federation/coordinator/reactivation.go.",
 	},
 	{
 		// DERIVED FROM AN EXECUTED RUN, 2026-08-11, all three pairings against

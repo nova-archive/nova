@@ -237,6 +237,12 @@ upgrade-evidence: upgrade-wire-e2e upgrade-schema-e2e upgrade-release-e2e
 # P2-M7.3 Task 27: UPGRADING.md promises a tested restore, and composed
 # migration obligations can make restore the literal rollback boundary. A
 # recovery path nobody has walked is a hope.
+# P2-M7.3 Task 26: NOT IMPLEMENTED and exits non-zero. Its coverage entry stays
+# a placeholder, which blocks a release candidate.
+.PHONY: mixed-fleet-e2e
+mixed-fleet-e2e:
+	./scripts/mixed_fleet_e2e.sh
+
 .PHONY: backup-restore-e2e
 backup-restore-e2e:
 	./scripts/backup_restore_e2e.sh

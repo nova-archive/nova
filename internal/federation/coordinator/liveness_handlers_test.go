@@ -96,7 +96,19 @@ func TestHeartbeatReactivatesSetsReconcilingNotCountable(t *testing.T) {
 	}
 }
 
-func TestEvictedHeartbeatRejected(t *testing.T) {
+// TestEvictedHeartbeatReactivatesSafely. This test used to assert 403 and
+// "must NOT have been silently reactivated", and both were right about the
+// mechanism and wrong about the outcome (P2-M7.3, Task 26).
+//
+// The refusal was unactionable: the deployed agent loads its durable
+// registration once and never re-registers, and it reduces this response to a
+// warning it ignores. A supported donor offline past the eviction threshold was
+// therefore stranded forever, and no client change could fix it.
+//
+// Nothing is SILENT about the reactivation now. It requires the registered
+// certificate, it refuses a revoked node, it forces a full snapshot, it credits
+// no replica, and it writes an audit entry. See reactivation_test.go.
+func TestEvictedHeartbeatReactivatesSafely(t *testing.T) {
 	ctx := context.Background()
 	s, pool, caPEM, caKeyPEM := newTestServerPool(t)
 	id := uuid.New()
@@ -105,12 +117,21 @@ func TestEvictedHeartbeatRejected(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	s.handleHeartbeat(w, reqWithCert(http.MethodPost, "/fed/v1/heartbeat", []byte(`{}`), leaf))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("evicted heartbeat = %d, want 403", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("evicted heartbeat = %d, want 200: the donor holds a valid registration and a "+
+			"matching certificate, and cannot re-register itself", w.Code)
 	}
-	// And it must NOT have been silently reactivated.
-	if got := statusOf(t, ctx, pool, id); got != "evicted" {
-		t.Fatalf("evicted node reactivated by heartbeat: status=%q", got)
+	if got := statusOf(t, ctx, pool, id); got != "active" {
+		t.Fatalf("status after return = %q, want active", got)
+	}
+	var sync string
+	if err := pool.QueryRow(ctx,
+		`SELECT assignment_sync_state::text FROM nodes WHERE id = $1`, id).Scan(&sync); err != nil {
+		t.Fatal(err)
+	}
+	if sync != "snapshot_required" {
+		t.Fatalf("sync state = %q, want snapshot_required — the change log it would diff "+
+			"against has been pruned since it left", sync)
 	}
 }
 

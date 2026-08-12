@@ -160,13 +160,33 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "node_revoked", "")
 		return
 	}
-	// An evicted node is out of the desired set (its assignments were retired); it
-	// must re-register, not heartbeat its way back in (D-M5-5 endpoint matrix). The
-	// query reactivates only suspect/unreachable, but rejecting here keeps a stale
-	// heartbeat from refreshing an evicted node's last_seen_at.
+	// An evicted node used to be told to re-register — and could not act on
+	// being told (P2-M7.3, Task 26).
+	//
+	// The deployed agent loads its durable registration once at boot and never
+	// repeats it, and it reduces this refusal to a warning it never acts on. So
+	// a donor offline past the 30-day threshold heartbeat into a refusal it did
+	// not understand, forever: its replicas stranded on a machine the
+	// coordinator considered gone, its volunteer looking at a healthy container.
+	// The fix cannot live in a binary already deployed on other people's
+	// machines, and "delete your state and re-enroll" is the re-enrollment this
+	// track exists to prevent.
+	//
+	// Eviction is a LIVENESS judgement. A donor that returns with its durable
+	// registration and a matching certificate has disproved it. Reactivation
+	// restores participation and NOT standing: a full snapshot is forced and no
+	// replica is credited until it is re-assigned and acknowledged.
 	if node.Status == gen.NodeStatusEvicted {
-		writeError(w, http.StatusForbidden, "registration_required", "evicted node must re-register")
-		return
+		if rerr := s.ReactivateEvicted(ctx, nodeUUID, node, id.Fingerprint); rerr != nil {
+			writeError(w, http.StatusForbidden, "registration_required", rerr.Error())
+			return
+		}
+		refreshed, gerr := s.q.GetNodeByID(ctx, pgUUIDFrom(nodeUUID))
+		if gerr != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "lookup after reactivation failed")
+			return
+		}
+		node = refreshed
 	}
 	if node.FederationCertFingerprint != id.Fingerprint {
 		writeError(w, http.StatusForbidden, "fingerprint_mismatch", "presented cert is not the active cert")
