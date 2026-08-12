@@ -47,7 +47,9 @@ fi
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
-DC=(docker compose -f docker/docker-compose.yml --env-file "$ENV_FILE")
+# The dev overlay is required: the base names RELEASED artifacts by digest
+# (P2-M7.3, D-M7.3-14), and this script builds from the working tree.
+DC=(docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file "$ENV_FILE")
 
 HOST="smoke.nova.test"
 ADMIN_EMAIL="operator@example.invalid"

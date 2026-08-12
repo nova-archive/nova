@@ -17,7 +17,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-COMPOSE="docker compose -f docker/docker-compose.yml -f deploy/operator/compose.federation.yaml"
+# The dev overlay carries the build sections; the base and the federation
+# overlay name released artifacts by digest (P2-M7.3, D-M7.3-14). Order
+# matters: dev after base, federation last.
+COMPOSE="docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml -f deploy/operator/compose.federation.yaml"
 OVERLAY_CIDR="${OVERLAY_CIDR:-10.42.0.0/24}"
 OPERATOR_IP="${OPERATOR_IP:-10.42.0.1}"
 DONOR_IP="${DONOR_IP:-10.42.0.10/24}"

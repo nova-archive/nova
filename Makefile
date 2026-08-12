@@ -2,7 +2,10 @@
 
 GOTEST    := go test ./...
 GOTESTV   := go test -v ./...
-DC        := docker compose -f docker/docker-compose.yml --env-file docker/.env
+# The dev overlay is not optional here: the base names RELEASED artifacts by
+# digest (P2-M7.3, D-M7.3-14), so a developer's compose invocation has to say
+# it wants to build. An operator's does not, and that is the point.
+DC        := docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file docker/.env
 
 # Unique per-build version stamp (see docs/VERSIONING.md). Tagged build => tag;
 # untagged => nearest tag + commits + short SHA; dirty tree => -dirty suffix.
@@ -125,7 +128,7 @@ gen-deploy-check:
 deploy-gates:
 	go test ./internal/deploy/... -count=1
 
-.PHONY: docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check artifact-gates
+.PHONY: docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check compose-topology-check artifact-gates
 # P2-M7.2 D-M7.2-10: docs rot is what produced the federation productization
 # finding — six sources of truth that had already diverged, with no test
 # noticing. These make that class of drift a build failure.
@@ -139,6 +142,9 @@ no-mutable-tags-check:
 	./scripts/check-no-mutable-tags.sh
 
 # Plane C of federation doctor: CA custody proven structurally, no Docker socket.
+compose-topology-check:
+	./scripts/check-compose-topology.sh
+
 compose-custody-check:
 	./scripts/check-compose-custody.sh
 
@@ -167,7 +173,7 @@ catalog-check:
 	go run ./internal/release/cmd/novarel catalog --check
 
 # Everything the deployment-artifacts CI job runs, in one local target.
-artifact-gates: gen-deploy-check deploy-gates docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check release-validate catalog-check
+artifact-gates: gen-deploy-check deploy-gates docs-cli-check port-vocabulary-check no-mutable-tags-check compose-custody-check compose-topology-check release-validate catalog-check
 
 .PHONY: sqlc-generate codegen-check build-coordinator run-coordinator
 

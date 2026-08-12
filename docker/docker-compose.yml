@@ -72,9 +72,19 @@ services:
       - SETGID # supplementary-group setup for the same su-exec drop
 
   coordinator:
-    build:
-      context: ..
-      dockerfile: docker/coordinator.Dockerfile
+    # The RELEASED artifact, by digest, from the release env the operator
+    # installed (P2-M7.3, D-M7.3-14).
+    #
+    # There is no `build:` here on purpose. With both a build section and an
+    # image ref, "which bytes am I running" depends on whether a local image
+    # happens to exist — and a deployment whose answer depends on Docker's
+    # cache is one nobody can verify. Developers add the build back with
+    # docker/docker-compose.dev.yml, which says so in its name.
+    #
+    # The default is a local dev tag rather than a digest so a clone with no
+    # release env still renders; installing the release env replaces it with
+    # the digest the lock names.
+    image: ${NOVA_COORDINATOR_REF:-nova-coordinator:dev}
     container_name: nova-coordinator
     environment:
       # sslmode=disable is intentional for the shipped single-host topology:
@@ -158,9 +168,10 @@ services:
   # is no version at which the runner and the code disagree about the schema.
   migrate:
     profiles: ["upgrade"]
-    build:
-      context: ..
-      dockerfile: docker/coordinator.Dockerfile
+    # The SAME ref as the coordinator, which is what makes it correct: the
+    # migrations it carries are the ones that binary was built against, so
+    # there is no version at which the runner and the code disagree.
+    image: ${NOVA_COORDINATOR_REF:-nova-coordinator:dev}
     entrypoint: ["/usr/local/bin/migrate"]
     environment:
       DATABASE_URL: "postgres://nova:${POSTGRES_PASSWORD}@postgres:5432/nova?sslmode=disable"

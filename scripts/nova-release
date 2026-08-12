@@ -73,9 +73,13 @@ usage: nova-release <command> --bundle <dir> --lock-digest <sha256:...> [options
   exec -- ARGS   verify, then run ARGS in the nova-admin image the lock names.
   verify-planes  verify, then run each in-image verification plane under one
                  run id, writing per-plane reports into --report-dir.
+  install-env    verify, then atomically install the bundle's release.env at
+                 --dest. Compose may read that file at any moment, so a
+                 half-written one is a deployment pointed at half a release.
 
   --bundle       the unpacked release bundle
   --lock-digest  the digest you authenticated with `cosign verify-blob`
+  --dest         where release.env is installed (install-env)
   --report-dir   where plane reports are written (verify-planes)
   --run-id       join key for one verification run (verify-planes; generated
                  when omitted)
@@ -97,6 +101,7 @@ shift || true
 bundle=""
 lock_digest=""
 report_dir=""
+dest=""
 run_id=""
 skip_image_signature=0
 exec_args=()
@@ -106,6 +111,7 @@ while [ $# -gt 0 ]; do
     --bundle)      bundle="${2:-}"; shift 2 ;;
     --lock-digest) lock_digest="${2:-}"; shift 2 ;;
     --report-dir)  report_dir="${2:-}"; shift 2 ;;
+    --dest)        dest="${2:-}"; shift 2 ;;
     --run-id)      run_id="${2:-}"; shift 2 ;;
     --skip-image-signature) skip_image_signature=1; shift ;;
     --) shift; exec_args=("$@"); break ;;
@@ -115,7 +121,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$subcmd" in
-  verify|exec|verify-planes) ;;
+  verify|exec|verify-planes|install-env) ;;
   *) die "unknown command \"$subcmd\"" ;;
 esac
 [ -n "$bundle" ] || die "--bundle is required"
@@ -126,6 +132,38 @@ command -v "$PYTHON" >/dev/null 2>&1 || die "$PYTHON not found; it is needed to 
 
 lock_json="$bundle/lock.json"
 [ -f "$lock_json" ] || die "$lock_json is missing"
+
+# install_env writes the VERIFIED release.env into place atomically.
+#
+# The file is a lock-covered bundle member, so by the time this runs its bytes
+# have already been checked against the authenticated lock. What remains is
+# getting it onto disk without a window in which Compose could read half of it:
+# write a sibling temp file, fsync it, rename. Rename is atomic within a
+# filesystem, which is why the temp file is a sibling rather than in /tmp.
+install_env() {
+  [ -n "$dest" ] || die "install-env needs --dest, e.g. --dest /etc/nova/release.env"
+  local src="$bundle/release.env"
+  [ -f "$src" ] || die "$src is missing; the lock covers it, so this bundle is incomplete"
+
+  local dir tmp
+  dir="$(dirname "$dest")"
+  [ -d "$dir" ] || die "$dir does not exist; create it before installing a release env"
+  tmp="$dir/.release.env.$$"
+
+  cp "$src" "$tmp"
+  # 0644, not 0600: the refs are public digests rather than secrets, and a
+  # non-root `docker compose` has to be able to read a file root installed.
+  chmod 0644 "$tmp"
+  "$PYTHON" -c 'import os,sys; fd=os.open(sys.argv[1], os.O_RDONLY); os.fsync(fd); os.close(fd)' "$tmp"
+  mv -f "$tmp" "$dest"
+
+  note "installed $dest from the verified bundle"
+  note "use it LAST, so a stale ref in docker/.env cannot override it:"
+  note "    docker compose -f docker/docker-compose.yml \\"
+  note "                   -f deploy/operator/compose.federation.yaml \\"
+  note "                   --env-file docker/.env --env-file $dest \\"
+  note "                   --profile prod --profile federation up -d"
+}
 
 # ---------------------------------------------------------------------------
 # Step A — the lock's bytes must be the ones you authenticated
@@ -269,12 +307,16 @@ note "release $release_version, admin image $admin_ref"
 # ---------------------------------------------------------------------------
 
 if [ "$skip_image_signature" -eq 1 ]; then
-  if [ "$subcmd" != "verify" ]; then
+  if [ "$subcmd" != "verify" ] && [ "$subcmd" != "install-env" ]; then
     die "--skip-image-signature audits the bundle without contacting a registry, so
     it cannot be combined with $subcmd. Nothing may run on an unverified image."
   fi
   note "SKIPPING the image signature check by request. The bundle is audited; the
     image it names is NOT. Do not deploy on the strength of this run."
+  if [ "$subcmd" = "install-env" ]; then
+    install_env
+    exit 0
+  fi
   note "verify: bundle OK (image unverified)"
   exit 0
 fi
@@ -305,6 +347,11 @@ note "image signature and provenance verified"
 
 if [ "$subcmd" = "verify" ]; then
   note "verify: OK"
+  exit 0
+fi
+
+if [ "$subcmd" = "install-env" ]; then
+  install_env
   exit 0
 fi
 

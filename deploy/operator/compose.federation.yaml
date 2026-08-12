@@ -51,10 +51,12 @@ services:
   #   docker compose --profile federation run --rm nova-admin <args>
   nova-admin:
     profiles: ["federation"]
-    build:
-      context: ..
-      dockerfile: docker/admin.Dockerfile
-    image: nova-admin:dev
+    # The RELEASED admin artifact, by digest, from the release env (P2-M7.3,
+    # D-M7.3-14). No `build:`: this container holds issuance authority, and
+    # "whichever nova-admin image happens to be in the local cache" is not an
+    # acceptable answer for the one service that can mint federation identities.
+    # Developers add the build back with docker/docker-compose.dev.yml.
+    image: ${NOVA_ADMIN_REF:-nova-admin:dev}
     environment:
       DATABASE_URL: "postgres://nova:${POSTGRES_PASSWORD}@postgres:5432/nova?sslmode=disable"
     volumes:
@@ -76,10 +78,9 @@ services:
   # coordinator CLIENT identity, never a CA key.
   nova-doctor:
     profiles: ["federation"]
-    build:
-      context: ..
-      dockerfile: docker/admin.Dockerfile
-    image: nova-admin:dev
+    # The same released image as nova-admin — same bytes, different mounts.
+    # What separates them is that this one does NOT mount nova-fedpki.
+    image: ${NOVA_ADMIN_REF:-nova-admin:dev}
     network_mode: "service:coordinator"
     depends_on:
       - coordinator

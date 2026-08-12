@@ -1,0 +1,60 @@
+# Nova DEVELOPMENT overlay (P2-M7.3, D-M7.3-14).
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.dev.yml \
+#                  up -d --build
+#
+# The base stack names RELEASED artifacts by digest, because a deployment
+# should be able to say exactly which bytes it is running. That is the wrong
+# default for someone editing the source, so building lives here, in a file
+# whose name says what it does.
+#
+# Why not keep `build:` in the base and let the digest win when it is set:
+# with both a build section and an image ref, Compose's answer to "which bytes
+# am I running" depends on whether a local image happens to exist. An operator
+# who once ran `docker compose build` would silently keep running that image
+# after installing a release. `pull_policy: build` here, and no build section
+# at all there, makes the two cases distinguishable by which file you passed.
+#
+# Ordering: this overlay goes AFTER the base and BEFORE the federation overlay,
+# so its build sections apply to services the base declares and the federation
+# overlay's own dev builds are declared in its own dev counterpart below.
+
+services:
+  coordinator:
+    build:
+      context: ..
+      dockerfile: docker/coordinator.Dockerfile
+    image: nova-coordinator:dev
+    pull_policy: build
+
+  # The migration runner is the same image as the coordinator, in development
+  # exactly as in a release. Building it separately would let the two drift and
+  # produce a runner whose migrations do not match the binary's queries.
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/coordinator.Dockerfile
+    image: nova-coordinator:dev
+    pull_policy: build
+
+  # Federation services. Declared here as well so that
+  #   -f base -f dev -f compose.federation.yaml
+  # builds them, and so a developer never has to remember a fourth file. They
+  # are inert unless the federation profile is enabled, and the federation
+  # overlay is what declares them in the first place — this only adds the build.
+  nova-admin:
+    profiles: ["federation"]
+    build:
+      context: ..
+      dockerfile: docker/admin.Dockerfile
+    image: nova-admin:dev
+    pull_policy: build
+
+  nova-doctor:
+    profiles: ["federation"]
+    build:
+      context: ..
+      dockerfile: docker/admin.Dockerfile
+    image: nova-admin:dev
+    pull_policy: build

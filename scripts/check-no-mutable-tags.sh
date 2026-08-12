@@ -32,9 +32,13 @@ mapfile -t targets < <(
 #   nova-node:dev        a locally built image, never pulled.
 #   nova-admin:dev       likewise — built from docker/admin.Dockerfile, whose
 #                        own FROM lines ARE digest-pinned and are checked here.
+#   nova-coordinator:dev the FALLBACK inside ${NOVA_COORDINATOR_REF:-...}. It is
+#                        what a clone with no release env renders; installing
+#                        the release env replaces it with the digest the lock
+#                        names, and check-compose-topology.sh proves that.
 #   {{.                  a template placeholder resolved at render time, which
 #                        DonorParams.Validate already digest-checks.
-allow_re='REPLACE-WITH-DIGEST|nova-node:dev|nova-admin:dev|\{\{\.'
+allow_re='REPLACE-WITH-DIGEST|nova-node:dev|nova-admin:dev|nova-coordinator:dev|\{\{\.'
 
 for f in "${targets[@]}"; do
   [ -f "$f" ] || continue

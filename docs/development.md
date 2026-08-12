@@ -41,8 +41,16 @@ git clone git@github.com:nova-archive/nova.git
 cd nova
 cp docker/.env.example docker/.env
 sed -i "s/changeme/$(openssl rand -hex 16)/" docker/.env
-docker compose -f docker/docker-compose.yml up -d postgres
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml up -d postgres
 ```
+
+The **dev overlay is not optional** (P2-M7.3). `docker/docker-compose.yml` names
+RELEASED artifacts by digest, from the release env an operator installs, and
+carries no `build:` sections — a deployment should be able to say exactly which
+bytes it runs, and with both a build section and an image ref the answer depends
+on whether a stale local image happens to exist. `docker/docker-compose.dev.yml`
+adds the builds back for people editing the source. `make` targets already pass
+both.
 
 ## 2. Apply migrations
 
