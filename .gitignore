@@ -29,6 +29,7 @@ nova-secrets/
 nova-postgres-data/
 nova-kubo-data/
 nova-tmp-uploads/
+docs/nova-upstream-findings.md
 
 # Editor/OS
 .DS_Store
