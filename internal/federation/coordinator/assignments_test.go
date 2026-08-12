@@ -38,8 +38,8 @@ func seedNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool) uuid.UUID {
 	// path now filters on it. A fixture destination that advertises nothing is
 	// not a donor any assignment path would ever choose, so the fixture says
 	// what a real destination says.
-	_, err := pool.Exec(ctx, `INSERT INTO nodes (id, nebula_cert_fingerprint, federation_cert_fingerprint, capacity_bytes, bandwidth_budget_bytes_per_day, advertised_capabilities)
-	    VALUES ($1,$2,$3,0,0,ARRAY['blob-transfer/v1'])`, pgtype.UUID{Bytes: id, Valid: true}, "neb:"+id.String(), "fed:"+id.String())
+	_, err := pool.Exec(ctx, `INSERT INTO nodes (id, nebula_cert_fingerprint, federation_cert_fingerprint, capacity_bytes, bandwidth_budget_bytes_per_day, advertised_capabilities, effective_capabilities)
+	    VALUES ($1,$2,$3,0,0,ARRAY['blob-transfer/v1'],ARRAY['blob-transfer/v1'])`, pgtype.UUID{Bytes: id, Valid: true}, "neb:"+id.String(), "fed:"+id.String())
 	if err != nil {
 		t.Fatal(err)
 	}

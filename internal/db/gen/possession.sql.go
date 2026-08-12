@@ -307,7 +307,7 @@ SELECT n.id AS node_id, n.trust_state, n.reputation_score,
 FROM nodes n
 JOIN pin_assignments pa ON pa.node_id = n.id AND pa.state = 'acked'
 WHERE n.status IN ('active','suspect') AND n.assignment_sync_state = 'current'
-  AND n.advertised_capabilities @> ARRAY['audit-block-hash/v1']  -- only challengeable donors
+  AND n.effective_capabilities @> ARRAY['audit-block-hash/v1']  -- only challengeable donors
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
 GROUP BY n.id
 ORDER BY (COALESCE(n.last_stored_bytes,0)::float8 * count(pa.cid)) DESC, n.id

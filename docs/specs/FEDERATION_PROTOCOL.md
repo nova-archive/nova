@@ -179,6 +179,65 @@ Response `200 OK`:
 }
 ```
 
+**The runtime contract (normative, fed/v1 addition).** A heartbeat MAY carry a
+`runtime_contract` object:
+
+```json
+{
+  "free_bytes": 4294967296,
+  "runtime_contract": {
+    "version": 1,
+    "client_version": "v0.3.0",
+    "image_digest": "sha256:...",
+    "bundle_lock_digest": "sha256:...",
+    "capabilities": ["pin-change-log/v1", "snapshot/v1", "blob-transfer/v1"],
+    "supported_protocols": ["fed/v1"]
+  }
+}
+```
+
+It is sent **whole or not at all**. Version and digest could presence-clear as
+independent fields, but capabilities cannot: a donor that never sent them and a
+donor that stopped sending them produce the identical wire message. Independent
+optional fields would also let a partial update compose a state no donor is in
+— a new version beside the previous release's capability set.
+
+`client_version`, `image_digest` and `bundle_lock_digest` are **identity
+claims**: configured declarations a donor may fabricate, used for the operator's
+census only. They never gate protocol access, placement, durability counting,
+trust graduation, drain or eviction.
+
+`capabilities` is the donor's set **now**, not what it registered with. This is
+what lets an upgraded donor's new capability take effect without
+re-registration, and a rolled-back donor stop being scheduled for a role it no
+longer implements.
+
+`supported_protocols` is stored separately from `selected_protocol`, which is
+the coordinator's negotiated session outcome and never a donor claim. Changing
+the protocol requires re-registration or an explicit renegotiation handshake.
+
+The coordinator maintains a per-node **observation marker** and makes exactly
+these transitions:
+
+| From | Event | To |
+|---|---|---|
+| — | registration | registration snapshot; marker cleared |
+| snapshot, marker clear | heartbeat **with** a supported contract | the contract's set; marker stamped |
+| snapshot, marker clear | heartbeat **without** a contract | unchanged — a pre-contract donor |
+| runtime, marker set | heartbeat **with** a supported contract | the contract's set; marker refreshed |
+| runtime, marker set | heartbeat **without** a contract | contract unknown; **optional-role capabilities dropped, replicas retained** |
+| any | **re-registration** | fresh snapshot; marker **cleared** |
+| any | heartbeat with an **unknown future** `version` | current set kept for existing work; **no new optional-role work**; nothing in the object interpreted |
+
+The re-registration reset is required: without it, a pre-contract donor that
+re-registers after eviction inherits a stamped marker, and its next
+contract-less heartbeat is misread as a rollback.
+
+An **empty** heartbeat body is accepted — a pre-contract donor sends one — but a
+**malformed** body, or trailing content after the document, is rejected with
+`400`. Reported fields are length- and syntax-validated: untrusted is not the
+same as unvalidated.
+
 ### `GET /fed/v1/pins/changes`
 
 **v2 incremental change log.** The donor passes the last

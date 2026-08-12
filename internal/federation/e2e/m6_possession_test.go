@@ -180,10 +180,10 @@ func seedAuditFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool,
 	_, err = pool.Exec(ctx, `
 		INSERT INTO nodes (id, nebula_cert_fingerprint, federation_cert_fingerprint, capacity_bytes,
 		                   bandwidth_budget_bytes_per_day, policy_filters, status,
-		                   assignment_sync_state, advertised_capabilities, source_nebula_addr,
+		                   assignment_sync_state, advertised_capabilities, effective_capabilities, source_nebula_addr,
 		                   reputation_score, trust_state)
 		VALUES ($1, 'fp-m6', 'ffp-m6', 1099511627776, 1099511627776, '{}', 'active',
-		        'current', ARRAY['audit-block-hash/v1'], $2, 0.9, 'probationary')
+		        'current', ARRAY['audit-block-hash/v1'], ARRAY['audit-block-hash/v1'], $2, 0.9, 'probationary')
 	`, nodeID.String(), donorAddr)
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `

@@ -52,10 +52,10 @@ func seedM7Node(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id uuid.U
 	_, err := pool.Exec(ctx, `
 		INSERT INTO nodes (id, nebula_cert_fingerprint, federation_cert_fingerprint, capacity_bytes,
 		                   bandwidth_budget_bytes_per_day, policy_filters, status, assignment_sync_state,
-		                   trust_state, advertised_capabilities, source_nebula_addr, last_seen_at,
+		                   trust_state, advertised_capabilities, effective_capabilities, source_nebula_addr, last_seen_at,
 		                   last_free_bytes, last_egress_remaining_bytes)
 		VALUES ($1::uuid, $2, $3, 1073741824, 1073741824, '{}', 'active', 'current',
-		        'trusted', $4::text[], NULLIF($5,''), now(), 1000000000, 1000000000)`,
+		        'trusted', $4::text[], $4::text[], NULLIF($5,''), now(), 1000000000, 1000000000)`,
 		id.String(), id.String()+"-nfp", id.String()+"-ffp", caps, src)
 	require.NoError(t, err)
 }

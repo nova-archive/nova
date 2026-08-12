@@ -44,7 +44,7 @@ WHERE pa.cid = $1 AND pa.state = 'acked'
   AND (n.below_floor_since IS NULL
        OR n.below_floor_since > now() - make_interval(secs => $2::float))
   AND n.last_seen_at > now() - make_interval(secs => $3::float)
-  AND n.advertised_capabilities @> ARRAY['read-source/v1']
+  AND n.effective_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
 `
 
@@ -199,7 +199,7 @@ FROM pin_assignments pa JOIN nodes n ON n.id = pa.node_id
 WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.status IN ('active','suspect') AND n.trust_state <> 'suspended'
   AND n.last_seen_at > now() - make_interval(secs => $2::float)
-  AND n.advertised_capabilities @> ARRAY['read-source/v1']
+  AND n.effective_capabilities @> ARRAY['read-source/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
 ORDER BY (n.below_floor_since IS NOT NULL), (n.draining_at IS NOT NULL), n.reputation_score DESC, n.id
 `

@@ -13,10 +13,12 @@ INSERT INTO nodes (
     id, nebula_cert_fingerprint, federation_cert_fingerprint, display_name,
     geo_declared, capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters,
     status, trust_state, selected_protocol, advertised_capabilities,
-    required_capabilities, client_version, source_nebula_addr, assignment_sync_state
+    required_capabilities, client_version, source_nebula_addr, assignment_sync_state,
+    effective_capabilities, runtime_contract_observed_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8,
-    'active', 'probationary', $9, $10, $11, $12, $13, 'snapshot_required'
+    'active', 'probationary', $9, $10, $11, $12, $13, 'snapshot_required',
+    $10, NULL
 )
 ON CONFLICT (id) DO UPDATE SET
     nebula_cert_fingerprint        = EXCLUDED.nebula_cert_fingerprint,
@@ -27,6 +29,16 @@ ON CONFLICT (id) DO UPDATE SET
     policy_filters                 = EXCLUDED.policy_filters,
     selected_protocol              = EXCLUDED.selected_protocol,
     advertised_capabilities        = EXCLUDED.advertised_capabilities,
+    -- P2-M7.3 D-M7.3-7c: registration is the fresh snapshot, and it RESETS the
+    -- observation epoch. Without the reset, a legacy donor that re-registers
+    -- after eviction inherits a stamped marker, and its next contract-less
+    -- heartbeat is misread as a rollback.
+    effective_capabilities         = EXCLUDED.advertised_capabilities,
+    runtime_contract_observed_at   = NULL,
+    reported_protocols             = NULL,
+    reported_client_version        = NULL,
+    reported_image_digest          = NULL,
+    reported_bundle_lock_digest    = NULL,
     required_capabilities          = EXCLUDED.required_capabilities,
     client_version                 = EXCLUDED.client_version,
     source_nebula_addr             = EXCLUDED.source_nebula_addr,
@@ -75,7 +87,14 @@ SET federation_cert_fingerprint = $2,
 WHERE id = $1;
 
 -- name: ListNodes :many
-SELECT id, display_name, status, trust_state, selected_protocol, last_seen_at
+-- P2-M7.3 D-M7.3-13: the census reads from here, so the columns it classifies
+-- have to be selected. Existing columns keep their positions — the operator
+-- quickstart reads `novactl node list` output positionally.
+SELECT id, display_name, status, trust_state, selected_protocol, last_seen_at,
+       client_version,
+       reported_client_version, reported_image_digest, reported_bundle_lock_digest,
+       effective_capabilities, reported_protocols, runtime_contract_observed_at,
+       expected_image_digest, expected_bundle_lock_digest, expected_at, expected_by
 FROM nodes
 ORDER BY joined_at DESC;
 
@@ -216,8 +235,8 @@ SELECT n.id AS node_id, n.reputation_score, n.last_free_bytes
 FROM nodes n
 WHERE n.status IN ('active','suspect')
   AND n.trust_state <> 'suspended'
-  AND n.advertised_capabilities @> ARRAY['read-source/v1']
-  AND n.advertised_capabilities @> ARRAY['blob-transfer/v1']
+  AND n.effective_capabilities @> ARRAY['read-source/v1']
+  AND n.effective_capabilities @> ARRAY['blob-transfer/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
 ORDER BY (n.last_free_bytes IS NULL OR n.last_free_bytes >= sqlc.arg(min_free_bytes)) DESC,
          n.reputation_score DESC, n.id
@@ -313,7 +332,7 @@ SELECT EXISTS (
   WHERE n.id = $1 AND pa.cid = $2 AND pa.state = 'acked'
     AND n.status IN ('active','suspect')
     AND n.assignment_sync_state = 'current'
-    AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
+    AND n.effective_capabilities @> ARRAY['repair-stream/v1']
     AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
 ) AS ok;
 
@@ -327,7 +346,7 @@ JOIN pin_assignments pa ON pa.node_id = n.id
 WHERE n.id = $1 AND pa.cid = $2 AND pa.state = 'acked'
   AND n.status IN ('active','suspect')
   AND n.assignment_sync_state = 'current'
-  AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
+  AND n.effective_capabilities @> ARRAY['repair-stream/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> '';
 
 -- name: RequeuePinAssignmentSource :exec
@@ -362,7 +381,7 @@ WHERE id = $1;
 -- "assignments never target a donor that cannot fetch" is only true if this
 -- one checks too. Returns false for an unknown node.
 SELECT COALESCE(
-  (SELECT n.advertised_capabilities @> ARRAY[sqlc.arg(capability)::text] FROM nodes n WHERE n.id = $1),
+  (SELECT n.effective_capabilities @> ARRAY[sqlc.arg(capability)::text] FROM nodes n WHERE n.id = $1),
   false
 )::boolean;
 
@@ -417,3 +436,64 @@ SET expected_image_digest       = sqlc.arg(expected_image_digest),
     expected_at                 = now(),
     expected_by                 = sqlc.arg(expected_by)
 WHERE id = $1;
+
+-- ===========================================================================
+-- P2-M7.3 D-M7.3-7c: the runtime-contract state machine. effective_capabilities
+-- moves through exactly these transitions and no others.
+-- ===========================================================================
+
+-- name: ApplyRuntimeContract :exec
+-- Heartbeat carrying a SUPPORTED contract version: store the identity claims,
+-- adopt the reported capability set, and stamp the observation marker.
+--
+-- This is what makes an upgraded donor's new capability usable without
+-- re-registration — and, symmetrically, what makes a rolled-back donor stop
+-- being scheduled for a role it no longer implements.
+UPDATE nodes
+SET reported_client_version      = NULLIF(sqlc.arg(client_version)::text, ''),
+    reported_image_digest        = NULLIF(sqlc.arg(image_digest)::text, ''),
+    reported_bundle_lock_digest  = NULLIF(sqlc.arg(bundle_lock_digest)::text, ''),
+    effective_capabilities       = sqlc.arg(capabilities)::text[],
+    reported_protocols           = sqlc.arg(protocols)::text[],
+    runtime_contract_observed_at = now()
+WHERE id = $1;
+
+-- name: MarkRuntimeContractUnparseable :exec
+-- Heartbeat carrying an UNKNOWN FUTURE contract version. The heartbeat stays
+-- compatible, but nothing inside is interpreted: inferring capabilities from a
+-- schema this coordinator cannot parse is the failure that loses DATA rather
+-- than work.
+--
+-- So the identity claims are cleared (they cannot be trusted) and
+-- effective_capabilities is LEFT ALONE — existing work continues, and no new
+-- optional-role work is granted. The marker is stamped because a contract was
+-- observed; a later contract-less heartbeat is then correctly a downgrade.
+UPDATE nodes
+SET reported_client_version      = NULL,
+    reported_image_digest        = NULL,
+    reported_bundle_lock_digest  = NULL,
+    runtime_contract_observed_at = now()
+WHERE id = $1;
+
+-- name: ClearRuntimeContractOnDowngrade :exec
+-- Heartbeat with NO contract from a node that has sent one before: a downgrade.
+--
+-- The identity claims are cleared, and effective_capabilities is narrowed to the
+-- retained set the caller computes (the core profile). Optional-role eligibility
+-- is dropped because the donor may no longer implement those roles, while
+-- REPLICAS ARE RETAINED — holding data and accepting new work are different
+-- things, and durability must not depend on the second.
+--
+-- The marker is deliberately NOT cleared: this node has observed a contract, and
+-- clearing it would make the next silence read as "legacy" all over again.
+UPDATE nodes
+SET reported_client_version     = NULL,
+    reported_image_digest       = NULL,
+    reported_bundle_lock_digest = NULL,
+    effective_capabilities      = sqlc.arg(retained)::text[]
+WHERE id = $1;
+
+-- name: GetRuntimeContractState :one
+-- The two facts the state machine branches on.
+SELECT runtime_contract_observed_at, effective_capabilities
+FROM nodes WHERE id = $1;

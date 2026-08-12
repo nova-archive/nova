@@ -76,8 +76,8 @@ func seedNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id, status,
 	_, err := pool.Exec(ctx, `
 		INSERT INTO nodes (id, nebula_cert_fingerprint, federation_cert_fingerprint, capacity_bytes,
 		                   bandwidth_budget_bytes_per_day, policy_filters, status,
-		                   advertised_capabilities, assignment_sync_state, source_nebula_addr, trust_state)
-		VALUES ($1::uuid, $2, $3, 1073741824, 1073741824, '{}', $4, $5::text[], $6, $7, 'trusted')`,
+		                   advertised_capabilities, effective_capabilities, assignment_sync_state, source_nebula_addr, trust_state)
+		VALUES ($1::uuid, $2, $3, 1073741824, 1073741824, '{}', $4, $5::text[], $5::text[], $6, $7, 'trusted')`,
 		id, id+"-nfp", id+"-ffp", status, caps, syncState, addr)
 	require.NoError(t, err)
 }

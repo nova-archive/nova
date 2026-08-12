@@ -28,7 +28,7 @@ WITH holders AS (
             AND n.below_floor_since <= now() - make_interval(secs => sqlc.arg(below_floor_grace_secs)::float)
            ) AS below_floor_sustained,   -- P2-M7.1 D-M7.1-3
            (n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
-            AND n.advertised_capabilities @> ARRAY['read-source/v1']) AS read_srcable
+            AND n.effective_capabilities @> ARRAY['read-source/v1']) AS read_srcable
     FROM pin_assignments pa
     JOIN nodes n ON n.id = pa.node_id
     WHERE pa.cid = $1
@@ -144,7 +144,7 @@ JOIN pin_assignments pa ON pa.node_id = n.id
 WHERE pa.cid = $1 AND pa.state = 'acked'
   AND n.status IN ('active','suspect')
   AND n.assignment_sync_state = 'current'
-  AND n.advertised_capabilities @> ARRAY['repair-stream/v1']
+  AND n.effective_capabilities @> ARRAY['repair-stream/v1']
   AND n.source_nebula_addr IS NOT NULL AND n.source_nebula_addr <> ''
   AND (n.last_egress_remaining_bytes IS NULL OR n.last_egress_remaining_bytes >= sqlc.arg(size))
 ORDER BY (n.below_floor_since IS NOT NULL),   -- P2-M7.1 D-M7.1-3: below-floor stays eligible but is the TRUE last resort (healthy > draining > below-floor; bare marker — in-grace is deprioritized too, intended)
@@ -170,7 +170,7 @@ WHERE n.status = 'active'
   AND (n.below_floor_since IS NULL
        OR n.below_floor_since > now() - make_interval(secs => sqlc.arg(below_floor_grace_secs)::float))
                                      -- P2-M7.1 D-M7.1-3: sustained-below-floor is never a new-placement destination
-  AND n.advertised_capabilities @> ARRAY['blob-transfer/v1']
+  AND n.effective_capabilities @> ARRAY['blob-transfer/v1']
                                      -- P2-M7.3 D-M7.3-22: a repair destination
                                      -- must be able to FETCH what it is sent.
                                      -- Route-gating only works if every

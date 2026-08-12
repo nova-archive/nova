@@ -92,10 +92,10 @@ func seedCapNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool, cid stri
 	_, err := pool.Exec(ctx, `
 		INSERT INTO nodes (id, nebula_cert_fingerprint, federation_cert_fingerprint, capacity_bytes,
 		                   bandwidth_budget_bytes_per_day, policy_filters, status, assignment_sync_state,
-		                   trust_state, advertised_capabilities, source_nebula_addr, last_seen_at,
+		                   trust_state, advertised_capabilities, effective_capabilities, source_nebula_addr, last_seen_at,
 		                   last_stored_bytes)
 		VALUES ($1::uuid, $2, $3, 1073741824, 1073741824, '{}', 'active', 'current',
-		        'trusted', $4::text[], $5, now(), 1000000)`,
+		        'trusted', $4::text[], $4::text[], $5, now(), 1000000)`,
 		id.String(), id.String()+"-nfp", id.String()+"-ffp", capArr, "10.42.0.9:9443")
 	if err != nil {
 		t.Fatal(err)

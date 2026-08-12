@@ -22,6 +22,17 @@ type Querier interface {
 	// Donor-fetched: set local_role='cache', cache_segment='probationary', record bytes.
 	AdmitToCache(ctx context.Context, arg AdmitToCacheParams) error
 	AdvanceUploadOffset(ctx context.Context, arg AdvanceUploadOffsetParams) (int64, error)
+	// ===========================================================================
+	// P2-M7.3 D-M7.3-7c: the runtime-contract state machine. effective_capabilities
+	// moves through exactly these transitions and no others.
+	// ===========================================================================
+	// Heartbeat carrying a SUPPORTED contract version: store the identity claims,
+	// adopt the reported capability set, and stamp the observation marker.
+	//
+	// This is what makes an upgraded donor's new capability usable without
+	// re-registration — and, symmetrically, what makes a rolled-back donor stop
+	// being scheduled for a role it no longer implements.
+	ApplyRuntimeContract(ctx context.Context, arg ApplyRuntimeContractParams) error
 	// Atomically mark the source version 'rotating' iff it is currently 'active'
 	// and no other version is already rotating. 0 rows => caller maps to 409/400.
 	BeginVersionRotation(ctx context.Context, versionLabel string) (int64, error)
@@ -41,6 +52,17 @@ type Querier interface {
 	ClearBelowFloorNodes(ctx context.Context, exitThreshold float64) (int64, error)
 	ClearModerationLegalHold(ctx context.Context, cid string) error
 	ClearNodeDraining(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Heartbeat with NO contract from a node that has sent one before: a downgrade.
+	//
+	// The identity claims are cleared, and effective_capabilities is narrowed to the
+	// retained set the caller computes (the core profile). Optional-role eligibility
+	// is dropped because the donor may no longer implement those roles, while
+	// REPLICAS ARE RETAINED — holding data and accepting new work are different
+	// things, and durability must not depend on the second.
+	//
+	// The marker is deliberately NOT cleared: this node has observed a contract, and
+	// clearing it would make the next silence read as "legacy" all over again.
+	ClearRuntimeContractOnDowngrade(ctx context.Context, arg ClearRuntimeContractOnDowngradeParams) error
 	ClearScheduledTombstone(ctx context.Context, cid string) error
 	// Operator clear-review: restart the epoch, drop the marker (D-M6-8).
 	ClearTrustReview(ctx context.Context, id pgtype.UUID) error
@@ -263,6 +285,8 @@ type Querier interface {
 	// whether a CID still needs healing and how (D-M5-6).
 	GetReplicationState(ctx context.Context, cid string) (GetReplicationStateRow, error)
 	GetRotatingVersion(ctx context.Context) (MasterKeyVersion, error)
+	// The two facts the state machine branches on.
+	GetRuntimeContractState(ctx context.Context, id pgtype.UUID) (GetRuntimeContractStateRow, error)
 	GetSigningKeyByKID(ctx context.Context, kid string) (GetSigningKeyByKIDRow, error)
 	// Full row fetch for internal state inspection.
 	GetStorageState(ctx context.Context, cid string) (BlobStorageState, error)
@@ -344,6 +368,9 @@ type Querier interface {
 	// with decided_by=NULL; coalesce so the listing never crashes after an
 	// auto-tombstone. '' renders as a null actor in the handler.
 	ListModerationDecisions(ctx context.Context, arg ListModerationDecisionsParams) ([]ListModerationDecisionsRow, error)
+	// P2-M7.3 D-M7.3-13: the census reads from here, so the columns it classifies
+	// have to be selected. Existing columns keep their positions — the operator
+	// quickstart reads `novactl node list` output positionally.
 	ListNodes(ctx context.Context) ([]ListNodesRow, error)
 	// The lifecycle sweep's claim (M11): soft-deletes older than the grace cutoff,
 	// excluding legal-held trees. Mirrors ListOverdueTombstones' legal-hold filter
@@ -430,6 +457,16 @@ type Querier interface {
 	// node holds dirty, so the scheduler recomputes it from authority before reserving.
 	MarkReplicationDirtyForNode(ctx context.Context, nodeID pgtype.UUID) error
 	MarkRevokedSignaled(ctx context.Context, id pgtype.UUID) error
+	// Heartbeat carrying an UNKNOWN FUTURE contract version. The heartbeat stays
+	// compatible, but nothing inside is interpreted: inferring capabilities from a
+	// schema this coordinator cannot parse is the failure that loses DATA rather
+	// than work.
+	//
+	// So the identity claims are cleared (they cannot be trusted) and
+	// effective_capabilities is LEFT ALONE — existing work continues, and no new
+	// optional-role work is granted. The marker is stamped because a contract was
+	// observed; a later contract-less heartbeat is then correctly a downgrade.
+	MarkRuntimeContractUnparseable(ctx context.Context, id pgtype.UUID) error
 	// Owner soft-delete (M11): active → soft_deleted, stamping soft_deleted_at for
 	// the lifecycle sweep. 0 rows ⇒ the blob was absent or not active (the caller
 	// distinguishes 404 vs 409 via GetBlobMeta).

@@ -101,10 +101,69 @@ type RegisterResponse struct {
 
 // The remaining fed/v1 message shapes the M2–M4 handlers consume. Snapshot
 // recovery (snapshot/epoch) gets its own types when M3 implements it.
+// RuntimeContractVersion is the version this coordinator and donor speak. A
+// heartbeat carrying a HIGHER version is accepted — the heartbeat stays
+// compatible — but its contents are not interpreted, because inferring
+// capabilities from a schema this coordinator cannot parse is exactly the
+// mistake that would lose data rather than lose work.
+const RuntimeContractVersion = 1
+
+// RuntimeContract is what a donor REPORTS about itself on every heartbeat
+// (P2-M7.3, D-M7.3-7a).
+//
+// # Why one nested object rather than independently optional fields
+//
+// Version and digest presence-clear directly: absent means "no longer claimed".
+// Capabilities and protocols cannot, because a LEGACY donor that never sent
+// them and a ROLLED-BACK donor that stopped sending them produce the IDENTICAL
+// wire message. Independently optional fields would also let a partial update
+// compose a state no donor is actually in — a new version alongside the
+// previous release's capability set. So the contract is sent WHOLE or not at
+// all, and the coordinator persists an observation marker to tell the two
+// silences apart.
+//
+// # What these claims can and cannot do
+//
+// A process cannot discover its own OCI manifest digest without runtime
+// cooperation, and Nova gives neither coordinator nor doctor a Docker socket,
+// so ImageDigest and BundleLockDigest are CONFIGURED declarations — a donor may
+// report anything. They are census-only: they never gate protocol access,
+// placement, durability counting, trust graduation, drain or eviction.
+//
+// Capabilities DO gate routing, and always have. That is a routing decision
+// rather than a security authorization: a lying donor can only deny itself work
+// or accept work it will fail, and both already have failure paths.
+type RuntimeContract struct {
+	// Version is this object's schema version, not the donor's release.
+	Version int `json:"version"`
+
+	// ClientVersion, ImageDigest and BundleLockDigest are IDENTITY CLAIMS.
+	ClientVersion    string `json:"client_version,omitempty"`
+	ImageDigest      string `json:"image_digest,omitempty"`
+	BundleLockDigest string `json:"bundle_lock_digest,omitempty"`
+
+	// Capabilities is the donor's CURRENT capability set — not the set it
+	// registered with. Sending it every heartbeat is what makes an upgraded
+	// donor's new capability usable without re-registration, and a rolled-back
+	// donor's lost capability stop being scheduled.
+	Capabilities []string `json:"capabilities"`
+
+	// Protocols is what the donor supports NOW. It is stored separately from
+	// selected_protocol, which is the coordinator's negotiated session outcome
+	// and never a donor claim; changing it requires re-registration or an
+	// explicit renegotiation handshake.
+	Protocols []string `json:"supported_protocols"`
+}
+
 type HeartbeatRequest struct {
 	FreeBytes        int64  `json:"free_bytes"`
 	StoredBytes      int64  `json:"stored_bytes"`
 	SourceNebulaAddr string `json:"source_nebula_addr,omitempty"` // M4.1: donor's read-source server address
+
+	// RuntimeContract is absent from a pre-M7.3 donor's heartbeat, and absent
+	// again after a rollback. Those two silences mean opposite things; the
+	// coordinator's persisted observation marker is what separates them.
+	RuntimeContract *RuntimeContract `json:"runtime_contract,omitempty"`
 	// M5 egress telemetry (D-M5-6-TEL): a best-effort scheduling HINT only. The
 	// donor's token bucket stays authoritative — an over-optimistic hint still
 	// yields a budget_exceeded refusal. omitempty so a non-reporting donor sends
@@ -120,6 +179,12 @@ type ConfigUpdates struct {
 	HeartbeatIntervalSeconds int `json:"heartbeat_interval_seconds,omitempty"`
 	PinsPollIntervalSeconds  int `json:"pins_poll_interval_seconds,omitempty"`
 	MaxPinConcurrency        int `json:"max_pin_concurrency,omitempty"`
+
+	// DeprecationMessage is how the coordinator warns an outdated or
+	// nonconforming donor (FEDERATION_PROTOCOL.md specified this field long
+	// before anything carried it). The donor AGENT must log it: adding the
+	// field alone warns nobody.
+	DeprecationMessage string `json:"deprecation_message,omitempty"`
 }
 
 type HeartbeatResponse struct {

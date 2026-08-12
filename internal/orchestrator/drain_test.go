@@ -142,7 +142,7 @@ func TestDrainDeprioritizedNotExcludedFromSelection(t *testing.T) {
 	seedBlob(t, ctx, pool, "repair-cid", "normal", true)
 	assignPinState(t, ctx, pool, "repair-cid", drainNodeA, "acked")
 	_, err = pool.Exec(ctx, `
-		UPDATE nodes SET advertised_capabilities = '{read-source/v1,repair-stream/v1,blob-transfer/v1}'
+		UPDATE nodes SET advertised_capabilities = '{read-source/v1,repair-stream/v1,blob-transfer/v1}', effective_capabilities = '{read-source/v1,repair-stream/v1,blob-transfer/v1}'
 		WHERE id = $1::uuid`, drainNodeA)
 	require.NoError(t, err)
 	src, err := q.ListRepairSourceHolders(ctx, gen.ListRepairSourceHoldersParams{

@@ -27,13 +27,13 @@ func seedNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id uuid.UUI
 			id, nebula_cert_fingerprint, federation_cert_fingerprint,
 			display_name, capacity_bytes, bandwidth_budget_bytes_per_day,
 			policy_filters, status, trust_state, selected_protocol,
-			advertised_capabilities, required_capabilities, reputation_score,
+			advertised_capabilities, effective_capabilities, required_capabilities, reputation_score,
 			source_nebula_addr, last_free_bytes
 		) VALUES (
 			$1, 'neb-'||$2, 'fed-'||$2,
 			'node-'||$2, 1000000000, 1000000000,
 			'{}', $3, $4, 'blob-transfer/v1',
-			$5, ARRAY[]::text[], $6,
+			$5, $5, ARRAY[]::text[], $6,
 			$7, $8
 		)
 	`, pgtype.UUID{Bytes: id, Valid: true}, idStr, status, trustState, caps, reputation, sourceAddr, freeBytesArg)

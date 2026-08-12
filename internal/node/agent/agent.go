@@ -9,8 +9,10 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"log/slog"
+	"os"
 	"time"
 
+	"github.com/nova-archive/nova/internal/buildinfo"
 	"github.com/nova-archive/nova/internal/federation/wire"
 	nodeconfig "github.com/nova-archive/nova/internal/node/config"
 	"github.com/nova-archive/nova/internal/node/state"
@@ -74,6 +76,11 @@ type Agent struct {
 	// sources caches the most-recent *wire.ChangeSource per CID, set by syncOnce.
 	sources map[string]*wire.ChangeSource
 
+	// lastDeprecation dedupes the coordinator's deprecation_message. It arrives
+	// on EVERY heartbeat, and a warning repeated every five minutes stops being
+	// read (P2-M7.3, D-M7.3-21c).
+	lastDeprecation string
+
 	// pubkeySink, when set, receives the coordinator repair pubkey from each
 	// heartbeat (M4.1 read-source). nil when the donor is not a read source.
 	pubkeySink PubKeySink
@@ -130,7 +137,11 @@ func WithPubKeySink(a *Agent, sink PubKeySink) *Agent {
 	return a
 }
 
-func (a *Agent) registerReq() wire.RegisterRequest {
+// capabilities is what this donor can do RIGHT NOW. Registration and every
+// heartbeat report the same set, computed the same way, so an upgraded donor's
+// new capability appears without re-registering and a rolled-back donor's lost
+// capability stops being scheduled (P2-M7.3, D-M7.3-7b).
+func (a *Agent) capabilities() []string {
 	caps := []string{wire.CapPinChangeLog, wire.CapSnapshot, wire.CapBlobTransfer}
 	if a.cfg.SourceNebulaAddr != "" {
 		// A donor that runs a source server can serve BOTH coordinator reads and
@@ -139,11 +150,33 @@ func (a *Agent) registerReq() wire.RegisterRequest {
 		// as a repair SOURCE; a non-advertiser stays read-sourceable only.
 		caps = append(caps, wire.CapReadSource, wire.CapRepairStream, wire.CapAuditBlockHash)
 	}
+	return caps
+}
+
+func (a *Agent) registerReq() wire.RegisterRequest {
 	return wire.RegisterRequest{
 		SupportedProtocols:         []string{wire.ProtocolV1},
-		Capabilities:               caps,
+		Capabilities:               a.capabilities(),
+		ClientVersion:              buildinfo.Version(),
 		BandwidthBudgetBytesPerDay: a.cfg.BandwidthBudgetBytesPerDay,
 		SourceNebulaAddr:           a.cfg.SourceNebulaAddr,
+	}
+}
+
+// runtimeContract is sent WHOLE on every heartbeat (D-M7.3-7a).
+//
+// The two digests are CONFIGURED declarations supplied by the generated donor
+// Compose: a process cannot discover its own OCI manifest digest without a
+// Docker socket, which this container does not have. They are census-only, and
+// the operator compares them against what they authorized.
+func (a *Agent) runtimeContract() *wire.RuntimeContract {
+	return &wire.RuntimeContract{
+		Version:          wire.RuntimeContractVersion,
+		ClientVersion:    buildinfo.Version(),
+		ImageDigest:      os.Getenv("NOVA_NODE_IMAGE_DIGEST"),
+		BundleLockDigest: os.Getenv("NOVA_NODE_BUNDLE_LOCK_DIGEST"),
+		Capabilities:     a.capabilities(),
+		Protocols:        []string{wire.ProtocolV1},
 	}
 }
 
@@ -152,6 +185,7 @@ func (a *Agent) heartbeatReq(freeBytes, storedBytes int64) wire.HeartbeatRequest
 		FreeBytes:        freeBytes,
 		StoredBytes:      storedBytes,
 		SourceNebulaAddr: a.cfg.SourceNebulaAddr,
+		RuntimeContract:  a.runtimeContract(),
 	}
 	if a.budget != nil {
 		req.EgressBudgetRemainingBytes = a.budget.Remaining(time.Now())
@@ -224,6 +258,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		slog.Warn("nova-node first heartbeat failed", "err", err)
 	} else {
 		a.captureRepairPubKey(resp.RepairTokenPublicKey)
+		if resp.ConfigUpdates != nil {
+			a.logDeprecation(resp.ConfigUpdates.DeprecationMessage)
+		}
 	}
 
 	hb := time.NewTicker(a.hbInterval)
@@ -242,6 +279,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			a.captureRepairPubKey(resp.RepairTokenPublicKey)
 			if u := resp.ConfigUpdates; u != nil {
+				a.logDeprecation(u.DeprecationMessage)
 				if u.HeartbeatIntervalSeconds > 0 {
 					if d := time.Duration(u.HeartbeatIntervalSeconds) * time.Second; d != a.hbInterval {
 						a.hbInterval = d
@@ -567,4 +605,17 @@ func (a *Agent) ReconcilePendingAcks(ctx context.Context) {
 		}
 		a.deliverAck(ctx, da)
 	}
+}
+
+// logDeprecation surfaces the coordinator's warning to the volunteer
+// (FEDERATION_PROTOCOL.md's config_updates.deprecation_message).
+//
+// It is deduplicated because the message arrives on EVERY heartbeat and a line
+// repeated every five minutes stops being read. A changed message logs again.
+func (a *Agent) logDeprecation(msg string) {
+	if msg == "" || msg == a.lastDeprecation {
+		return
+	}
+	a.lastDeprecation = msg
+	slog.Warn("nova-node: your operator reports this donor needs attention", "message", msg)
 }

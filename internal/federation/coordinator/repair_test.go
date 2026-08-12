@@ -39,7 +39,7 @@ func makeRepairSource(t *testing.T, ctx context.Context, pool *pgxpool.Pool, src
 	}
 	_, err := pool.Exec(ctx, `
 		UPDATE nodes SET status='active', assignment_sync_state='current',
-			advertised_capabilities=$2::text[], source_nebula_addr='10.0.0.5:9443'
+			advertised_capabilities = $2::text[], effective_capabilities = $2::text[], source_nebula_addr='10.0.0.5:9443'
 		WHERE id=$1`, pgUUIDFrom(src), caps)
 	require.NoError(t, err)
 	_, err = pool.Exec(ctx, `INSERT INTO pin_assignments (cid, node_id, state) VALUES ($1,$2,'acked')`, cid, pgUUIDFrom(src))

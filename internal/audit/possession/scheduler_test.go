@@ -45,12 +45,12 @@ func seedAuditableNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool, re
 			id, nebula_cert_fingerprint, federation_cert_fingerprint,
 			capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters,
 			status, reputation_score, trust_state,
-			assignment_sync_state, advertised_capabilities, source_nebula_addr
+			assignment_sync_state, advertised_capabilities, effective_capabilities, source_nebula_addr
 		) VALUES (
 			$1::uuid, $2, $2,
 			10000000, 10000000, '{}',
 			'active', $3, $4,
-			'current', '{audit-block-hash/v1}', '10.0.0.9:9200'
+			'current', '{audit-block-hash/v1}', '{audit-block-hash/v1}', '10.0.0.9:9200'
 		)
 	`, id, id, rep, trustState)
 	require.NoError(t, err)

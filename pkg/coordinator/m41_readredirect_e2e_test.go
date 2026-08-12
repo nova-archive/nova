@@ -315,13 +315,13 @@ func seedSourceableNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool, n
 			id, nebula_cert_fingerprint, federation_cert_fingerprint,
 			capacity_bytes, bandwidth_budget_bytes_per_day, policy_filters,
 			status, trust_state, selected_protocol,
-			advertised_capabilities, required_capabilities, reputation_score,
+			advertised_capabilities, effective_capabilities, required_capabilities, reputation_score,
 			source_nebula_addr, last_seen_at
 		) VALUES (
 			$1, 'neb-'||$2, 'fed-'||$2,
 			1000000000, 1000000000, '{}',
 			'active', 'trusted', 'blob-transfer/v1',
-			ARRAY['read-source/v1'], ARRAY[]::text[], 0.9,
+			ARRAY['read-source/v1'], ARRAY['read-source/v1'], ARRAY[]::text[], 0.9,
 			$3, now()
 		)
 	`, pgtype.UUID{Bytes: nodeID, Valid: true}, idStr, sourceAddr)

@@ -208,9 +208,25 @@ func cmdNodeList(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%-38s %-16s %-12s %-12s %s\n", "NODE_ID", "DISPLAY", "STATUS", "TRUST", "LAST_SEEN")
+		// VERSION is APPENDED, not inserted: docs/quickstart/federation-operator.md
+		// shows this output and a reader compares columns positionally.
+		//
+		// It prefers the runtime contract's claim and falls back to what the node
+		// wrote at registration. A pre-M7.3 donor has neither, and prints "-" —
+		// unknown, which is not the same as incompatible.
+		fmt.Printf("%-38s %-16s %-12s %-12s %-21s %s\n",
+			"NODE_ID", "DISPLAY", "STATUS", "TRUST", "LAST_SEEN", "VERSION")
 		for _, r := range rows {
-			fmt.Printf("%-38s %-16s %-12s %-12s %v\n", uuidString(r.ID), r.DisplayName.String, r.Status, r.TrustState, r.LastSeenAt.Time)
+			version := r.ReportedClientVersion.String
+			if version == "" {
+				version = r.ClientVersion.String
+			}
+			if version == "" {
+				version = "-"
+			}
+			fmt.Printf("%-38s %-16s %-12s %-12s %-21v %s\n",
+				uuidString(r.ID), r.DisplayName.String, r.Status, r.TrustState,
+				r.LastSeenAt.Time.Format("2006-01-02 15:04:05"), version)
 		}
 		return nil
 	})

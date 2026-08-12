@@ -145,11 +145,11 @@ func seedGatingNode(t *testing.T, ctx context.Context, pool *pgxpool.Pool, caps 
 	_, err := pool.Exec(ctx, `
 		INSERT INTO nodes (id, display_name, federation_cert_fingerprint, nebula_cert_fingerprint,
 		                   selected_protocol, capacity_bytes, bandwidth_budget_bytes_per_day,
-		                   status, trust_state, advertised_capabilities, source_nebula_addr,
-		                   last_seen_at, assignment_sync_state, last_free_bytes)
+		                   status, trust_state, advertised_capabilities, effective_capabilities,
+		                   source_nebula_addr, last_seen_at, assignment_sync_state, last_free_bytes)
 		VALUES ($1::uuid, 'gating', 'fed:'||$1::text, 'neb:'||$1::text,
 		        'fed/v1', 1073741824, 1073741824, 'active', 'trusted',
-		        $2::text[], '10.0.0.9:9443', now(), 'current', 1073741824)`,
+		        $2::text[], $2::text[], '10.0.0.9:9443', now(), 'current', 1073741824)`,
 		pgtype.UUID{Bytes: id, Valid: true}, caps)
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +292,8 @@ func TestAckedReplicasPreservedOnDonorsLackingBlobTransfer(t *testing.T) {
 
 	// The donor rolls back to a build without blob-transfer/v1.
 	if _, err := pool.Exec(ctx,
-		`UPDATE nodes SET advertised_capabilities = ARRAY['read-source/v1'] WHERE id = $1::uuid`,
+		`UPDATE nodes SET advertised_capabilities = ARRAY['read-source/v1'],
+		                 effective_capabilities  = ARRAY['read-source/v1'] WHERE id = $1::uuid`,
 		holder); err != nil {
 		t.Fatal(err)
 	}

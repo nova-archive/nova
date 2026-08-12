@@ -140,4 +140,3 @@ func TestCapabilityNegotiationUnaffected(t *testing.T) {
 
 	_ = gen.Node{} // ensure models compile
 }
-

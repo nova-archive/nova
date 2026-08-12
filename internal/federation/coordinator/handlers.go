@@ -3,9 +3,11 @@ package coordinator
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -171,8 +173,27 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// P2-M7.3: this used to discard EVERY decode error, not only io.EOF, so a
+	// malformed body was silently treated as an empty one and the heartbeat
+	// proceeded with zeroed telemetry. An empty body is still accepted — a
+	// pre-M7.3 donor sends one — but malformed or trailing JSON is not.
 	var req wire.HeartbeatRequest
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req) // tolerant: empty body ok
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
+	if derr := dec.Decode(&req); derr != nil {
+		if !errors.Is(derr, io.EOF) {
+			writeError(w, http.StatusBadRequest, "bad_request", "malformed heartbeat body")
+			return
+		}
+	} else if derr := dec.Decode(new(json.RawMessage)); !errors.Is(derr, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_request", "trailing content after the heartbeat body")
+		return
+	}
+	if req.RuntimeContract != nil {
+		if verr := validateRuntimeContract(req.RuntimeContract); verr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", verr.Error())
+			return
+		}
+	}
 
 	if _, err := s.q.UpdateNodeHeartbeat(ctx, gen.UpdateNodeHeartbeatParams{
 		ID:               pgUUIDFrom(nodeUUID),
@@ -187,12 +208,23 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The runtime-contract transition runs AFTER the liveness update, so a
+	// contract problem never costs a donor its liveness (D-M7.3-7c).
+	if err := s.applyRuntimeContract(ctx, nodeUUID, req.RuntimeContract); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "runtime contract failed")
+		return
+	}
+
 	head, err := s.q.GetChangeLogHead(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal", "change-log head")
 		return
 	}
 	timers := s.cfg.Timers
+	// D-M7.3-21c: nonconformance is advisory, and this is how the VOLUNTEER
+	// hears about it. The operator sees the same facts in the census and is the
+	// only party that can drain — the heartbeat path never touches draining_at.
+	timers.DeprecationMessage = deprecationFor(req.RuntimeContract, time.Now())
 	resp := wire.HeartbeatResponse{ConfigUpdates: &timers, CurrentEpoch: head}
 	if s.signer != nil {
 		resp.RepairTokenPublicKey = s.signer.PublicKeyWire()

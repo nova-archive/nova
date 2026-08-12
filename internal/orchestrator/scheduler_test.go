@@ -32,7 +32,7 @@ func configSource(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id, cid
 	t.Helper()
 	_, err := pool.Exec(ctx, `
 		UPDATE nodes SET status='active', assignment_sync_state='current', trust_state='trusted',
-			advertised_capabilities='{read-source/v1,repair-stream/v1,blob-transfer/v1}'::text[],
+			advertised_capabilities = '{read-source/v1,repair-stream/v1,blob-transfer/v1}'::text[], effective_capabilities = '{read-source/v1,repair-stream/v1,blob-transfer/v1}'::text[],
 			source_nebula_addr='10.0.0.1:9443', last_egress_remaining_bytes=$2,
 			last_free_bytes=1000000000, reputation_score=$3
 		WHERE id=$1::uuid`, id, remaining, reputation)
@@ -115,7 +115,7 @@ func TestSourceSelectionMaxCapacityReputationRepairSourceableOnly(t *testing.T) 
 	configSource(t, ctx, pool, b, "s1", 5000, 1.0) // weight 5000 — should win
 	configSource(t, ctx, pool, c, "s1", 9999, 1.0) // highest remaining...
 	// ...but c advertises read-source ONLY, so it is not repair-sourceable.
-	_, err := pool.Exec(ctx, `UPDATE nodes SET advertised_capabilities='{read-source/v1,blob-transfer/v1}'::text[] WHERE id=$1::uuid`, c)
+	_, err := pool.Exec(ctx, `UPDATE nodes SET advertised_capabilities = '{read-source/v1,blob-transfer/v1}'::text[], effective_capabilities = '{read-source/v1,blob-transfer/v1}'::text[] WHERE id=$1::uuid`, c)
 	require.NoError(t, err)
 
 	row, err := gen.New(pool).ListRepairSourceHolders(ctx, gen.ListRepairSourceHoldersParams{

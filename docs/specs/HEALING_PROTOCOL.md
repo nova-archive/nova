@@ -502,6 +502,31 @@ existing healing machinery rather than adding a daemon:
   `requeue_batch` tune the remedy. See `docs/runbooks/donor-lifecycle.md`
   § below-floor for when to intervene anyway.
 
+## Version nonconformance is advisory (P2-M7.3, D-M7.3-21c)
+
+A donor that falls outside the current release's mandatory capability profile,
+or outside its support window, is **not** a healing input. Nothing in this
+document is triggered by a version string.
+
+- The donor **stays connected and keeps its replicas**. Losing a route-gated
+  capability removes eligibility for new work of that kind and nothing else;
+  holding data and accepting new fetch-requiring assignments are different
+  things, and durability must not depend on the second.
+- Placement queries exclude it from work needing the missing capability. That
+  exclusion lives in the capability predicates, which all read
+  `nodes.effective_capabilities`.
+- The coordinator emits `config_updates.deprecation_message` on the heartbeat
+  and exposes the state in the operator's census.
+- **The operator invokes drain.** `draining_at` is operator-controlled; the
+  heartbeat path never sets it, and no automatic lifecycle transition may.
+  Once drained, the existing bounded reconciliation and drain-debt machinery
+  performs replacement — there is no separate mechanism for this.
+- Replace-then-demote and the sole-holder rule apply unchanged. An unsupported
+  donor's replica is replaced **before** demotion, and a sole holder is never
+  demoted.
+- Fresh-registration requirements change only in a later **named release**,
+  after the support window, never as a side effect of an upgrade.
+
 ## Empirical thresholds
 
 These thresholds, validated by `simulations/orchestrator_resilience.py`
