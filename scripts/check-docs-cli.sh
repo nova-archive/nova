@@ -120,7 +120,7 @@ for f in "${files[@]}"; do
     # Only the first token must look like a subcommand.
     first="${cmd%% *}"
     case "$first" in
-      auth|signed-url|moderation|keys|setup|upload-token|config|node|collection|pin|federation) ;;
+      auth|signed-url|moderation|keys|setup|upload-token|config|node|collection|pin|federation|upgrade) ;;
       *) continue ;;
     esac
 
