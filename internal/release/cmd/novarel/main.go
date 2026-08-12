@@ -12,6 +12,12 @@
 //	novarel digest <file>         the sha256 an intent or lock is referenced by
 //	novarel show <intent>         the intent as the release workflow reads it
 //	novarel catalog [--check]     generate (or verify) the compiled-in catalog
+//	novarel plan                  the gates the release workflow must execute
+//	novarel evidence              one gate's conclusion, as a signed-able statement
+//	novarel lock                  assemble and validate a lock
+//	novarel bundle                assemble the release bundle
+//	novarel summary               the Markdown a reviewer reads at the approval gate
+//	novarel completion            whether the post-publication gates have run
 package main
 
 import (
@@ -82,6 +88,12 @@ func run(args []string) error {
 		return buildLockCmd(args[1:])
 	case "bundle":
 		return assembleCmd(args[1:])
+	case "plan":
+		return planCmd(args[1:])
+	case "summary":
+		return summaryCmd(args[1:])
+	case "completion":
+		return completionCmd(args[1:])
 	case "predecessor":
 		index := 0
 		if len(args) > 1 {
@@ -92,6 +104,8 @@ func run(args []string) error {
 			index = n
 		}
 		return printPredecessor(defaultIntentDir, index)
+	case "predecessors":
+		return printAllPredecessors(defaultIntentDir)
 	default:
 		usage()
 		return fmt.Errorf("unknown subcommand %q", args[0])
@@ -209,26 +223,39 @@ func generateMatrix(intentDir, doc string, checkOnly bool) error {
 // The digest it prints is what the lock references.
 func emitEvidence(args []string) error {
 	fs := flag.NewFlagSet("evidence", flag.ContinueOnError)
+	planPath := fs.String("plan", "", "the plan this gate was scheduled by; supplies the "+
+		"release, the intent digest, the claims, the scenarios, the capabilities and the "+
+		"required runner class, so the workflow cannot mistype any of them")
 	gate := fs.String("gate", "", "the gate that produced this conclusion")
 	outcome := fs.String("outcome", "passed", "passed or skipped; a FAILED gate emits nothing")
-	runner := fs.String("runner", "", "the tier it actually ran in")
-	rel := fs.String("release", "", "the release this is about")
+	runner := fs.String("runner", "", "the tier it actually ran in (default: the plan's)")
 	commit := fs.String("commit", "", "the candidate source commit")
 	testRev := fs.String("test-revision", "", "the commit of the test code that ran")
 	descDir := fs.String("artifacts", "descriptors", "directory of <name>.json OCI descriptors")
-	claims := fs.String("claims", "", "comma-separated claim ids this supports")
-	scenarios := fs.String("scenarios", "", "comma-separated scenario ids exercised")
 	detail := fs.String("detail", "", "context; REQUIRED for a skip")
 	started := fs.String("started", "", "RFC3339 start time (default: now)")
 	out := fs.String("out", "", "where to write the statement")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *gate == "" || *rel == "" || *commit == "" || *out == "" {
-		return fmt.Errorf("usage: novarel evidence --gate G --release V --commit SHA --out PATH [...]")
+	if *planPath == "" || *gate == "" || *commit == "" || *out == "" {
+		return fmt.Errorf("usage: novarel evidence --plan plan.json --gate G --commit SHA " +
+			"--out PATH [--outcome skipped --detail why]")
 	}
 	if *testRev == "" {
 		*testRev = *commit
+	}
+
+	plan, err := loadPlan(*planPath)
+	if err != nil {
+		return err
+	}
+	g, err := plannedGate(plan, *gate)
+	if err != nil {
+		return err
+	}
+	if *runner == "" {
+		*runner = g.Runner
 	}
 
 	digests, err := readDescriptorDigests(*descDir)
@@ -242,11 +269,22 @@ func emitEvidence(args []string) error {
 		}
 	}
 
+	// A SKIP carries no claims. The statement format allows a skip, and a claim
+	// bound to one is refused downstream — but emitting the claim ids anyway
+	// would put "this gate supports claim X" in a document that demonstrates
+	// nothing about X, and somebody reading the bundle would have to know the
+	// downstream rule to see the difference.
+	claims, scenarios, caps := g.Claims, g.Scenarios, g.Capabilities
+	if *outcome != "passed" {
+		claims, scenarios, caps = nil, nil, nil
+	}
+
 	st := release.EvidenceStatement{
 		Schema: release.EvidenceSchema, Gate: *gate,
 		RunnerClass: release.RunnerClass(*runner), Outcome: *outcome,
-		Release: *rel, SourceCommit: *commit, ArtifactDigests: digests,
-		Claims: splitList(*claims), Scenarios: splitList(*scenarios),
+		Release: plan.Version, SourceCommit: *commit, IntentDigest: plan.IntentDigest,
+		ArtifactDigests: digests,
+		Claims:          claims, Scenarios: scenarios, Capabilities: caps,
 		TestRevision: *testRev,
 		StartedAt:    start.UTC(), FinishedAt: time.Now().UTC(),
 		Detail: *detail,
@@ -270,6 +308,7 @@ func emitEvidence(args []string) error {
 // for a release nobody built.
 func buildLockCmd(args []string) error {
 	fs := flag.NewFlagSet("lock", flag.ContinueOnError)
+	sel := addIntentFlags(fs)
 	commit := fs.String("commit", "", "the candidate source commit")
 	descDir := fs.String("artifacts", "descriptors", "directory of <name>.json OCI descriptors")
 	evDir := fs.String("evidence", "evidence", "directory of evidence statements")
@@ -283,18 +322,11 @@ func buildLockCmd(args []string) error {
 		return fmt.Errorf("usage: novarel lock --commit SHA --bundle DIR [--out lock.json]")
 	}
 
-	path, err := release.CurrentIntentPath(defaultIntentDir)
+	ri, err := sel.resolve()
 	if err != nil {
 		return err
 	}
-	intentBytes, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	in, err := release.ParseIntent(intentBytes)
-	if err != nil {
-		return err
-	}
+	intentBytes, in := ri.bytes, ri.intent
 
 	artifacts, err := readDescriptors(*descDir)
 	if err != nil {
@@ -348,6 +380,7 @@ func buildLockCmd(args []string) error {
 // carries the payload map, so it does not exist until this returns.
 func assembleCmd(args []string) error {
 	fs := flag.NewFlagSet("bundle", flag.ContinueOnError)
+	sel := addIntentFlags(fs)
 	out := fs.String("out", "", "the bundle directory to write")
 	evDir := fs.String("evidence", "evidence", "directory of evidence statements")
 	composeEnv := fs.String("release-env", "docker/release.env.example", "the release env")
@@ -359,7 +392,7 @@ func assembleCmd(args []string) error {
 		return fmt.Errorf("usage: novarel bundle --out DIR")
 	}
 
-	path, err := release.CurrentIntentPath(defaultIntentDir)
+	ri, err := sel.resolve()
 	if err != nil {
 		return err
 	}
@@ -371,7 +404,7 @@ func assembleCmd(args []string) error {
 		return b
 	}
 	inputs := release.BundleInputs{
-		IntentBytes: read(path),
+		IntentBytes: ri.bytes,
 		Policy:      read("releases/verification-policy.txt"),
 		ComposeEnv:  read(*composeEnv),
 		Upgrading:   read(*upgrading),

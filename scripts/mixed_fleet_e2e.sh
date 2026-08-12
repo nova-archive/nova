@@ -144,11 +144,16 @@ mkdir -p "$WORK/bin" "$WORK/journal" "$WORK/etc-nova" "$WORK/kubo-repo"
 # Build both sides
 # ---------------------------------------------------------------------------
 
-log "building the candidate"
-go build -o "$WORK/bin/head-coordinator" ./cmd/coordinator
-go build -o "$WORK/bin/head-node"        ./cmd/node
-go build -o "$WORK/bin/head-novactl"     ./cmd/novactl
-go build -o "$WORK/bin/head-migrate"     ./cmd/migrate
+# With descriptors the candidate is the PUSHED IMAGE, extracted by digest;
+# without them it is a stamped local build. This gate's claim is about the
+# candidate coordinator's policy, so which bytes are running is the claim.
+. "$ROOT/scripts/lib/candidate.sh"
+log "resolving the candidate"
+nova_candidate_bin coordinator "$WORK/bin/head-coordinator" || die "no candidate coordinator"
+nova_candidate_bin node        "$WORK/bin/head-node"        || die "no candidate node"
+nova_candidate_bin novactl     "$WORK/bin/head-novactl"     || die "no candidate novactl"
+nova_candidate_bin migrate     "$WORK/bin/head-migrate"     || die "no candidate migrate"
+log "candidate: $NOVA_CANDIDATE_SOURCE"
 
 log "building the predecessor $PREDECESSOR"
 git worktree add --force --detach "$WORK/old" "$PREDECESSOR" >/dev/null \

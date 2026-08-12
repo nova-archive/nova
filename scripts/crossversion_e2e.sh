@@ -80,7 +80,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The HEAD side is the candidate, and in a release run the candidate is the
+# pushed image rather than a rebuild of the same tree. The PREDECESSOR side is
+# always built from source: it has no published image, which is exactly why the
+# baseline is commit-anchored in the intent.
+. "$ROOT/scripts/lib/candidate.sh"
+
 build_side() { # $1=dir $2=outprefix — coordinator, node, novactl, migrate
+    if [ "$2" = head ] && [ -n "${NOVA_CANDIDATE_DESCRIPTORS:-}" ]; then
+        log "resolving the candidate for $2"
+        nova_candidate_bin coordinator "$WORK/bin/$2-coordinator" &&
+        nova_candidate_bin node        "$WORK/bin/$2-node" &&
+        nova_candidate_bin novactl     "$WORK/bin/$2-novactl" &&
+        nova_candidate_bin migrate     "$WORK/bin/$2-migrate" || return 1
+        log "candidate: $NOVA_CANDIDATE_SOURCE"
+        return 0
+    fi
     log "building $2 binaries from $1"
     (cd "$1" && go build -o "$WORK/bin/$2-coordinator" ./cmd/coordinator \
               && go build -o "$WORK/bin/$2-node"        ./cmd/node \

@@ -42,12 +42,14 @@
 #
 # Supply a bundle to make it run:
 #
-#   NOVA_RELEASE_BUNDLE=./nova-v0.3.0 \
+#   NOVA_RELEASE_BUNDLE=./nova-vX.Y.Z \
 #   NOVA_RELEASE_LOCK_DIGEST=sha256:... \
 #     ./scripts/upgrade_release_e2e.sh
 #
-# Requirements when it does run: docker, docker compose, cosign, and a baseline
-# deployment (commit 143c459, schema 18, locally built) to upgrade FROM.
+# Requirements when it does run: docker, docker compose, cosign, and a
+# deployment at the intent's declared predecessor to upgrade FROM. Nothing here
+# names a version, a commit or a schema: the release under test comes from the
+# bundle, the schema from its lock, and the predecessor from the intent.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -100,6 +102,34 @@ fi
 log "verifying the bundle against $LOCK_DIGEST"
 "$BUNDLE/scripts/nova-release" verify --bundle "$BUNDLE" --lock-digest "$LOCK_DIGEST" \
   || { echo "[release] the bundle did not verify; nothing further may run" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Step 1b — the REGISTRY refs resolve to the digests the lock names
+# ---------------------------------------------------------------------------
+#
+# This is the half `upgrade-candidate-e2e` structurally cannot do. It proved a
+# transition to the candidate DIGESTS; nothing at that point could say what the
+# published `:vX.Y.Z` tags would resolve to, because they did not exist.
+#
+# A promoted tag that resolves elsewhere is not a theoretical worry: `docker
+# buildx imagetools create` rewraps a single-platform manifest in a new index
+# unless told otherwise, and the operator following UPGRADING.md would pull
+# something the lock never described.
+
+log "checking that the published registry refs resolve to the locked descriptors"
+LOCK_DESCRIPTORS="$(mktemp -d)"
+trap 'rm -rf "$LOCK_DESCRIPTORS"' EXIT
+python3 - "$BUNDLE/lock.json" "$LOCK_DESCRIPTORS" <<'PY'
+import json, os, sys
+lock = json.load(open(sys.argv[1]))
+for name, artifact in lock["artifacts"].items():
+    json.dump(artifact, open(os.path.join(sys.argv[2], name + ".json"), "w"), indent=2)
+print("[release] the lock names %d artifact(s)" % len(lock["artifacts"]))
+PY
+RELEASE_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$BUNDLE/lock.json")"
+"$ROOT/scripts/release-publish.sh" verify-published \
+    --version "$RELEASE_VERSION" --descriptors "$LOCK_DESCRIPTORS" \
+  || { echo "[release] a published version tag does not resolve to the locked descriptor" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # Step 2 — install the release env atomically
@@ -192,7 +222,12 @@ print("[release] running digests match the lock")
 PY
 
 echo
-echo "OK: upgrade-release-e2e ($VARIANT)"
-echo "    proves:  baseline-deployment-transition"
-echo "    acceptance scenarios: 15, 16"
+echo "OK: upgrade-release-e2e ($VARIANT) — $RELEASE_VERSION"
+echo "    proves:  NO lock claim, by construction. This ran after the lock was signed,"
+echo "             so nothing it concludes could appear in the document it verified."
+echo "    gates:   completion state 4. The milestone is not done until this passes,"
+echo "             and this passing never re-cuts the release."
+echo "    checked: the published registry refs, the release assets, the lock as"
+echo "             DOWNLOADED, and the operator path in docs/UPGRADING.md"
+echo "    acceptance scenarios: 15, 16 (published half)"
 echo "    reports: $REPORTS"

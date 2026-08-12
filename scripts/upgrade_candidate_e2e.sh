@@ -90,14 +90,19 @@ mkdir -p "$WORK/bin" "$WORK/journal" "$WORK/etc-nova" "$WORK/kubo-repo"
 
 VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 REVISION="$(git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
-BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-BI=github.com/nova-archive/nova/internal/buildinfo
-LDFLAGS="-X $BI.version=$VERSION -X $BI.revision=$REVISION -X $BI.buildDate=$BUILD_DATE"
 
-log "building the candidate ($VERSION)"
-go build -ldflags "$LDFLAGS" -o "$WORK/bin/cand-coordinator" ./cmd/coordinator
-go build -ldflags "$LDFLAGS" -o "$WORK/bin/cand-migrate"     ./cmd/migrate
-go build -ldflags "$LDFLAGS" -o "$WORK/bin/cand-novactl"     ./cmd/novactl
+# Where the candidate comes from is scripts/lib/candidate.sh's decision, not
+# this gate's: with descriptors it is the pushed image, without them a stamped
+# local build. Every gate in the release plan asks the same way, so a gate
+# cannot accidentally test something the others are not.
+. "$ROOT/scripts/lib/candidate.sh"
+nova_candidate_ldflags
+
+log "resolving the candidate"
+nova_candidate_bin coordinator "$WORK/bin/cand-coordinator" || die "no candidate coordinator"
+nova_candidate_bin migrate     "$WORK/bin/cand-migrate"     || die "no candidate migrate"
+nova_candidate_bin novactl     "$WORK/bin/cand-novactl"     || die "no candidate novactl"
+log "candidate: $NOVA_CANDIDATE_SOURCE"
 
 log "building the baseline $PREDECESSOR"
 git worktree add --force --detach "$WORK/old" "$PREDECESSOR" >/dev/null || die "cannot check out $PREDECESSOR"
@@ -134,7 +139,7 @@ x "INSERT INTO nodes (id, nebula_cert_fingerprint, federation_cert_fingerprint,
                       capacity_bytes, bandwidth_budget_bytes_per_day, advertised_capabilities,
                       client_version)
      VALUES ('$NODE_ID'::uuid, 'neb-$NODE_ID', 'fed-$NODE_ID', 1000000, 1000000,
-             ARRAY['pin-change-log/v1','snapshot/v1','blob-transfer/v1']::text[], 'commit:143c459')"
+             ARRAY['pin-change-log/v1','snapshot/v1','blob-transfer/v1']::text[], 'commit:$PREDECESSOR')"
 
 BEFORE_USERS="$(q 'SELECT count(*) FROM users')"
 BEFORE_BLOBS="$(q 'SELECT count(*) FROM blobs')"
@@ -281,9 +286,32 @@ if [ -n "$DESCRIPTORS" ]; then
         d="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["descriptor"]["digest"])' "$DESCRIPTORS/$name.json")"
         case "$d" in sha256:*) check "$name is pinned by digest" 0 ;; *) check "$name is pinned by digest" 1 ;; esac
     done
-    DIGESTS_CHECKED="yes"
+
+    # The binaries that just ran came OUT of the pushed image. Asserted rather
+    # than assumed: an empty descriptor directory or a reordered edit would
+    # otherwise leave every assertion above passing about the wrong artifact,
+    # and passing loudly is worse than failing.
+    if nova_candidate_assert_digests nova-coordinator; then
+        check "the candidate binaries were extracted from the pushed coordinator digest" 0
+    else
+        check "the candidate binaries were extracted from the pushed coordinator digest" 1
+    fi
+
+    # And the extracted binary is stamped with the version being released,
+    # rather than with a `git describe` of whatever the runner checked out.
+    if [ -n "${NOVA_CANDIDATE_VERSION:-}" ]; then
+        got_version="$("$WORK/bin/cand-novactl" version 2>/dev/null | head -n1 || true)"
+        case "$got_version" in
+            *"$NOVA_CANDIDATE_VERSION"*)
+                check "the extracted binary is stamped $NOVA_CANDIDATE_VERSION" 0 ;;
+            *)
+                echo "[cand]   version reported: ${got_version:-nothing}" >&2
+                check "the extracted binary is stamped $NOVA_CANDIDATE_VERSION" 1 ;;
+        esac
+    fi
+    DIGESTS_CHECKED="yes — the candidate under test IS the pushed image"
 else
-    DIGESTS_CHECKED="NO — run with NOVA_CANDIDATE_DESCRIPTORS to pin the candidate by OCI digest"
+    DIGESTS_CHECKED="NO — run with NOVA_CANDIDATE_DESCRIPTORS to test the pushed images themselves"
 fi
 
 echo

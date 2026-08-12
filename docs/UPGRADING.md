@@ -47,6 +47,10 @@ The sections below are in that order.
 
 **What the gates do NOT prove.** Recorded because the absence of an entry is not a statement, and a reader who sees only what a gate proves will assume the rest.
 
+- `backup-restore-e2e`
+  - any DECLARED claim. Restorability is not a statement about artifact compatibility, which is what a claim is; it is a statement about the procedure UPGRADING.md tells an operator to run before anything else
+  - that a restore succeeds on the operator's own data. It restores what the drill backed up, and a backup nobody has ever restored is the thing this exists to stop being normal
+  - anything about a partial or corrupted archive volume: the drill restores a whole snapshot
 - `crossversion-e2e`
   - any DECLARED claim: baseline-donor-interop is assigned to upgrade-wire-e2e, which runs the protocol against a fresh database. This gate overlaps it heavily but is not the same scope, and re-pointing a reviewed claim at a gate that happens to cover it is how coverage stops meaning anything
   - anything about the schema: every pairing gets a FRESH database migrated by the coordinator side's own binary, so no binary is ever run against a schema it did not produce

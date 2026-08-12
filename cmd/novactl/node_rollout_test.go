@@ -38,9 +38,32 @@ func rolloutFixture(t *testing.T) (intentPath, lockPath, lockDigest string) {
 		Digest:    digest.Digest("sha256:" + strings.Repeat("1", 64)),
 		Size:      512,
 	}
+	// An index IS its list of manifests, and the lock refuses one recorded
+	// without them: it cannot say which platforms it serves, and a donor on the
+	// wrong architecture would find out at run time. The children here publish
+	// exactly the platforms the checked-in intent declares, plus the
+	// attestation manifest a real BuildKit index carries.
+	children := make([]ocispec.Descriptor, 0, len(in.Platforms)+1)
+	for _, p := range in.Platforms {
+		os_, arch, _ := strings.Cut(p, "/")
+		children = append(children, ocispec.Descriptor{
+			MediaType: ocispec.MediaTypeImageManifest,
+			Digest:    digest.Digest("sha256:" + strings.Repeat("7", 64)),
+			Size:      256,
+			Platform:  &ocispec.Platform{OS: os_, Architecture: arch},
+		})
+	}
+	children = append(children, ocispec.Descriptor{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Digest:    digest.Digest("sha256:" + strings.Repeat("8", 64)),
+		Size:      64,
+		Platform:  &ocispec.Platform{OS: "unknown", Architecture: "unknown"},
+	})
 	arts := map[string]release.LockedArtifact{}
 	for _, name := range release.ArtifactNames {
-		arts[name] = release.LockedArtifact{Repository: in.Repositories[name], Descriptor: desc}
+		arts[name] = release.LockedArtifact{
+			Repository: in.Repositories[name], Descriptor: desc, Manifests: children,
+		}
 	}
 	proven := make([]release.ProvenClaim, 0, len(in.Claims))
 	for _, c := range in.Claims {

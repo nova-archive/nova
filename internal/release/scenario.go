@@ -45,16 +45,41 @@ const (
 type GateCoverage struct {
 	// Gate is the name a DeclaredClaim's ProvenByGate refers to.
 	Gate string
+	// MakeTarget is how the gate is EXECUTED.
+	//
+	// It lives on the coverage entry so the release workflow can derive the
+	// list of gates to run from the intent's claims rather than carrying a
+	// hard-coded sequence of `make` lines. A hard-coded list is wrong in one
+	// specific way that matters: adding a claim to a later release's intent
+	// would pass every check here and then quietly not run the gate that proves
+	// it, because nobody remembered to edit the YAML.
+	MakeTarget string
 	// Runner is the tier it runs in.
 	Runner RunnerClass
 	// Proves lists the claim IDs this gate can support.
 	Proves []string
+	// AcceptanceScenarios are the design document's numbered scenarios this
+	// gate satisfies. Each gate script states them in its header; recording
+	// them here is what lets an evidence statement carry them without the
+	// workflow re-typing a list that is already written down twice.
+	AcceptanceScenarios []string
 	// DoesNotProve records the honest limits, so a reader is not left to infer
 	// them from the absence of an entry.
 	DoesNotProve []string
 	// Placeholder marks coverage that has NOT been derived from an executed
 	// run. It blocks a release candidate; see ReleaseCandidateReady.
 	Placeholder bool
+
+	// RequiredForRelease marks a gate that runs for EVERY release even though
+	// no claim cites it.
+	//
+	// The backup/restore drill is the case: nothing in the intent claims "the
+	// backup you were told to take can actually be restored", because it is not
+	// a compatibility statement about artifacts — and it is still the last
+	// thing you want to discover is broken, since the documented rollback for a
+	// destructive migration is exactly that restore. A gate that proves no
+	// claim is not a gate that proves nothing.
+	RequiredForRelease bool
 
 	// PostPublication marks a gate that CANNOT run before the release exists.
 	//
@@ -96,8 +121,9 @@ type Scenario struct {
 var coverage = []GateCoverage{
 	{
 		// DERIVED FROM AN EXECUTED RUN, 2026-08-11.
-		Gate: "upgrade-wire-e2e", Runner: RunnerDocker,
-		Proves: []string{"baseline-donor-interop"},
+		Gate: "upgrade-wire-e2e", MakeTarget: "upgrade-wire-e2e", Runner: RunnerDocker,
+		Proves:              []string{"baseline-donor-interop"},
+		AcceptanceScenarios: []string{"1", "2", "3", "5"},
 		DoesNotProve: []string{
 			"anything about the schema: this gate runs against a FRESH database, so it " +
 				"cannot say whether an old binary survives a forward schema",
@@ -116,8 +142,9 @@ var coverage = []GateCoverage{
 	},
 	{
 		// DERIVED FROM AN EXECUTED RUN, 2026-08-11.
-		Gate: "upgrade-schema-e2e", Runner: RunnerDocker,
-		Proves: []string{"baseline-coordinator-on-schema-19"},
+		Gate: "upgrade-schema-e2e", MakeTarget: "upgrade-schema-e2e", Runner: RunnerDocker,
+		Proves:              []string{"baseline-coordinator-on-schema-19"},
+		AcceptanceScenarios: []string{"4", "6"},
 		DoesNotProve: []string{
 			"donor behaviour: no donor participates",
 			"that a DOWN migration works — the contract is restore-from-backup, and " +
@@ -137,8 +164,9 @@ var coverage = []GateCoverage{
 	{
 		// PRE-publication. Provable at lock time, because the candidate digests
 		// exist by then even though the release does not.
-		Gate: "upgrade-candidate-e2e", Runner: RunnerDocker,
-		Proves: []string{"candidate-baseline-transition"},
+		Gate: "upgrade-candidate-e2e", MakeTarget: "upgrade-candidate-e2e", Runner: RunnerDocker,
+		Proves:              []string{"candidate-baseline-transition"},
+		AcceptanceScenarios: []string{"15", "16"},
 		DoesNotProve: []string{
 			"anything about a PUBLISHED release: no registry ref is resolved, no release " +
 				"asset is downloaded, and no signature is verified against a real bundle. " +
@@ -155,8 +183,9 @@ var coverage = []GateCoverage{
 		// POST-publication. It is not bound to an intent claim and never will
 		// be: a claim it proved would have to be added to a lock that was
 		// already signed, and the v0.3.0 lock is not re-cut.
-		Gate: "upgrade-release-e2e", Runner: RunnerTUN,
-		Proves: nil,
+		Gate: "upgrade-release-e2e", MakeTarget: "upgrade-release-e2e", Runner: RunnerTUN,
+		Proves:              nil,
+		AcceptanceScenarios: []string{"15", "16"},
 		DoesNotProve: []string{
 			"anything at lock time. It runs AFTER publication, so nothing it concludes can " +
 				"appear in the lock it verifies — that document is already signed",
@@ -181,8 +210,9 @@ var coverage = []GateCoverage{
 		// cross-version harness does. That is a promotion in usefulness — a
 		// gate that runs in CI beats one waiting on a self-hosted runner — and
 		// the limits it buys are recorded below rather than glossed.
-		Gate: "mixed-fleet-e2e", Runner: RunnerDocker,
-		Proves: []string{"coordinator-upgrade-needs-no-donor-upgrade"},
+		Gate: "mixed-fleet-e2e", MakeTarget: "mixed-fleet-e2e", Runner: RunnerDocker,
+		Proves:              []string{"coordinator-upgrade-needs-no-donor-upgrade"},
+		AcceptanceScenarios: []string{"17", "18", "19", "20", "21", "22", "23", "24", "25", "26"},
 		DoesNotProve: []string{
 			"anything about donors outside the declared support window: an unsupported " +
 				"donor is untested by definition, which is what unsupported means",
@@ -208,8 +238,9 @@ var coverage = []GateCoverage{
 	{
 		// DERIVED FROM AN EXECUTED RUN, 2026-08-11, all three pairings against
 		// predecessor commit 143c459 read from the release intent.
-		Gate: "crossversion-e2e", Runner: RunnerDocker,
-		Proves: nil,
+		Gate: "crossversion-e2e", MakeTarget: "crossversion-e2e", Runner: RunnerDocker,
+		Proves:              nil,
+		AcceptanceScenarios: nil,
 		DoesNotProve: []string{
 			"any DECLARED claim: baseline-donor-interop is assigned to upgrade-wire-e2e, " +
 				"which runs the protocol against a fresh database. This gate overlaps it " +
@@ -231,6 +262,30 @@ var coverage = []GateCoverage{
 			"DONOR-BACKED read with the coordinator's local Kubo repo wiped, and drain/undrain. " +
 			"The P2-M6-era caveats about fabricated audits and broken donor reads are gone " +
 			"with the predecessor they described.",
+	},
+	{
+		// DERIVED FROM AN EXECUTED RUN, 2026-08-11. Proves no claim and runs for
+		// every release anyway.
+		Gate: "backup-restore-e2e", MakeTarget: "backup-restore-e2e", Runner: RunnerDocker,
+		Proves:              nil,
+		AcceptanceScenarios: []string{"8"},
+		RequiredForRelease:  true,
+		DoesNotProve: []string{
+			"any DECLARED claim. Restorability is not a statement about artifact " +
+				"compatibility, which is what a claim is; it is a statement about the " +
+				"procedure UPGRADING.md tells an operator to run before anything else",
+			"that a restore succeeds on the operator's own data. It restores what the drill " +
+				"backed up, and a backup nobody has ever restored is the thing this exists to " +
+				"stop being normal",
+			"anything about a partial or corrupted archive volume: the drill restores a whole " +
+				"snapshot",
+		},
+		Note: "Executed 2026-08-11 by scripts/backup_restore_e2e.sh. It runs for every release " +
+			"even though no claim cites it, because the documented rollback for a destructive " +
+			"migration IS the restore: discovering it broken after the migration has run is " +
+			"discovering it at the only moment it cannot be fixed. The drill uses " +
+			"`federation init` rather than `node ca-init` — the latter mints the Nova CA only, " +
+			"with no Nebula CA, and the verification correctly refused the incomplete result.",
 	},
 }
 

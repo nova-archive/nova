@@ -122,6 +122,12 @@ DONOR_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nod
     "$WORK/donor/invite-manifest.json")"
 [ -n "$DONOR_ID" ] || fail "could not read the donor id from the invite manifest"
 
+# The seeded donor's version label comes from the reviewed intent, not from a
+# literal. A drill that hard-codes one predecessor stops describing the fleet
+# the moment the intent names a different one.
+PREDECESSOR="${PREDECESSOR:-$(go run ./internal/release/cmd/novarel predecessor)}"
+[ -n "$PREDECESSOR" ] || fail "could not read the predecessor from the release intent"
+
 ACTIVE="$WORK/fedpki/active"
 [ -d "$ACTIVE" ] || ACTIVE="$WORK/fedpki"
 CA_FP_BEFORE="$(openssl x509 -in "$ACTIVE/federation-ca.crt" -noout -fingerprint -sha256)"
@@ -146,7 +152,7 @@ docker exec backup-pg psql -U postgres -d nova_backup -q -c "
                        advertised_capabilities, effective_capabilities, client_version)
     VALUES ('$DONOR_ID'::uuid, 'neb-$DONOR_ID', 'fed-$DONOR_ID', 1000000, 1000000,
             ARRAY['pin-change-log/v1','snapshot/v1']::text[],
-            ARRAY['pin-change-log/v1','snapshot/v1']::text[], 'commit:143c459');
+            ARRAY['pin-change-log/v1','snapshot/v1']::text[], 'commit:$PREDECESSOR');
     INSERT INTO users (email) VALUES ('backup@example.invalid');
 " >/dev/null || fail "seeding failed"
 

@@ -126,6 +126,15 @@ func BuildLock(in LockInputs) (Lock, error) {
 		if pair.Digest == "" {
 			return Lock{}, fmt.Errorf("lock: claim %q's evidence has no content digest", c.ID)
 		}
+		// The statement must be about THIS reviewed decision. Two candidates
+		// can both be called v0.3.0 while the intent behind them differs by a
+		// claim, a predecessor or a capability, and a gate that passed against
+		// the first says nothing about the second.
+		if want := IntentDigest(in.IntentBytes); pair.Statement.IntentDigest != want {
+			return Lock{}, fmt.Errorf("lock: claim %q's evidence was gathered against intent %s, "+
+				"but this release realizes %s. Same version, different reviewed decision",
+				c.ID, pair.Statement.IntentDigest, want)
+		}
 		// The statement must be about THESE artifacts. Otherwise a passing run
 		// against last week's build proves this week's.
 		for name, a := range in.Artifacts {

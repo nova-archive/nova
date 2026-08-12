@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "version": "v0.3.1",
+  "support_epoch": "2026-09-01T00:00:00Z",
+  "support_until": "2027-03-01T00:00:00Z",
+  "supported_predecessors": [
+    {
+      "kind": "version",
+      "version": "v0.3.0",
+      "schema": 19,
+      "support_epoch": "2026-08-11T00:00:00Z"
+    },
+    {
+      "kind": "commit",
+      "commit": "143c459",
+      "schema": 18,
+      "support_epoch": "2026-08-08T00:00:00Z"
+    }
+  ],
+  "target_schema": 19,
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "repositories": {
+    "nova-coordinator": "ghcr.io/nova-archive/nova-coordinator",
+    "nova-node": "ghcr.io/nova-archive/nova-node",
+    "nova-admin": "ghcr.io/nova-archive/nova-admin"
+  },
+  "sidecars": {
+    "nebula": "nebulaoss/nebula:1.11.0@sha256:1bee6515faf687e590ab42e14a769d406bf1dc59cb03e21520ae50669adc0581",
+    "kubo": "ipfs/kubo:v0.38.1@sha256:ab04133d2851eb9e761cfee77348195c0b88d58f8a759ee4d8aaf916935fe356"
+  },
+  "fed_protocols": [
+    "fed/v1"
+  ],
+  "envelope_formats": [
+    1
+  ],
+  "capability_profiles": {
+    "core": [
+      "pin-change-log/v1",
+      "snapshot/v1"
+    ],
+    "roles": {
+      "assignment-destination": [
+        "blob-transfer/v1"
+      ],
+      "read-source": [
+        "read-source/v1",
+        "blob-transfer/v1"
+      ],
+      "repair-source": [
+        "repair-stream/v1"
+      ],
+      "possession-audit": [
+        "audit-block-hash/v1"
+      ]
+    }
+  },
+  "claims": [
+    {
+      "id": "candidate-baseline-transition",
+      "statement": "An existing deployment at the immediate predecessor crosses to the EXACT CANDIDATE artifacts of this release using only docs/UPGRADING.md, preserving its schema, its registered donors and its archive state.",
+      "proven_by_gate": "upgrade-candidate-e2e"
+    },
+    {
+      "id": "coordinator-upgrade-needs-no-donor-upgrade",
+      "statement": "Upgrading the coordinator alone evicts nobody and triggers no mass repair across a mixed fleet spanning every predecessor still inside the declared support window.",
+      "requires_capabilities": [
+        "pin-change-log/v1",
+        "snapshot/v1"
+      ],
+      "proven_by_gate": "mixed-fleet-e2e"
+    }
+  ]
+}

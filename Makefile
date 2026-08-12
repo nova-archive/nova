@@ -263,6 +263,24 @@ mixed-fleet-e2e:
 backup-restore-e2e:
 	./scripts/backup_restore_e2e.sh
 
+# P2-M7.3 amendment: the two things about the release workflow that CAN be
+# proven without GitHub. Both are pr-static — no Docker, no network — so they
+# run on every PR rather than being discovered during a release.
+.PHONY: release-pipeline-rehearsal release-publish-injection release-gates
+# The whole document pipeline — plan, evidence, bundle, lock, summary,
+# verification — driven offline for TWO releases, against synthesized
+# descriptors. `dry_run: true` failing here takes seconds instead of twenty
+# minutes of pushing and signing.
+release-pipeline-rehearsal:
+	./scripts/release_pipeline_rehearsal.sh
+
+# Every external write a release makes, interrupted at every point, with a fake
+# registry, Git remote and GitHub. The property is that a retry CONVERGES.
+release-publish-injection:
+	./scripts/release_publish_injection.sh
+
+release-gates: release-pipeline-rehearsal release-publish-injection actionlint
+
 # P2-M7.3 Task 28: the release workflow is validated by a DIGEST-PINNED linter.
 # A workflow that mints signatures is the last place to run an unpinned tool.
 ACTIONLINT_IMAGE ?= rhysd/actionlint@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9

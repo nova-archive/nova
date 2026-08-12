@@ -53,6 +53,16 @@ type EvidenceStatement struct {
 	// Release and SourceCommit say which candidate this is about.
 	Release      string `json:"release"`
 	SourceCommit string `json:"source_commit"`
+	// IntentDigest is the sha256 of the exact intent bytes the gate ran
+	// against.
+	//
+	// The version string is not enough. Two candidates can both call themselves
+	// v0.3.0 while the reviewed decision behind them differs — a claim added, a
+	// predecessor dropped, a capability moved out of a role — and a gate that
+	// passed against the first says nothing about the second. Recording the
+	// digest lets BuildLock refuse evidence gathered against a decision that is
+	// not the one being released.
+	IntentDigest string `json:"intent_digest"`
 	// ArtifactDigests maps artifact name to the exact digest under test. A
 	// statement that does not name the bytes it examined can be reused for a
 	// different build, which is the whole failure mode.
@@ -112,6 +122,11 @@ func (e EvidenceStatement) Validate() error {
 	if e.Release == "" || e.SourceCommit == "" {
 		return errors.New("evidence: a statement must name the release and the source commit " +
 			"it is about")
+	}
+	if err := validateSHA256(e.IntentDigest); err != nil {
+		return fmt.Errorf("evidence: intent_digest: %w. A version string does not identify a "+
+			"reviewed decision — two candidates can both be called %q with different claims "+
+			"behind them", err, e.Release)
 	}
 	if len(e.ArtifactDigests) == 0 {
 		return errors.New("evidence: no artifact digests. A statement that does not name the " +
@@ -209,6 +224,16 @@ func AssertEvidenceSupportsClaim(c DeclaredClaim, e EvidenceStatement, table []G
 		return fmt.Errorf("evidence: claim %q needs a %s gate but the statement ran in %s; a "+
 			"cheaper tier may never stand in for a more capable one",
 			c.ID, cov.Runner, e.RunnerClass)
+	}
+	// A claim conditional on capabilities is a claim about a donor that has
+	// them. Evidence that never records exercising one is evidence about some
+	// other donor, and the conditional half of the claim is unproven.
+	for _, want := range c.RequiresCapabilities {
+		if !slices.Contains(e.Capabilities, want) {
+			return fmt.Errorf("evidence: claim %q is conditional on capability %q and the "+
+				"statement does not record exercising it; the claim's condition is the part "+
+				"that would be untested", c.ID, want)
+		}
 	}
 	return nil
 }

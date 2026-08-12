@@ -20,11 +20,45 @@ func descriptor() ocispec.Descriptor {
 	}
 }
 
+// childFor is one platform's manifest inside an index. The fixture is an index
+// because that is what a real multi-platform build produces, and because an
+// index is the shape whose platform set the lock has to derive rather than read
+// off a single descriptor.
+func childFor(platform string) ocispec.Descriptor {
+	parts := strings.Split(platform, "/")
+	p := &ocispec.Platform{OS: parts[0], Architecture: parts[1]}
+	if len(parts) > 2 {
+		p.Variant = parts[2]
+	}
+	return ocispec.Descriptor{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Digest:    digest.Digest("sha256:" + strings.Repeat("2", 64)),
+		Size:      567,
+		Platform:  p,
+	}
+}
+
+// artifactFor builds a locked artifact that publishes exactly the declared
+// platforms, plus the attestation manifest a real BuildKit index carries.
+func artifactFor(repo string, platforms []string) LockedArtifact {
+	children := make([]ocispec.Descriptor, 0, len(platforms)+1)
+	for _, p := range platforms {
+		children = append(children, childFor(p))
+	}
+	children = append(children, ocispec.Descriptor{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Digest:    digest.Digest("sha256:" + strings.Repeat("3", 64)),
+		Size:      89,
+		Platform:  &ocispec.Platform{OS: "unknown", Architecture: "unknown"},
+	})
+	return LockedArtifact{Repository: repo, Descriptor: descriptor(), Manifests: children}
+}
+
 func validLock(t *testing.T, in Intent, intentBytes []byte) Lock {
 	t.Helper()
 	arts := map[string]LockedArtifact{}
 	for _, name := range ArtifactNames {
-		arts[name] = LockedArtifact{Repository: in.Repositories[name], Descriptor: descriptor()}
+		arts[name] = artifactFor(in.Repositories[name], in.Platforms)
 	}
 	proven := make([]ProvenClaim, 0, len(in.Claims))
 	for _, c := range in.Claims {

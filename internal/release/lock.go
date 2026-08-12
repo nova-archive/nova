@@ -209,6 +209,13 @@ func (l Lock) Validate(in Intent, intentBytes []byte) error {
 				return err
 			}
 		}
+		// The declared platform set and the published one must be the same set.
+		// Nova is single-platform by DECISION or multi-platform by decision;
+		// what it must not be is either one by accident, because donors are
+		// volunteer hardware and the matrix is what they read.
+		if err := ValidateArtifactPlatforms(in.Platforms, name, a); err != nil {
+			return err
+		}
 	}
 	for name := range l.Artifacts {
 		if !slices.Contains(ArtifactNames, name) {

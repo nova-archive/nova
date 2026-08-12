@@ -77,9 +77,15 @@ mkdir -p "$WORK/bin" "$WORK/journal" "$WORK/etc-nova" "$WORK/kubo-repo"
 # Build both sides
 # ---------------------------------------------------------------------------
 
-log "building HEAD"
-go build -o "$WORK/bin/head-migrate" ./cmd/migrate
-go build -o "$WORK/bin/head-coordinator" ./cmd/coordinator
+# HEAD is the candidate: with descriptors, the pushed image extracted by
+# digest; without them, a stamped local build. The PREDECESSOR is always built
+# from source — it has no published image, which is the whole reason the
+# baseline is commit-anchored.
+. "$ROOT/scripts/lib/candidate.sh"
+log "resolving the candidate"
+nova_candidate_bin migrate     "$WORK/bin/head-migrate"     || fail "no candidate migrate"
+nova_candidate_bin coordinator "$WORK/bin/head-coordinator" || fail "no candidate coordinator"
+log "candidate: $NOVA_CANDIDATE_SOURCE"
 
 log "checking out predecessor $PREDECESSOR"
 git worktree add --force --detach "$WORK/old" "$PREDECESSOR" >/dev/null \

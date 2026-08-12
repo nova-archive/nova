@@ -19,7 +19,22 @@ import (
 // existed was a test fixture, which is why the release workflow stopped at
 // "finalize and sign the lock": there was nothing to call.
 
+// descriptorFor is an index publishing exactly the checked-in intent's declared
+// platforms, plus the attestation manifest BuildKit adds. An index with no
+// children is refused: an index IS its list of manifests, and one recorded
+// without them cannot say what it runs on.
 func descriptorFor(name string, fill byte) LockedArtifact {
+	children := []ocispec.Descriptor{{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Digest:    digest.Digest("sha256:" + strings.Repeat(string(fill), 63) + "a"),
+		Size:      512,
+		Platform:  &ocispec.Platform{OS: "linux", Architecture: "amd64"},
+	}, {
+		MediaType: ocispec.MediaTypeImageManifest,
+		Digest:    digest.Digest("sha256:" + strings.Repeat(string(fill), 63) + "b"),
+		Size:      64,
+		Platform:  &ocispec.Platform{OS: "unknown", Architecture: "unknown"},
+	}}
 	return LockedArtifact{
 		Repository: "ghcr.io/nova-archive/" + name,
 		Descriptor: ocispec.Descriptor{
@@ -27,6 +42,7 @@ func descriptorFor(name string, fill byte) LockedArtifact {
 			Digest:    digest.Digest("sha256:" + strings.Repeat(string(fill), 64)),
 			Size:      1024,
 		},
+		Manifests: children,
 	}
 }
 
@@ -52,7 +68,7 @@ func derivedCoverage() []GateCoverage {
 }
 
 // passingEvidence builds a statement that genuinely supports every claim.
-func passingEvidence(t *testing.T, in Intent, arts map[string]LockedArtifact) map[string]EvidencePair {
+func passingEvidence(t *testing.T, in Intent, intentBytes []byte, arts map[string]LockedArtifact) map[string]EvidencePair {
 	t.Helper()
 	digests := map[string]string{}
 	for name, a := range arts {
@@ -68,7 +84,12 @@ func passingEvidence(t *testing.T, in Intent, arts map[string]LockedArtifact) ma
 			Schema: EvidenceSchema, Gate: c.ProvenByGate,
 			RunnerClass: cov.Runner, Outcome: "passed",
 			Release: in.Version, SourceCommit: "143c4590000",
+			IntentDigest:    IntentDigest(intentBytes),
 			ArtifactDigests: digests, Claims: []string{c.ID},
+			// A claim conditional on capabilities needs evidence that
+			// records exercising them; the condition is the part that
+			// would otherwise go untested.
+			Capabilities: c.RequiresCapabilities,
 			TestRevision: "143c4590000",
 			StartedAt:    time.Now().UTC().Add(-time.Minute), FinishedAt: time.Now().UTC(),
 		}
@@ -87,7 +108,7 @@ func TestAssembleBuildAndVerifyRoundTrip(t *testing.T) {
 	b, in := readCommittedIntent(t)
 	dir := filepath.Join(t.TempDir(), "bundle")
 
-	ev := passingEvidence(t, in, testArtifacts())
+	ev := passingEvidence(t, in, b, testArtifacts())
 	evFiles := map[string][]byte{}
 	for id, pair := range ev {
 		body, err := pair.Statement.Render()
@@ -166,7 +187,7 @@ func TestAssembleBuildAndVerifyRoundTrip(t *testing.T) {
 func TestBuildLockRefusesAClaimWithNoEvidence(t *testing.T) {
 	b, in := readCommittedIntent(t)
 	arts := testArtifacts()
-	ev := passingEvidence(t, in, arts)
+	ev := passingEvidence(t, in, b, arts)
 	for id := range ev {
 		delete(ev, id)
 		break
@@ -188,7 +209,7 @@ func TestBuildLockRefusesAClaimWithNoEvidence(t *testing.T) {
 func TestBuildLockRefusesEvidenceAboutDifferentArtifacts(t *testing.T) {
 	b, in := readCommittedIntent(t)
 	arts := testArtifacts()
-	ev := passingEvidence(t, in, arts)
+	ev := passingEvidence(t, in, b, arts)
 
 	// Promote something else.
 	other := testArtifacts()
@@ -219,6 +240,7 @@ func TestEvidenceCannotComeFromACheaperTier(t *testing.T) {
 			Schema: EvidenceSchema, Gate: c.ProvenByGate,
 			RunnerClass: RunnerStatic, Outcome: "passed",
 			Release: in.Version, SourceCommit: "abc",
+			IntentDigest:    "sha256:" + strings.Repeat("9", 64),
 			ArtifactDigests: map[string]string{"nova-node": "sha256:" + strings.Repeat("2", 64)},
 			TestRevision:    "abc",
 		}
@@ -241,6 +263,7 @@ func TestEvidenceCannotBeSkipped(t *testing.T) {
 		Schema: EvidenceSchema, Gate: c.ProvenByGate, RunnerClass: cov.Runner,
 		Outcome: "skipped", Detail: "no published artifacts",
 		Release: in.Version, SourceCommit: "abc",
+		IntentDigest:    "sha256:" + strings.Repeat("9", 64),
 		ArtifactDigests: map[string]string{"nova-node": "sha256:" + strings.Repeat("2", 64)},
 		TestRevision:    "abc",
 	}
@@ -279,7 +302,7 @@ func TestBuildLockRefusesAPrePublicationPlaceholder(t *testing.T) {
 	_, err := BuildLock(LockInputs{
 		Intent: in, IntentBytes: b, SourceCommit: "143c4590000", BuiltAt: time.Now(),
 		Artifacts: arts, Sidecars: in.Sidecars,
-		Evidence: passingEvidence(t, in, arts),
+		Evidence: passingEvidence(t, in, b, arts),
 		Payload:  map[string]string{MemberIntent: IntentDigest(b)},
 		Coverage: blocked,
 	})
@@ -312,7 +335,7 @@ func TestPostPublicationCoverageDoesNotBlockALock(t *testing.T) {
 	// A REAL bundle and the REAL checked-in coverage. A minimal payload would
 	// fail lock validation for an unrelated reason and prove nothing about the
 	// question under test.
-	ev := passingEvidence(t, in, arts)
+	ev := passingEvidence(t, in, b, arts)
 	evFiles := map[string][]byte{}
 	for id, pair := range ev {
 		body, err := pair.Statement.Render()
@@ -361,6 +384,7 @@ func TestEvidenceStatementRoundTrips(t *testing.T) {
 	st := EvidenceStatement{
 		Schema: EvidenceSchema, Gate: "upgrade-schema-e2e", RunnerClass: RunnerDocker,
 		Outcome: "passed", Release: "v0.3.0", SourceCommit: "143c459",
+		IntentDigest:    "sha256:" + strings.Repeat("9", 64),
 		ArtifactDigests: map[string]string{"nova-coordinator": "sha256:" + strings.Repeat("1", 64)},
 		Claims:          []string{"baseline-coordinator-on-schema-19"},
 		TestRevision:    "143c459",

@@ -206,6 +206,15 @@ jobs:
       - name: An existing federation can cross this release using only UPGRADING.md
         run: make live-upgrade-e2e
 
+      # The release workflow's two testable halves. Both are hermetic, and both
+      # exist because the alternative is discovering the defect mid-release,
+      # with three signed images already pushed.
+      - name: The release document pipeline completes, for two different releases
+        run: make release-pipeline-rehearsal
+
+      - name: Every external write a release makes is safe to interrupt
+        run: make release-publish-injection
+
   # ── TIER 2: rc-docker ──────────────────────────────────────────────────
   #
   # Docker-capable, no TUN. These are DRILLS: they stand real binaries up
