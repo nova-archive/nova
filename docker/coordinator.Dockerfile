@@ -40,7 +40,7 @@ RUN npm run -w @nova/admin build \
 # govips/libvips requires glibc — distroless/alpine will not link.
 # The entrypoint runs as root, chowns mounted volumes to the nova user,
 # then drops privileges via gosu for migrate + the final coordinator exec.
-FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS runtime
 # curl exists solely for the compose healthcheck probe of /health — the
 # image ships no other HTTP client (no wget, no busybox).
 RUN apt-get update && apt-get install -y --no-install-recommends \
