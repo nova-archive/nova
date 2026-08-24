@@ -3,7 +3,7 @@
 # Base images digest-pinned (P2-M7.1); resolved 2026-07-05. To bump: make docker-refresh-digests or docker buildx imagetools inspect.
 
 # ---- build: pure-Go donor binary (no cgo, no libvips) ----
-FROM golang:1.26-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS build
+FROM golang:1.27-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
