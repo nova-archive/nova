@@ -34,7 +34,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 # --- pinned nebula-cert ----------------------------------------------------
 # Taken from the same digest the donor bundle pins, so the operator issuing a
 # certificate and the donor validating it agree on the tool version.
-FROM nebulaoss/nebula:1.11.0@sha256:1bee6515faf687e590ab42e14a769d406bf1dc59cb03e21520ae50669adc0581 AS nebula
+FROM nebulaoss/nebula:1.11.1@sha256:0237c2e3f53b6f2cc105c8edc03e11c2f0badb6b80b542966edcd113cce7a77f AS nebula
 
 # --- runtime ---------------------------------------------------------------
 FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
