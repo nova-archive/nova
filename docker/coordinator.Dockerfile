@@ -24,7 +24,7 @@ RUN BI=github.com/nova-archive/nova/internal/buildinfo; \
  && go build -trimpath -ldflags="$LD" -o /out/migrate     ./cmd/migrate
 
 # ---- node-builder: admin + widget + setup hermetic bundles ----
-FROM node:22-bookworm@sha256:c601a46abb4d2ab80a9dc3da208d50d1122642d53f17a101926ace71e5a9bf1c AS node-builder
+FROM node:25-bookworm@sha256:78839ac448c23517f8eab2e8f7943d9b4f73979eb7f8bed2c73dbf72ff869e7b AS node-builder
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY web/admin/package.json  web/admin/package.json
